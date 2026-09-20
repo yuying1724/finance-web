@@ -6,6 +6,7 @@ import { money, ACCOUNT_ICON } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
 import { openAccountForm } from './accountform.js';
 import { openTxForm } from './txform.js';
+import { openCardStatement, openLoanDetail } from './liability.js';
 import { renderCategories } from './categories.js';
 import { refresh } from '../data.js';
 
@@ -61,12 +62,16 @@ function accountItem(a) {
 function openAccountDetail(a) {
   const d = state.data;
   const holdings = d.balances.filter((b) => b.accountId === a.id);
+  const liabilityBtns = [];
+  if (a.type === '信用卡') liabilityBtns.push(h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardStatement(a), 0); } }, '信用卡帳單'));
+  if (a.type === '貸款') liabilityBtns.push(h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openLoanDetail(a), 0); } }, '還款明細'));
   const sheet = openSheet({
     title: a.name,
     body: h('div', null,
       h('div', { class: 'muted small', style: { marginBottom: '8px' } }, `${a.type}${a.institution ? ' · ' + a.institution : ''}${a.note ? ' · ' + a.note : ''}`),
       holdings.length ? h('ul', { class: 'list' }, holdings.map((b) => h('li', null, h('div', { class: 'item' }, h('div', { class: 'grow' }, b.symbol), h('div', { class: 'amt' }, money(b.qty, b.symbol)))))) : h('div', { class: 'muted' }, '目前沒有餘額'),
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
+        ...liabilityBtns,
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); location.hash = '#/tx?acct=' + a.id; } }, '看交易'),
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openTxForm({ preset: { type: '調整', acct: a.id }, onDone: refresh }), 0); } }, '對帳（輸入實際餘額）'),
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openAccountForm({ account: a, onDone: refresh }), 0); } }, '編輯'),

@@ -37,6 +37,8 @@ export function balanceOf(accountId, symbol) {
   return b ? b.qty : 0;
 }
 export function brokerSettingsOf(accountId) { return state.data && state.data.brokerSettings.find((x) => x.accountId === accountId); }
+export function cardSettingsOf(accountId) { return state.data && state.data.cardSettings.find((x) => x.accountId === accountId); }
+export function loanSettingsOf(accountId) { return state.data && state.data.loanSettings.find((x) => x.accountId === accountId); }
 export function holidaySet() {
   const d = state.data;
   if (!d) return {};

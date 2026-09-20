@@ -42,13 +42,17 @@ var FinApi = (function () {
     var base = settings['基準幣別'] || 'TWD';
     var brokerRows = FinRepo.goodRows('brokerSettings');
     var holidayRows = FinRepo.goodRows('holidays');
+    var cardRows = FinRepo.goodRows('cardSettings');
+    var loanRows = FinRepo.goodRows('loanSettings');
     return {
       now: now, today: FinDates.today(now), base: base, settings: settings, instruments: instruments, instrumentRows: instrumentRows,
       accountRows: accountRows, accounts: mapBy(accountRows, 'id'), categoryRows: categoryRows, categories: mapBy(categoryRows, 'id'),
       txRows: txRows, txById: mapBy(txRows, 'id'), prices: prices, priceInfo: priceInfo,
       brokerRows: brokerRows, brokerByAccount: mapBy(brokerRows, 'accountId'), holidayRows: holidayRows,
+      cardRows: cardRows, cardByAccount: mapBy(cardRows, 'accountId'), loanRows: loanRows, loanByAccount: mapBy(loanRows, 'accountId'),
       bad: [].concat(FinRepo.readTable('accounts').bad, FinRepo.readTable('categories').bad, FinRepo.readTable('instruments').bad,
-        txAll.bad, FinRepo.readTable('prices').bad, FinRepo.readTable('brokerSettings').bad, FinRepo.readTable('holidays').bad),
+        txAll.bad, FinRepo.readTable('prices').bad, FinRepo.readTable('brokerSettings').bad, FinRepo.readTable('holidays').bad,
+        FinRepo.readTable('cardSettings').bad, FinRepo.readTable('loanSettings').bad),
     };
   }
 
@@ -113,6 +117,7 @@ var FinApi = (function () {
         accounts: c.accountRows.map(pub), categories: c.categoryRows.map(pub),
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
         brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
+        cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub),
         prices: c.priceInfo,
         balances: calc.balances.map(function (b) { return { accountId: b.accountId, symbol: b.symbol, qty: b.qty }; }),
         pending: calc.pending,
@@ -503,6 +508,171 @@ var FinApi = (function () {
         }
         FinRepo.audit(existing ? '修改' : '新增', 'brokerSettings', v.accountId, (c.accounts[v.accountId] || {}).name || v.accountId, env.device);
         return { broker: out };
+      });
+    },
+  };
+
+  // ---------- 信用卡設定與帳單 ----------
+  function validateCardSettingsInput(a, c) {
+    var errors = [];
+    var accountId = str(a.accountId);
+    var acct = c.accounts[accountId];
+    if (!acct) errors.push({ field: 'accountId', message: '找不到帳戶' });
+    else if (acct.type !== '信用卡') errors.push({ field: 'accountId', message: '只有「信用卡」類型的帳戶能設定信用卡資料' });
+    function dayField(field, label) {
+      var v = a[field];
+      var n = v === undefined || v === null || v === '' ? NaN : Number(v);
+      if (!isFinite(n) || n < 1 || n > 31 || Math.floor(n) !== n) { errors.push({ field: field, message: label + '請輸入 1～31 的整數' }); return 1; }
+      return n;
+    }
+    var statementDay = dayField('statementDay', '結帳日');
+    var dueDay = dayField('dueDay', '繳款日');
+    var limitVal = a.limit === undefined || a.limit === null || a.limit === '' ? 0 : Number(a.limit);
+    if (!isFinite(limitVal) || limitVal < 0) { errors.push({ field: 'limit', message: '額度必須是不小於 0 的數字' }); limitVal = 0; }
+    var payAccountId = str(a.payAccountId);
+    if (payAccountId && !c.accounts[payAccountId]) errors.push({ field: 'payAccountId', message: '找不到預設繳款帳戶' });
+    var value = { accountId: accountId, limit: limitVal, statementDay: statementDay, dueDay: dueDay, expiry: str(a.expiry), payAccountId: payAccountId, note: FinValidate.safeText(str(a.note)) };
+    return { errors: errors, value: value };
+  }
+
+  H.upsertCardSettings = {
+    fn: function (p, env) {
+      var a = p.card;
+      if (!a || typeof a !== 'object') throw FinFail('BAD_REQUEST', '缺少信用卡設定資料');
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var r = validateCardSettingsInput(a, c);
+        if (r.errors.length) throw FinFail('VALIDATION', r.errors[0].message, { errors: r.errors, warnings: [] });
+        var v = r.value, existing = FinRepo.findById('cardSettings', v.accountId), out;
+        if (existing) { FinRepo.updateRow('cardSettings', existing._row, v); out = v; } else { FinRepo.append('cardSettings', [v]); out = v; }
+        FinRepo.audit(existing ? '修改' : '新增', 'cardSettings', v.accountId, (c.accounts[v.accountId] || {}).name || v.accountId, env.device);
+        return { card: out };
+      });
+    },
+  };
+
+  H.getCardStatement = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var accountId = str(p.accountId);
+      var acct = c.accounts[accountId];
+      if (!acct || acct.type !== '信用卡') throw FinFail('NOT_FOUND', '找不到信用卡帳戶');
+      var cs = c.cardByAccount[accountId];
+      if (!cs) throw FinFail('NOT_FOUND', '這個帳戶還沒有信用卡設定，請先設定結帳日與繳款日');
+      var symbol = acct.defaultSymbol;
+      var inst = c.instruments[symbol];
+      if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
+      var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
+      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf);
+      var out = { accountId: accountId, symbol: symbol, cardSettings: pub(cs) };
+      Object.keys(s).forEach(function (k) { out[k] = s[k]; });
+      return out;
+    },
+  };
+
+  // ---------- 貸款設定與還款 ----------
+  function validateLoanSettingsInput(a, c) {
+    var errors = [];
+    var accountId = str(a.accountId);
+    var acct = c.accounts[accountId];
+    if (!acct) errors.push({ field: 'accountId', message: '找不到帳戶' });
+    else if (acct.type !== '貸款') errors.push({ field: 'accountId', message: '只有「貸款」類型的帳戶能設定貸款資料' });
+    var principal = Number(a.principal);
+    if (!isFinite(principal) || principal <= 0) errors.push({ field: 'principal', message: '貸款金額必須大於 0' });
+    var rate = a.rate === undefined || a.rate === null || a.rate === '' ? 0 : Number(a.rate);
+    if (!isFinite(rate) || rate < 0) errors.push({ field: 'rate', message: '年利率必須是不小於 0 的數字' });
+    var terms = Number(a.terms);
+    if (!isFinite(terms) || terms < 1 || Math.floor(terms) !== terms) errors.push({ field: 'terms', message: '期數必須是大於 0 的整數' });
+    var startDate = str(a.startDate);
+    if (!FinDates.isValid(startDate)) errors.push({ field: 'startDate', message: '起貸日格式不正確' });
+    var payDay = Number(a.payDay);
+    if (!isFinite(payDay) || payDay < 1 || payDay > 31 || Math.floor(payDay) !== payDay) errors.push({ field: 'payDay', message: '每月還款日請輸入 1～31 的整數' });
+    var method = str(a.method);
+    if (FinLoan.METHODS.indexOf(method) < 0) errors.push({ field: 'method', message: '還款方式請選擇：' + FinLoan.METHODS.join('、') });
+    var payAccountId = str(a.payAccountId);
+    if (payAccountId && !c.accounts[payAccountId]) errors.push({ field: 'payAccountId', message: '找不到預設扣款帳戶' });
+    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId };
+    return { errors: errors, value: value };
+  }
+
+  H.upsertLoanSettings = {
+    fn: function (p, env) {
+      var a = p.loan;
+      if (!a || typeof a !== 'object') throw FinFail('BAD_REQUEST', '缺少貸款設定資料');
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var r = validateLoanSettingsInput(a, c);
+        if (r.errors.length) throw FinFail('VALIDATION', r.errors[0].message, { errors: r.errors, warnings: [] });
+        var v = r.value, existing = FinRepo.findById('loanSettings', v.accountId), out;
+        if (existing) { FinRepo.updateRow('loanSettings', existing._row, v); out = v; } else { FinRepo.append('loanSettings', [v]); out = v; }
+        FinRepo.audit(existing ? '修改' : '新增', 'loanSettings', v.accountId, (c.accounts[v.accountId] || {}).name || v.accountId, env.device);
+        return { loan: out };
+      });
+    },
+  };
+
+  H.getLoanSchedule = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var accountId = str(p.accountId);
+      var acct = c.accounts[accountId];
+      if (!acct || acct.type !== '貸款') throw FinFail('NOT_FOUND', '找不到貸款帳戶');
+      var ls = c.loanByAccount[accountId];
+      if (!ls) throw FinFail('NOT_FOUND', '這個帳戶還沒有貸款設定');
+      var symbol = acct.defaultSymbol;
+      var inst = c.instruments[symbol];
+      if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
+      var sched = FinLoan.schedule(ls, inst.decimals);
+      var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
+      var sum = FinLoan.summarize(sched, asOf);
+      return { accountId: accountId, symbol: symbol, loanSettings: pub(ls), schedule: sched, summary: sum };
+    },
+  };
+
+  /** 記一筆貸款還款：依攤還表算出這一期的本金／利息，寫成同一個群組 ID 的「轉帳」（本金）＋「支出」（利息，分類=利息）兩筆交易，一次鎖定寫入 */
+  H.addLoanPayment = {
+    fn: function (p, env) {
+      var accountId = str(p.accountId), fromAccount = str(p.fromAccount);
+      if (!accountId || !fromAccount) throw FinFail('BAD_REQUEST', '缺少貸款帳戶或扣款帳戶');
+      var requestId = str(p.requestId).slice(0, 64);
+      return FinRepo.withLock(function () {
+        if (requestId) { var prevR = cacheGet('req:' + requestId); if (prevR) return JSON.parse(prevR); }
+        var c = loadContext(env.now);
+        var acct = c.accounts[accountId];
+        if (!acct || acct.type !== '貸款') throw FinFail('NOT_FOUND', '找不到貸款帳戶');
+        var ls = c.loanByAccount[accountId];
+        if (!ls) throw FinFail('NOT_FOUND', '這個帳戶還沒有貸款設定');
+        if (!c.accounts[fromAccount]) throw FinFail('VALIDATION', '找不到扣款帳戶');
+        var symbol = acct.defaultSymbol;
+        var inst = c.instruments[symbol];
+        if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
+        var sched = FinLoan.schedule(ls, inst.decimals);
+        var row = p.period ? sched[Number(p.period) - 1] : FinLoan.findPeriod(sched, c.today);
+        if (!row) throw FinFail('VALIDATION', '找不到這一期的還款資料（貸款可能已繳清，或期別超出範圍）');
+        var date = FinDates.isValid(str(p.date)) ? str(p.date) : row.date;
+        var legs = [];
+        if (row.principal > 0) {
+          var r1 = FinValidate.validateTransaction({ type: '轉帳', date: date, srcAccount: fromAccount, srcSymbol: symbol, srcQty: row.principal, dstAccount: accountId, dstSymbol: symbol, dstQty: row.principal, note: '貸款還款：第 ' + row.period + ' 期本金' }, validationCtx(c, null));
+          if (!r1.ok) throw failValidation(r1);
+          legs.push(r1.tx);
+        }
+        if (row.interest > 0) {
+          var interestCat = c.categoryRows.filter(function (x) { return x.type === '支出' && x.name === '利息'; })[0];
+          if (!interestCat) throw FinFail('VALIDATION', '找不到「利息」分類，請先在分類設定新增名為「利息」的支出分類');
+          var r2 = FinValidate.validateTransaction({ type: '支出', date: date, srcAccount: fromAccount, srcSymbol: symbol, srcQty: row.interest, categoryId: interestCat.id, note: '貸款還款：第 ' + row.period + ' 期利息' }, validationCtx(c, null));
+          if (!r2.ok) throw failValidation(r2);
+          legs.push(r2.tx);
+        }
+        if (!legs.length) throw FinFail('VALIDATION', '這一期本金與利息都是 0，不需要記錄');
+        var ids = FinRepo.nextIds('transactions', legs.length);
+        var groupId = ids[0];
+        var now = ts(env.now);
+        legs.forEach(function (t, i) { t.id = ids[i]; t.groupId = groupId; t.createdAt = now; t.updatedAt = now; });
+        FinRepo.append('transactions', legs);
+        legs.forEach(function (t) { FinRepo.audit('新增', 'transactions', t.id, summarizeTx(t), env.device); });
+        var out = { groupId: groupId, period: row.period, transactions: legs.map(pub) };
+        if (requestId) cachePut('req:' + requestId, JSON.stringify(out), 600);
+        return out;
       });
     },
   };
