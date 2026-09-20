@@ -5,3 +5,6 @@ Thumbs.db
 # 任何含授權碼或 PIN 的檔案都不該進版控
 *.secret
 .env
+
+# 方便妳雙擊執行 git push 的小工具，不需要進版控
+push.bat
