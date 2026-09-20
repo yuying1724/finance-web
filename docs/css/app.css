@@ -44,7 +44,7 @@ a { color: var(--accent-strong); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .boot { padding: 40vh 0 0; text-align: center; color: var(--sub); }
 .num { font-variant-numeric: tabular-nums; }
-svg.i { width: 1.2em; height: 1.2em; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; vertical-align: -0.2em; flex: none; }
+svg.i { width: 1.2em; height: 1.2em; fill: currentColor; vertical-align: -0.2em; flex: none; }
 
 /* ---------- 版面 ---------- */
 .shell { min-height: 100vh; min-height: 100dvh; }
@@ -59,7 +59,7 @@ svg.i { width: 1.2em; height: 1.2em; fill: none; stroke: currentColor; stroke-wi
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; padding: 8px 10px 14px; }
 .brand svg.i { color: var(--accent-strong); }
 .fab { position: fixed; right: 18px; bottom: calc(var(--tabbar-h) + 18px + env(safe-area-inset-bottom)); z-index: 21; width: 56px; height: 56px; border-radius: 50%; border: 0; background: var(--accent); color: var(--on-accent); box-shadow: var(--shadow-md); display: grid; place-items: center; }
-.fab svg.i { width: 26px; height: 26px; stroke-width: 2.4; }
+.fab svg.i { width: 26px; height: 26px; }
 .fab:active { transform: scale(.96); }
 
 @media (min-width: 900px) {
