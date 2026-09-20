@@ -1,0 +1,12 @@
+{
+  "name": "finance-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "個人財務管理系統（網頁版）：GitHub Pages 前端 + Google Sheets + Apps Script API",
+  "scripts": {
+    "build": "node tools/build-gas.js && node tools/build-web.js",
+    "test": "npm run build && node --test \"tests/**/*.test.js\"",
+    "dev": "npm run build && node tools/dev-server.js"
+  },
+  "engines": { "node": ">=20" }
+}
