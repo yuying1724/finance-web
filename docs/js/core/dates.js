@@ -66,9 +66,40 @@ var FinDates = (function () {
     return null;
   }
 
+
+  /** 某市場在這天是否「辦理交割」的營業日：週六日一律不算；holidaySet 為 {'市場|日期': {trading,settling}} */
+  function isSettleDay(str, market, holidaySet) {
+    var wd = weekday(str);
+    if (wd === 0 || wd === 6) return false;
+    var h = holidaySet ? holidaySet[market + '|' + str] : null;
+    if (h && h.settling === false) return false;
+    return true;
+  }
+
+  /** 成交日後第 n 個營業日（依 markets 陣列全部都要是營業日才算，例如複委託用 ['台灣','美國']） */
+  function addSettleDays(tradeDate, n, markets, holidaySet) {
+    var d = tradeDate, count = 0, guard = 0;
+    while (count < n) {
+      d = addDays(d, 1);
+      var ok = true;
+      for (var i = 0; i < markets.length; i++) { if (!isSettleDay(d, markets[i], holidaySet)) { ok = false; break; } }
+      if (ok) count++;
+      if (++guard > 3650) throw new Error('交割日推算超出範圍');
+    }
+    return d;
+  }
+
+  /** 把「休市日」表的列轉成 isSettleDay/addSettleDays 用的查表：{'市場|日期': {trading, settling}} */
+  function buildHolidaySet(rows) {
+    var set = {};
+    (rows || []).forEach(function (r) { set[r.market + '|' + r.date] = { trading: r.trading, settling: r.settling }; });
+    return set;
+  }
+
   var api = {
     parse: parse, isValid: isValid, format: format, addDays: addDays, weekday: weekday, ymOf: ymOf, monthRange: monthRange,
     addMonths: addMonths, timestamp: timestamp, today: today, fromCell: fromCell, daysInMonth: daysInMonth,
+    isSettleDay: isSettleDay, addSettleDays: addSettleDays, buildHolidaySet: buildHolidaySet,
   };
   return api;
 })();

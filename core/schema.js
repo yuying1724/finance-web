@@ -14,7 +14,7 @@ var FinSchema = (function () {
     priceSources: ['GOOGLEFINANCE', 'CoinGecko', '固定值', '手動'],
   };
   // 第 1 批已開放的交易類型；其餘類型在後續批次啟用
-  var ENABLED_TX_TYPES = ['收入', '支出', '轉帳', '換匯', '退款', '調整'];
+  var ENABLED_TX_TYPES = ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '股數調整', '退款', '調整'];
   var LIABILITY_TYPES = ['信用卡', '貸款', '應付'];
 
   function c(key, header, type, tolerant) { return { key: key, header: header, type: type || 'text', tolerant: !!tolerant }; }
@@ -57,7 +57,8 @@ var FinSchema = (function () {
     instruments: {
       sheet: '標的', idKey: 'symbol',
       cols: [c('symbol', '標的代號'), c('name', '名稱'), c('type', '類型'), c('quote', '計價幣別'), c('decimals', '小數位數', 'num'),
-        c('priceSource', '價格來源'), c('quoteCode', '行情代碼'), c('active', '啟用', 'bool'), c('note', '備註')],
+        c('priceSource', '價格來源'), c('quoteCode', '行情代碼'), c('active', '啟用', 'bool'), c('note', '備註'),
+        c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts')],
     },
     transactions: {
       sheet: '交易', idKey: 'id', idPrefix: 'T', idWidth: 6,
@@ -121,7 +122,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.1.0',
+    APP_VERSION: '0.2.0',
   };
   return api;
 })();

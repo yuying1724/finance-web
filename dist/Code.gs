@@ -20,7 +20,7 @@ var FinSchema = (function () {
     priceSources: ['GOOGLEFINANCE', 'CoinGecko', '固定值', '手動'],
   };
   // 第 1 批已開放的交易類型；其餘類型在後續批次啟用
-  var ENABLED_TX_TYPES = ['收入', '支出', '轉帳', '換匯', '退款', '調整'];
+  var ENABLED_TX_TYPES = ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '股數調整', '退款', '調整'];
   var LIABILITY_TYPES = ['信用卡', '貸款', '應付'];
 
   function c(key, header, type, tolerant) { return { key: key, header: header, type: type || 'text', tolerant: !!tolerant }; }
@@ -63,7 +63,8 @@ var FinSchema = (function () {
     instruments: {
       sheet: '標的', idKey: 'symbol',
       cols: [c('symbol', '標的代號'), c('name', '名稱'), c('type', '類型'), c('quote', '計價幣別'), c('decimals', '小數位數', 'num'),
-        c('priceSource', '價格來源'), c('quoteCode', '行情代碼'), c('active', '啟用', 'bool'), c('note', '備註')],
+        c('priceSource', '價格來源'), c('quoteCode', '行情代碼'), c('active', '啟用', 'bool'), c('note', '備註'),
+        c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts')],
     },
     transactions: {
       sheet: '交易', idKey: 'id', idPrefix: 'T', idWidth: 6,
@@ -127,7 +128,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.1.0',
+    APP_VERSION: '0.2.0',
   };
   return api;
 })();
@@ -264,9 +265,40 @@ var FinDates = (function () {
     return null;
   }
 
+
+  /** 某市場在這天是否「辦理交割」的營業日：週六日一律不算；holidaySet 為 {'市場|日期': {trading,settling}} */
+  function isSettleDay(str, market, holidaySet) {
+    var wd = weekday(str);
+    if (wd === 0 || wd === 6) return false;
+    var h = holidaySet ? holidaySet[market + '|' + str] : null;
+    if (h && h.settling === false) return false;
+    return true;
+  }
+
+  /** 成交日後第 n 個營業日（依 markets 陣列全部都要是營業日才算，例如複委託用 ['台灣','美國']） */
+  function addSettleDays(tradeDate, n, markets, holidaySet) {
+    var d = tradeDate, count = 0, guard = 0;
+    while (count < n) {
+      d = addDays(d, 1);
+      var ok = true;
+      for (var i = 0; i < markets.length; i++) { if (!isSettleDay(d, markets[i], holidaySet)) { ok = false; break; } }
+      if (ok) count++;
+      if (++guard > 3650) throw new Error('交割日推算超出範圍');
+    }
+    return d;
+  }
+
+  /** 把「休市日」表的列轉成 isSettleDay/addSettleDays 用的查表：{'市場|日期': {trading, settling}} */
+  function buildHolidaySet(rows) {
+    var set = {};
+    (rows || []).forEach(function (r) { set[r.market + '|' + r.date] = { trading: r.trading, settling: r.settling }; });
+    return set;
+  }
+
   var api = {
     parse: parse, isValid: isValid, format: format, addDays: addDays, weekday: weekday, ymOf: ymOf, monthRange: monthRange,
     addMonths: addMonths, timestamp: timestamp, today: today, fromCell: fromCell, daysInMonth: daysInMonth,
+    isSettleDay: isSettleDay, addSettleDays: addSettleDays, buildHolidaySet: buildHolidaySet,
   };
   return api;
 })();
@@ -294,6 +326,80 @@ var FinIds = (function () {
     return out;
   }
   return { next: next, parseSeq: parseSeq };
+})();
+
+// ==================== core/us-holidays.js ====================
+/**
+ * 美股（NYSE／NASDAQ）休市日：依規則產生（設計文件 §5 休市日：美國「由程式依規則產生」）。
+ * 包含：元旦、馬丁路德金日（1月第3個週一）、總統日（2月第3個週一）、耶穌受難日（復活節前的週五）、
+ *       陣亡將士紀念日（5月最後一個週一）、六月節（6/19）、獨立紀念日（7/4）、勞動節（9月第1個週一）、
+ *       感恩節（11月第4個週四）、聖誕節（12/25）。
+ * 遇週六補放週五、遇週日補放週一（美股市場假日的一般補假規則）。
+ */
+var FinUsHolidays = (function () {
+  function pad(n) { return n < 10 ? '0' + n : String(n); }
+  function fmt(y, m, d) { return y + '-' + pad(m) + '-' + pad(d); }
+  function dow(y, m, d) { return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); } // 0=日 1=一 ... 6=六
+
+  /** 某月第 n 個星期 wd（0=日...6=六） */
+  function nthWeekday(y, m, wd, n) {
+    var d = 1, count = 0;
+    while (true) {
+      if (dow(y, m, d) === wd) { count++; if (count === n) return d; }
+      d++;
+    }
+  }
+  /** 某月最後一個星期 wd */
+  function lastWeekday(y, m, wd) {
+    var days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    for (var d = days; d >= 1; d--) if (dow(y, m, d) === wd) return d;
+  }
+
+  /** Anonymous Gregorian algorithm：計算某年復活節（公曆）的月/日 */
+  function easter(y) {
+    var a = y % 19, b = Math.floor(y / 100), c = y % 100;
+    var d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+    var g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+    var i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
+    var m = Math.floor((a + 11 * h + 22 * l) / 451);
+    var month = Math.floor((h + l - 7 * m + 114) / 31);
+    var day = ((h + l - 7 * m + 114) % 31) + 1;
+    return { m: month, d: day };
+  }
+
+  /** 遇週六補放週五、遇週日補放週一（不改變原始日期名稱，只有補假才另外標一列） */
+  function observed(y, m, d) {
+    var wd = dow(y, m, d);
+    if (wd === 6) return { y: y, m: m, d: d - 1 };
+    if (wd === 0) return { y: y, m: m, d: d + 1 };
+    return { y: y, m: m, d: d };
+  }
+
+  /** 回傳某年美股休市日清單 [{date, name}]（yyyy-MM-dd） */
+  function generate(year) {
+    var out = [];
+    function add(name, y, m, d) {
+      var o = observed(y, m, d);
+      out.push({ date: fmt(o.y, o.m, o.d), name: name + (o.d !== d || o.m !== m ? '（補假）' : '') });
+    }
+    add('元旦', year, 1, 1);
+    add('馬丁路德金日', year, 1, nthWeekday(year, 1, 1, 3));
+    add('總統日', year, 2, nthWeekday(year, 2, 1, 3));
+    var e = easter(year);
+    var goodFriday = new Date(Date.UTC(year, e.m - 1, e.d - 2));
+    out.push({ date: fmt(goodFriday.getUTCFullYear(), goodFriday.getUTCMonth() + 1, goodFriday.getUTCDate()), name: '耶穌受難日' });
+    add('陣亡將士紀念日', year, 5, lastWeekday(year, 5, 1));
+    add('六月節', year, 6, 19);
+    add('獨立紀念日', year, 7, 4);
+    add('勞動節', year, 9, nthWeekday(year, 9, 1, 1));
+    var thanksgiving = nthWeekday(year, 11, 4, 4);
+    out.push({ date: fmt(year, 11, thanksgiving), name: '感恩節' });
+    add('聖誕節', year, 12, 25);
+    out.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    return out;
+  }
+
+  return { generate: generate, easter: easter };
 })();
 
 // ==================== core/valuation.js ====================
@@ -445,7 +551,180 @@ var FinLedger = (function () {
     return out;
   }
 
-  return { computeBalances: computeBalances, balanceList: balanceList, adjustmentFor: adjustmentFor, filterTransactions: filterTransactions, legDate: legDate };
+  /** 待交割款（設計文件 7.4）：成交日 <= asOf < 現金腿的交割日，這段期間的現金還沒真的進出，回傳 [{accountId,symbol,qty}]（買入為負待付、賣出為正待收） */
+  function pendingSettlement(txs, instruments, asOf) {
+    var out = {};
+    function apply(tx, acct, sym, qty, sign) {
+      if (!acct || !sym || qty === null || qty === undefined || qty === '') return;
+      var inst = instruments[sym];
+      if (!inst || inst.type !== '法幣') return;
+      var ld = legDate(tx, inst);
+      if (tx.date <= asOf && ld > asOf) {
+        var key = acct + '|' + sym;
+        out[key] = (out[key] || 0) + sign * qty;
+      }
+    }
+    for (var i = 0; i < txs.length; i++) {
+      var tx = txs[i];
+      if (tx.status !== '有效') continue;
+      apply(tx, tx.srcAccount, tx.srcSymbol, tx.srcQty, -1);
+      apply(tx, tx.dstAccount, tx.dstSymbol, tx.dstQty, +1);
+    }
+    var list = [];
+    Object.keys(out).forEach(function (k) {
+      if (!out[k]) return;
+      var p = k.split('|');
+      list.push({ accountId: p[0], symbol: p[1], qty: out[k] });
+    });
+    list.sort(function (a, b) { return a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : (a.symbol < b.symbol ? -1 : 1); });
+    return list;
+  }
+
+  return { computeBalances: computeBalances, balanceList: balanceList, adjustmentFor: adjustmentFor, filterTransactions: filterTransactions, legDate: legDate, pendingSettlement: pendingSettlement };
+})();
+
+// ==================== core/holdings.js ====================
+/**
+ * 投資持倉／成本／損益（設計文件 db-design.md §7、§7.3）。平均成本法。
+ * 每個持倉（帳戶 × 標的）同時記錄：qty（股數）、costNative（計價幣別成本，例如 VOO 記 USD）、costBase（基準幣別／台幣成本，取自實際進出的台幣）。
+ * 買入：qty += 目的數量；costNative += 成交金額+手續費+稅款；costBase += 來源那筆現金換算成基準幣別的金額（來源本來就是 TWD 時直接用，否則用成交當日的歷史價格估算，並標記 estimated）。
+ * 賣出：依「賣出股數 / 持有股數」比例扣除兩種成本；已實現損益 = 淨收入(成交金額-手續費-稅款/入帳金額) − 被扣除的成本。
+ * 股息：目的標的若與持倉標的相同（配股）→ 只加股數、成本不變；否則是現金股息，只記录收入，不影響持倉成本。
+ * 股數調整：只改股數（拆股／併股／標的更名），總成本不變。
+ */
+var FinHoldings = (function () {
+
+  var HOLDING_TYPES = ['買入', '賣出', '股息', '股數調整'];
+
+  function key(acct, sym) { return acct + '|' + sym; }
+
+  /**
+   * txs: 交易陣列（含所有類型，函式內部會篩選）
+   * instruments: {symbol: {type, quote, decimals, ...}}
+   * ctx: { base, asOf(選填，含當天), priceHistory(選填) {'yyyy-MM-dd|symbol': 該日收盤價（該標的計價幣別對基準幣別，僅用於非基準幣別現金直接購買外幣標的時估算台幣成本）}
+   * }
+   * 回傳 { positions: [{accountId,symbol,qty,costNative,costBase,estimated}], realized: [...], dividends: [...], issues: [...] }
+   */
+  function computeHoldings(txs, instruments, ctx) {
+    ctx = ctx || {};
+    var base = ctx.base || 'TWD';
+    var asOf = ctx.asOf || null;
+    var priceHistory = ctx.priceHistory || {};
+    var pos = {}, realized = [], dividends = [], issues = [];
+
+    function get(acct, sym) {
+      var k = key(acct, sym);
+      if (!pos[k]) pos[k] = { accountId: acct, symbol: sym, qty: 0, costNative: 0, costBase: 0, estimated: false };
+      return pos[k];
+    }
+
+    /** 某個非基準幣別的現金標的，在某天值多少基準幣別；優先用當時的歷史收盤價，找不到就退回目前價格（並標記為估算） */
+    function baseValueOfCash(sym, qty, date) {
+      if (sym === base) return { value: qty, estimated: false };
+      var hp = priceHistory[date + '|' + sym];
+      if (hp && hp > 0) return { value: qty * hp, estimated: false };
+      var up = FinValuation.unitPrice(sym, instruments, ctx.prices || {}, base, 0);
+      if (up !== null) return { value: qty * up, estimated: true };
+      return { value: null, estimated: true };
+    }
+
+    var relevant = txs.filter(function (t) {
+      if (t.status !== '有效') return false;
+      if (HOLDING_TYPES.indexOf(t.type) < 0) return false;
+      if (asOf && t.date > asOf) return false;
+      return true;
+    }).slice().sort(function (a, b) {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0);
+    });
+
+    relevant.forEach(function (t) {
+      if (t.type === '買入') {
+        var p = get(t.dstAccount, t.dstSymbol);
+        p.qty += t.dstQty;
+        p.costNative += (t.amount || 0) + (t.fee || 0) + (t.tax || 0);
+        var bv = baseValueOfCash(t.srcSymbol, t.srcQty, t.date);
+        if (bv.value === null) { issues.push({ txId: t.id, message: '找不到 ' + t.date + ' ' + t.srcSymbol + ' 的歷史價格，無法估算台幣成本' }); }
+        else { p.costBase += bv.value; if (bv.estimated) p.estimated = true; }
+      } else if (t.type === '賣出') {
+        var p2 = get(t.srcAccount, t.srcSymbol);
+        if (t.srcQty > p2.qty + 1e-9) { issues.push({ txId: t.id, message: '賣出數量超過持有量（' + t.srcSymbol + '）' }); }
+        var frac = p2.qty > 0 ? Math.min(t.srcQty / p2.qty, 1) : 0;
+        var rmNative = p2.costNative * frac, rmBase = p2.costBase * frac;
+        var netNative = (t.amount || 0) - (t.fee || 0) - (t.tax || 0);
+        var bv2 = baseValueOfCash(t.dstSymbol, t.dstQty, t.date);
+        var realizedBase = bv2.value === null ? null : (bv2.value - rmBase);
+        if (bv2.value === null) issues.push({ txId: t.id, message: '找不到 ' + t.date + ' ' + t.dstSymbol + ' 的歷史價格，無法估算已實現台幣損益' });
+        realized.push({
+          txId: t.id, date: t.date, accountId: t.srcAccount, symbol: t.srcSymbol, qty: t.srcQty,
+          quote: (instruments[t.srcSymbol] || {}).quote || base,
+          realizedNative: netNative - rmNative, realizedBase: realizedBase,
+          removedNative: rmNative, removedBase: rmBase, estimated: bv2.estimated || p2.estimated,
+        });
+        p2.qty -= t.srcQty; p2.costNative -= rmNative; p2.costBase -= rmBase;
+        if (Math.abs(p2.qty) < 1e-9) p2.qty = 0;
+      } else if (t.type === '股息') {
+        var isShareDividend = t.dstSymbol && instruments[t.dstSymbol] && instruments[t.dstSymbol].type !== '法幣';
+        if (isShareDividend) {
+          var p3 = get(t.dstAccount, t.dstSymbol);
+          p3.qty += t.dstQty; // 配股：成本不變
+        } else {
+          dividends.push({
+            txId: t.id, date: t.date, accountId: t.dstAccount, symbol: t.dstSymbol, relatedSymbol: t.relatedSymbol,
+            gross: t.amount || 0, tax: t.tax || 0, fee: t.fee || 0, net: t.dstQty,
+          });
+        }
+      } else if (t.type === '股數調整') {
+        if (t.dstAccount && t.dstSymbol && t.dstQty !== null) {
+          get(t.dstAccount, t.dstSymbol).qty += t.dstQty;
+        } else if (t.srcAccount && t.srcSymbol && t.srcQty !== null) {
+          var p4 = get(t.srcAccount, t.srcSymbol);
+          p4.qty -= t.srcQty;
+          if (Math.abs(p4.qty) < 1e-9) p4.qty = 0;
+          if (p4.qty < 0) issues.push({ txId: t.id, message: '股數調整後變成負數（' + t.srcSymbol + '）' });
+        }
+      }
+    });
+
+    var positions = Object.keys(pos).map(function (k) { return pos[k]; }).filter(function (p) { return Math.abs(p.qty) > 1e-9 || Math.abs(p.costNative) > 1e-9; });
+    positions.sort(function (a, b) { return a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : (a.symbol < b.symbol ? -1 : 1); });
+    return { positions: positions, realized: realized, dividends: dividends, issues: issues };
+  }
+
+  /**
+   * 未實現損益。priceNative：標的現價（計價幣別）；fxNow：計價幣別 → 基準幣別 的匯率（1 單位計價幣別 = 多少基準幣別）。
+   * 回傳 { mvNative, mvBase, totalBase, pricePl, fxPl, fxAvg }；fxPl 恆為 0（同幣別，例如台股對台幣）。
+   */
+  function unrealized(position, priceNative, fxNow) {
+    var mvNative = position.qty * priceNative;
+    var mvBase = mvNative * fxNow;
+    var totalBase = mvBase - position.costBase;
+    var fxAvg = position.costNative ? (position.costBase / position.costNative) : fxNow;
+    var pricePl = (mvNative - position.costNative) * fxNow;
+    var fxPl = position.costNative * (fxNow - fxAvg);
+    return { mvNative: mvNative, mvBase: mvBase, totalBase: totalBase, pricePl: pricePl, fxPl: fxPl, fxAvg: fxAvg };
+  }
+
+  /** 一次算好所有持倉的現價市值與損益，需要 instruments/prices 來查現價與匯率 */
+  function valuePositions(positions, instruments, prices, base) {
+    return positions.map(function (p) {
+      var inst = instruments[p.symbol];
+      var quote = inst ? (inst.quote || base) : base;
+      var priceNative = Number(prices[p.symbol]);
+      var fxNow = quote === base ? 1 : FinValuation.unitPrice(quote, instruments, prices, base, 0);
+      if (!(priceNative > 0) || fxNow === null) {
+        return { accountId: p.accountId, symbol: p.symbol, qty: p.qty, costNative: p.costNative, costBase: p.costBase, estimated: p.estimated, missing: true };
+      }
+      var u = unrealized(p, priceNative, fxNow);
+      return {
+        accountId: p.accountId, symbol: p.symbol, qty: p.qty, costNative: p.costNative, costBase: p.costBase, estimated: p.estimated,
+        quote: quote, priceNative: priceNative, fxNow: fxNow, mvNative: u.mvNative, mvBase: u.mvBase,
+        totalBase: u.totalBase, pricePl: u.pricePl, fxPl: u.fxPl, fxAvg: u.fxAvg, missing: false,
+      };
+    });
+  }
+
+  return { computeHoldings: computeHoldings, unrealized: unrealized, valuePositions: valuePositions, HOLDING_TYPES: HOLDING_TYPES };
 })();
 
 // ==================== core/validate.js ====================
@@ -500,7 +779,7 @@ var FinValidate = (function () {
     if (t.note.length > MAX_NOTE) err('note', '備註過長（上限 ' + MAX_NOTE + ' 字）');
 
     // ---- 每一端 ----
-    function checkLeg(prefix, label, required) {
+    function checkLeg(prefix, label, required, instKind) {
       var acct = t[prefix + 'Account'], sym = t[prefix + 'Symbol'], qty = t[prefix + 'Qty'];
       var any = acct || sym || (qty !== null);
       if (!any) { if (required) err(prefix + 'Account', '請選擇' + label + '帳戶'); return; }
@@ -510,6 +789,8 @@ var FinValidate = (function () {
       var inst = ctx.instruments[sym];
       if (!sym || !inst) err(prefix + 'Symbol', '找不到' + label + '幣別／標的');
       else if (!inst.active && !(existing && existing[prefix + 'Symbol'] === sym)) err(prefix + 'Symbol', label + '幣別／標的「' + sym + '」已停用');
+      else if (instKind === 'cash' && inst.type !== '法幣') err(prefix + 'Symbol', label + '請選擇現金（法幣）');
+      else if (instKind === 'invest' && inst.type === '法幣') err(prefix + 'Symbol', label + '請選擇股票／ETF／加密貨幣等投資標的，不能是現金');
       if (qty === null) err(prefix + 'Qty', '請輸入' + label + '金額');
       else if (isNaN(qty)) err(prefix + 'Qty', label + '金額不是有效數字');
       else if (qty <= 0) err(prefix + 'Qty', label + '金額必須大於 0');
@@ -521,6 +802,12 @@ var FinValidate = (function () {
     }
     function mustEmpty(prefix, label) {
       if (t[prefix + 'Account'] || t[prefix + 'Symbol'] || t[prefix + 'Qty'] !== null) err(prefix + 'Account', t.type + '不需要填' + label);
+    }
+    function checkMoney(field, label, required) {
+      var v = t[field];
+      if (v === null) { if (required) err(field, '請輸入' + label); return; }
+      if (isNaN(v)) { err(field, label + '不是有效數字'); return; }
+      if (v < 0) err(field, label + '不能是負數');
     }
 
     var typeOk = FinSchema.ENUMS.txTypes.indexOf(t.type) >= 0;
@@ -553,6 +840,31 @@ var FinValidate = (function () {
             if (t.srcAccount || t.srcSymbol || t.srcQty !== null) checkLeg('src', '調整', true); else checkLeg('dst', '調整', true);
           }
           break;
+        case '買入':
+          checkLeg('src', '付款', true, 'cash'); checkLeg('dst', '投資', true, 'invest');
+          checkMoney('amount', '成交金額', true); checkMoney('fee', '手續費', false); checkMoney('tax', '稅款', false);
+          break;
+        case '賣出':
+          checkLeg('src', '賣出', true, 'invest'); checkLeg('dst', '收款', true, 'cash');
+          checkMoney('amount', '成交金額', true); checkMoney('fee', '手續費', false); checkMoney('tax', '稅款', false);
+          break;
+        case '股息':
+          mustEmpty('src', '來源'); checkLeg('dst', '入帳', true);
+          checkMoney('amount', '稅前股息', false); checkMoney('fee', '手續費', false); checkMoney('tax', '稅款／預扣稅', false);
+          if (!t.relatedSymbol) err('relatedSymbol', '請選擇這筆股息屬於哪個標的');
+          else if (!ctx.instruments[t.relatedSymbol]) err('relatedSymbol', '找不到關聯標的');
+          break;
+        case '股數調整':
+          if ((t.srcAccount || t.srcSymbol || t.srcQty !== null) && (t.dstAccount || t.dstSymbol || t.dstQty !== null)) {
+            err('srcAccount', '股數調整只能填一邊（減少填來源、增加填目的）');
+          } else if (!(t.srcAccount || t.srcSymbol || t.srcQty !== null) && !(t.dstAccount || t.dstSymbol || t.dstQty !== null)) {
+            err('dstAccount', '請輸入股數調整的帳戶與股數');
+          } else if (t.srcAccount || t.srcSymbol || t.srcQty !== null) {
+            checkLeg('src', '調整', true, 'invest');
+          } else {
+            checkLeg('dst', '調整', true, 'invest');
+          }
+          break;
         default:
           break; // 尚未開放的類型：只在編輯既有資料時走到這裡，不重新驗證兩端
       }
@@ -570,7 +882,10 @@ var FinValidate = (function () {
     } else if (t.type === '調整') {
       var sys = Object.keys(cats).map(function (k) { return cats[k]; }).filter(function (c) { return c.type === '系統' && c.name === '餘額調整'; })[0];
       t.categoryId = sys ? sys.id : '';
-    } else if (t.type === '轉帳' || t.type === '換匯') {
+    } else if (t.type === '股息') {
+      var sysDiv = Object.keys(cats).map(function (k) { return cats[k]; }).filter(function (c) { return c.type === '系統' && c.name === '股息'; })[0];
+      t.categoryId = sysDiv ? sysDiv.id : '';
+    } else if (t.type === '轉帳' || t.type === '換匯' || t.type === '買入' || t.type === '賣出' || t.type === '股數調整') {
       t.categoryId = '';
     }
 
@@ -586,6 +901,7 @@ var FinValidate = (function () {
     } else if (t.type !== '退款') {
       t.relatedTxId = '';
     }
+    if (t.type !== '股息') t.relatedSymbol = '';
 
     // ---- 換匯匯率合理性（與市價差太多多半是輸入錯誤）----
     if (t.type === '換匯' && !errors.length && ctx.prices) {
@@ -596,6 +912,25 @@ var FinValidate = (function () {
         var ratio = (t.dstQty * dv) / (t.srcQty * sv);
         if (Math.abs(ratio - 1) > 0.03) {
           warnings.push('這筆換匯的匯率與目前市價相差約 ' + Math.round(Math.abs(ratio - 1) * 100) + '%，請確認金額');
+        }
+      }
+    }
+
+    // ---- 複委託「隱含匯率」合理性：實付/實收台幣 vs（成交金額+手續費+稅款）換算出的匯率，與市價差太多多半是輸入錯誤（暫定 3%）----
+    if ((t.type === '買入' || t.type === '賣出') && !errors.length && ctx.prices) {
+      var baseC = ctx.base || 'TWD';
+      var dstInst = t.type === '買入' ? ctx.instruments[t.dstSymbol] : null;
+      var cashSym = t.type === '買入' ? t.srcSymbol : t.dstSymbol;
+      var cashQty = t.type === '買入' ? t.srcQty : t.dstQty;
+      var quoteSym = t.type === '買入' ? (dstInst ? dstInst.quote : null) : (ctx.instruments[t.srcSymbol] ? ctx.instruments[t.srcSymbol].quote : null);
+      if (quoteSym && cashSym !== quoteSym) {
+        var gross = (t.amount || 0) + (t.fee || 0) + (t.tax || 0);
+        if (gross > 0 && cashQty > 0) {
+          var implied = cashQty / gross;
+          var marketFx = FinValuation.unitPrice(quoteSym, ctx.instruments, ctx.prices, cashSym, 0);
+          if (marketFx && Math.abs(implied - marketFx) / marketFx > 0.03) {
+            warnings.push('隱含匯率約 ' + implied.toFixed(4) + '，與目前市價匯率 ' + marketFx.toFixed(4) + ' 相差超過 3%，請確認金額是否輸入正確');
+          }
         }
       }
     }
@@ -690,6 +1025,26 @@ var FinSeed = (function () {
     ['GBP', '英鎊', 2, 'GBPTWD'], ['AUD', '澳幣', 2, 'AUDTWD'],
   ];
 
+  // 台灣證券市場 2026 年休市日（對照 twse.com.tw 開休市公告、元大證券春節交易公告核對，之後年度需自行更新或改為排程匯入，見 db-design.md §9）
+  var TW_HOLIDAYS_2026 = [
+    ['2026-01-01', '元旦', false],
+    ['2026-02-12', '農曆春節（僅辦理結算交割作業）', true],
+    ['2026-02-13', '農曆春節（僅辦理結算交割作業）', true],
+    ['2026-02-16', '農曆春節', false], ['2026-02-17', '農曆春節', false], ['2026-02-18', '農曆春節', false],
+    ['2026-02-19', '農曆春節', false], ['2026-02-20', '農曆春節', false],
+    ['2026-02-27', '和平紀念日補假', false],
+    ['2026-04-03', '兒童節補假', false],
+    ['2026-04-06', '民族掃墓節（清明）補假', false],
+    ['2026-05-01', '勞動節', false],
+    ['2026-06-19', '端午節', false],
+    ['2026-09-25', '中秋節', false],
+    ['2026-09-28', '教師節', false],
+    ['2026-10-09', '國慶日補假', false],
+    ['2026-10-26', '台灣光復節補假', false],
+    ['2026-12-25', '行憲紀念日', false],
+    ['2027-01-01', '元旦（跨年安全邊界）', false],
+  ];
+
   function build(nowStr) {
     var settings = [
       { key: '基準幣別', value: 'TWD', note: '所有金額換算與淨值使用的幣別（第 1 版固定為 TWD）' },
@@ -724,6 +1079,7 @@ var FinSeed = (function () {
       return {
         symbol: c[0], name: c[1], type: '法幣', quote: 'TWD', decimals: c[2],
         priceSource: isBase ? '固定值' : 'GOOGLEFINANCE', quoteCode: isBase ? '' : 'CURRENCY:' + c[3], active: true, note: '',
+        createdAt: nowStr, updatedAt: nowStr,
       };
     });
     var prices = CURRENCIES.filter(function (c) { return c[0] !== 'TWD'; }).map(function (c) {
@@ -733,7 +1089,18 @@ var FinSeed = (function () {
     var options = {};
     FinSchema.OPTION_LISTS.forEach(function (l) { options[l.header] = l.enumKey ? FinSchema.ENUMS[l.enumKey].slice() : []; });
 
-    return { settings: settings, categories: categories, instruments: instruments, prices: prices, options: options };
+    var holidays = TW_HOLIDAYS_2026.map(function (r) {
+      return { market: '台灣', date: r[0], name: r[1], trading: false, settling: r[2], source: '手動' };
+    });
+    var year = +String(nowStr).slice(0, 4) || 2026;
+    [year, year + 1].forEach(function (y) {
+      FinUsHolidays.generate(y).forEach(function (r) {
+        holidays.push({ market: '美國', date: r.date, name: r.name, trading: false, settling: false, source: '程式產生' });
+      });
+    });
+    holidays.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+
+    return { settings: settings, categories: categories, instruments: instruments, prices: prices, options: options, holidays: holidays };
   }
 
   return { build: build };
@@ -1254,7 +1621,8 @@ var FinApi = (function () {
   // ---------- 載入主檔與交易 ----------
   function loadContext(now) {
     var settings = FinRepo.getSettings();
-    var instruments = mapBy(FinRepo.goodRows('instruments'), 'symbol');
+    var instrumentRows = FinRepo.goodRows('instruments');
+    var instruments = mapBy(instrumentRows, 'symbol');
     var accountRows = FinRepo.goodRows('accounts').sort(bySort);
     var categoryRows = FinRepo.goodRows('categories').sort(bySort);
     var txAll = FinRepo.readTable('transactions');
@@ -1266,12 +1634,15 @@ var FinApi = (function () {
       priceInfo[r.symbol] = { price: p, status: r.price > 0 ? '正常' : (r.lastValid > 0 ? '沿用舊值' : '缺價格'), updatedAt: r.updatedAt };
     });
     var base = settings['基準幣別'] || 'TWD';
+    var brokerRows = FinRepo.goodRows('brokerSettings');
+    var holidayRows = FinRepo.goodRows('holidays');
     return {
-      now: now, today: FinDates.today(now), base: base, settings: settings, instruments: instruments,
+      now: now, today: FinDates.today(now), base: base, settings: settings, instruments: instruments, instrumentRows: instrumentRows,
       accountRows: accountRows, accounts: mapBy(accountRows, 'id'), categoryRows: categoryRows, categories: mapBy(categoryRows, 'id'),
       txRows: txRows, txById: mapBy(txRows, 'id'), prices: prices, priceInfo: priceInfo,
+      brokerRows: brokerRows, brokerByAccount: mapBy(brokerRows, 'accountId'), holidayRows: holidayRows,
       bad: [].concat(FinRepo.readTable('accounts').bad, FinRepo.readTable('categories').bad, FinRepo.readTable('instruments').bad,
-        txAll.bad, FinRepo.readTable('prices').bad),
+        txAll.bad, FinRepo.readTable('prices').bad, FinRepo.readTable('brokerSettings').bad, FinRepo.readTable('holidays').bad),
     };
   }
 
@@ -1283,7 +1654,8 @@ var FinApi = (function () {
     var bal = FinLedger.computeBalances(c.txRows, c.instruments, { asOf: c.today });
     var list = FinLedger.balanceList(bal.units, c.instruments);
     var nw = FinValuation.netWorth(list, { instruments: c.instruments, prices: c.prices, accounts: c.accounts, base: c.base });
-    return { balances: list, netWorth: nw, ledgerIssues: bal.issues };
+    var pending = FinLedger.pendingSettlement(c.txRows, c.instruments, c.today);
+    return { balances: list, netWorth: nw, ledgerIssues: bal.issues, pending: pending };
   }
 
   function failValidation(res) {
@@ -1334,8 +1706,10 @@ var FinApi = (function () {
         options: FinRepo.readOptions(),
         accounts: c.accountRows.map(pub), categories: c.categoryRows.map(pub),
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
+        brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
         prices: c.priceInfo,
         balances: calc.balances.map(function (b) { return { accountId: b.accountId, symbol: b.symbol, qty: b.qty }; }),
+        pending: calc.pending,
         netWorth: { base: nw.base, total: nw.total, assets: nw.assets, liabilities: nw.liabilities, byAccount: nw.byAccount, byType: nw.byType, missing: nw.missing },
         month: month, recent: recent,
         issues: { count: c.bad.length + calc.ledgerIssues.length, items: c.bad.slice(0, 20), ledger: calc.ledgerIssues.slice(0, 20) },
@@ -1592,6 +1966,155 @@ var FinApi = (function () {
     },
   };
 
+  // ---------- 標的（股票／ETF／加密貨幣／貨幣） ----------
+  function validateInstrumentInput(a, c, existing) {
+    var errors = [];
+    var symbol = str(a.symbol).toUpperCase();
+    if (!symbol) errors.push({ field: 'symbol', message: '請輸入標的代號' });
+    else if (symbol.length > 20) errors.push({ field: 'symbol', message: '標的代號最多 20 字' });
+    else if (!existing && c.instruments[symbol]) errors.push({ field: 'symbol', message: '已經有這個標的代號' });
+    else if (existing && existing.symbol !== symbol) errors.push({ field: 'symbol', message: '標的代號建立後不能修改' });
+    var name = str(a.name);
+    if (!name) errors.push({ field: 'name', message: '請輸入標的名稱' });
+    else if (name.length > 60) errors.push({ field: 'name', message: '標的名稱最多 60 字' });
+    var type = str(a.type);
+    if (FinSchema.ENUMS.instrumentTypes.indexOf(type) < 0) errors.push({ field: 'type', message: '請選擇標的類型' });
+    var quote = str(a.quote) || 'TWD';
+    var quoteInst = c.instruments[quote];
+    if (type !== '法幣') {
+      if (!quoteInst || quoteInst.type !== '法幣') errors.push({ field: 'quote', message: '計價幣別必須是已存在的法幣標的' });
+    } else if (quote !== symbol) {
+      errors.push({ field: 'quote', message: '法幣的計價幣別必須是自己' });
+    }
+    var decimals = a.decimals === undefined || a.decimals === null || a.decimals === '' ? 0 : Number(a.decimals);
+    if (!isFinite(decimals) || decimals < 0 || decimals > 8 || Math.floor(decimals) !== decimals) errors.push({ field: 'decimals', message: '小數位數必須是 0～8 的整數' });
+    var priceSource = str(a.priceSource) || '手動';
+    if (FinSchema.ENUMS.priceSources.indexOf(priceSource) < 0) errors.push({ field: 'priceSource', message: '請選擇價格來源' });
+    var quoteCode = str(a.quoteCode), note = str(a.note);
+    if (quoteCode.length > 60) errors.push({ field: 'quoteCode', message: '行情代碼最多 60 字' });
+    if (note.length > 200) errors.push({ field: 'note', message: '備註最多 200 字' });
+    return { errors: errors, value: { symbol: symbol, name: FinValidate.safeText(name), type: type, quote: quote, decimals: decimals, priceSource: priceSource, quoteCode: quoteCode, note: FinValidate.safeText(note) } };
+  }
+
+  H.upsertInstrument = {
+    fn: function (p, env) {
+      var a = p.instrument;
+      if (!a || typeof a !== 'object') throw FinFail('BAD_REQUEST', '缺少標的資料');
+      var isNew = a.isNew !== false; // 標的以代號本身當主鍵，不是自動編號，一律靠前端明確標示是新增還是編輯
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var symbolIn = str(a.symbol).toUpperCase();
+        var existing = symbolIn ? FinRepo.findById('instruments', symbolIn) : null;
+        if (!isNew) {
+          if (!existing) throw FinFail('NOT_FOUND', '找不到標的 ' + symbolIn);
+          if (existing._bad) throw FinFail('DATA_BAD', '這個標的的資料有問題，請直接在試算表修正');
+          checkExpected(existing, p.expectedUpdatedAt);
+        }
+        var r = validateInstrumentInput(a, c, isNew ? null : existing);
+        if (r.errors.length) throw FinFail('VALIDATION', r.errors[0].message, { errors: r.errors, warnings: [] });
+        var now = ts(env.now), v = r.value, out;
+        if (!isNew) {
+          var patch = { name: v.name, type: v.type, quote: v.quote, decimals: v.decimals, priceSource: v.priceSource, quoteCode: v.quoteCode, note: v.note, updatedAt: now };
+          FinRepo.updateRow('instruments', existing._row, patch);
+          out = pub(existing); Object.keys(patch).forEach(function (k) { out[k] = patch[k]; });
+          FinRepo.audit('修改', 'instruments', out.symbol, out.name, env.device);
+        } else {
+          out = { symbol: v.symbol, name: v.name, type: v.type, quote: v.quote, decimals: v.decimals, priceSource: v.priceSource, quoteCode: v.quoteCode, active: true, note: v.note, createdAt: now, updatedAt: now };
+          FinRepo.append('instruments', [out]);
+          FinRepo.audit('新增', 'instruments', out.symbol, out.name, env.device);
+          // 新標的沒有現價，先補一列「價格」，避免持倉估值找不到資料
+          try {
+            if (!FinRepo.findById('prices', out.symbol)) {
+              FinRepo.append('prices', [{ symbol: out.symbol, price: '', lastValid: '', quote: out.quote, updatedAt: '', status: '尚未更新' }]);
+            }
+          } catch (e) { /* 價格表若不存在不影響標的新增 */ }
+        }
+        return { instrument: out };
+      });
+    },
+  };
+
+  H.setInstrumentActive = {
+    fn: function (p, env) {
+      return FinRepo.withLock(function () {
+        loadContext(env.now);
+        var row = FinRepo.findById('instruments', str(p.symbol).toUpperCase());
+        if (!row) throw FinFail('NOT_FOUND', '找不到標的');
+        var active = !!p.active, now = ts(env.now);
+        FinRepo.updateRow('instruments', row._row, { active: active, updatedAt: now });
+        FinRepo.audit(active ? '啟用' : '停用', 'instruments', row.symbol, row.name, env.device);
+        var out = pub(row); out.active = active; out.updatedAt = now;
+        return { instrument: out };
+      });
+    },
+  };
+
+  // ---------- 證券帳戶設定 ----------
+  function validateBrokerInput(a, c) {
+    var errors = [];
+    var accountId = str(a.accountId);
+    var acct = c.accounts[accountId];
+    if (!acct) errors.push({ field: 'accountId', message: '找不到帳戶' });
+    else if (acct.type !== '證券' && acct.type !== '加密交易所') errors.push({ field: 'accountId', message: '只有「證券」或「加密交易所」類型的帳戶能設定券商資料' });
+    var market = str(a.market);
+    if (market && ['台股', '複委託'].indexOf(market) < 0) errors.push({ field: 'market', message: '市場請選擇「台股」或「複委託」' });
+    var calendar = str(a.calendar) || (market === '複委託' ? '台灣+美國' : '台灣');
+    if (['台灣', '台灣+美國'].indexOf(calendar) < 0) errors.push({ field: 'calendar', message: '交割日曆請選擇「台灣」或「台灣+美國」' });
+    function num(field, label, def) {
+      var v = a[field];
+      if (v === undefined || v === null || v === '') return def;
+      var n = Number(v);
+      if (!isFinite(n) || n < 0) { errors.push({ field: field, message: label + '必須是不小於 0 的數字' }); return def; }
+      return n;
+    }
+    var value = {
+      accountId: accountId, market: market, feeRate: num('feeRate', '手續費率', 0), feeDiscount: num('feeDiscount', '手續費折扣', 1),
+      feeCurrency: str(a.feeCurrency) || (market === '複委託' ? 'USD' : 'TWD'), minFee: num('minFee', '最低手續費', 0), oddLotMinFee: num('oddLotMinFee', '零股最低手續費', 0),
+      sipFixedFee: num('sipFixedFee', '定期定額固定手續費', 0), sipFeeRate: num('sipFeeRate', '定期定額手續費率', 0), sipFeeCap: num('sipFeeCap', '定期定額每筆上限', 0),
+      sipMinAmount: num('sipMinAmount', '定期定額最低單筆投入', 0), taxRateStock: num('taxRateStock', '證交稅率(股票)', market === '複委託' ? 0 : 0.003),
+      taxRateEtf: num('taxRateEtf', '證交稅率(ETF)', market === '複委託' ? 0 : 0.001), buySettleDays: num('buySettleDays', '買入交割天數', market === '複委託' ? 1 : 2),
+      sellSettleDays: num('sellSettleDays', '賣出交割天數', 2), calendar: calendar, settleAccountId: str(a.settleAccountId), note: FinValidate.safeText(str(a.note)),
+    };
+    if (value.settleAccountId && !c.accounts[value.settleAccountId]) errors.push({ field: 'settleAccountId', message: '找不到預設交割帳戶' });
+    return { errors: errors, value: value };
+  }
+
+  H.upsertBrokerSettings = {
+    fn: function (p, env) {
+      var a = p.broker;
+      if (!a || typeof a !== 'object') throw FinFail('BAD_REQUEST', '缺少證券帳戶設定資料');
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var r = validateBrokerInput(a, c);
+        if (r.errors.length) throw FinFail('VALIDATION', r.errors[0].message, { errors: r.errors, warnings: [] });
+        var v = r.value, existing = FinRepo.findById('brokerSettings', v.accountId), out;
+        if (existing) {
+          FinRepo.updateRow('brokerSettings', existing._row, v);
+          out = v;
+        } else {
+          FinRepo.append('brokerSettings', [v]);
+          out = v;
+        }
+        FinRepo.audit(existing ? '修改' : '新增', 'brokerSettings', v.accountId, (c.accounts[v.accountId] || {}).name || v.accountId, env.device);
+        return { broker: out };
+      });
+    },
+  };
+
+  // ---------- 持倉／投資損益 ----------
+  H.getHoldings = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
+      var priceHistoryRows = FinRepo.goodRows('priceHistory');
+      var priceHistory = {};
+      priceHistoryRows.forEach(function (r) { priceHistory[r.date + '|' + r.symbol] = r.close; });
+      var h = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: asOf, prices: c.prices, priceHistory: priceHistory });
+      var valued = FinHoldings.valuePositions(h.positions, c.instruments, c.prices, c.base);
+      return { asOf: asOf, positions: valued, realized: h.realized, dividends: h.dividends, issues: h.issues };
+    },
+  };
+
   H.changePin = {
     fn: function (p, env) {
       if (!FinAuth.checkPin(p.oldPin)) throw FinFail('AUTH_FAILED', '目前的 PIN 不正確');
@@ -1677,7 +2200,7 @@ var FinSetup = (function () {
 
   function seedIfEmpty(ss, report, nowStr) {
     var seed = FinSeed.build(nowStr);
-    var plan = [['settings', seed.settings, {}], ['categories', seed.categories, {}], ['instruments', seed.instruments, {}], ['prices', seed.prices, { allowFormulas: true }]];
+    var plan = [['settings', seed.settings, {}], ['categories', seed.categories, {}], ['instruments', seed.instruments, {}], ['prices', seed.prices, { allowFormulas: true }], ['holidays', seed.holidays, {}]];
     plan.forEach(function (p) {
       var sheet = ss.getSheetByName(FinSchema.TABLES[p[0]].sheet);
       if (hasData(sheet)) return;

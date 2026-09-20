@@ -36,3 +36,17 @@ export function balanceOf(accountId, symbol) {
   const b = state.data && state.data.balances.find((x) => x.accountId === accountId && x.symbol === symbol);
   return b ? b.qty : 0;
 }
+export function brokerSettingsOf(accountId) { return state.data && state.data.brokerSettings.find((x) => x.accountId === accountId); }
+export function holidaySet() {
+  const d = state.data;
+  if (!d) return {};
+  if (!d.__holidaySet) d.__holidaySet = FinDates.buildHolidaySet(d.holidays);
+  return d.__holidaySet;
+}
+/** 預設交割日：依證券帳戶設定（買/賣交割天數、交割日曆）與休市日資料推算；查不到設定時退回台股 T+2（單一台灣日曆） */
+export function suggestSettleDate(accountId, tradeDate, side) {
+  const bs = brokerSettingsOf(accountId);
+  const n = side === 'buy' ? (bs ? bs.buySettleDays : 2) : (bs ? bs.sellSettleDays : 2);
+  const markets = bs && bs.calendar === '台灣+美國' ? ['台灣', '美國'] : ['台灣'];
+  try { return FinDates.addSettleDays(tradeDate, n, markets, holidaySet()); } catch (e) { return tradeDate; }
+}

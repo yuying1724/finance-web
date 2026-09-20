@@ -24,7 +24,7 @@ test('全新系統的首頁資料：沒有帳戶、淨值 0、分類與幣別已
   assert.deepEqual(d.accounts, []);
   assert.ok(d.categories.length > 50);
   assert.ok(d.instruments.some((i) => i.symbol === 'USD' && i.decimals === 2));
-  assert.deepEqual(d.enabledTxTypes, ['收入', '支出', '轉帳', '換匯', '退款', '調整']);
+  assert.deepEqual(d.enabledTxTypes, ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '股數調整', '退款', '調整']);
   assert.match(d.sheetUrl, /docs\.google\.com/);
   assert.equal(d.issues.count, 0);
   const s = JSON.stringify(d);
@@ -131,7 +131,7 @@ test('新增交易的驗證錯誤會帶回欄位資訊，且不會寫入任何�
   assert.equal(r.error.code, 'VALIDATION');
   assert.equal(r.error.details.errors[0].field, 'srcQty');
   assert.equal(b.ss.sheet('交易').getLastRow(), before);
-  assert.equal(b.add({ type: '買入', date: '2026-03-02' }).error.code, 'VALIDATION'); // 尚未開放
+  assert.equal(b.add({ type: '買入', date: '2026-03-02' }).error.code, 'VALIDATION'); // 缺必填欄位
   assert.equal(b.call('addTransaction', {}).error.code, 'BAD_REQUEST');
   assert.equal(b.call('addTransaction', { tx: 'x' }).error.code, 'BAD_REQUEST');
 });

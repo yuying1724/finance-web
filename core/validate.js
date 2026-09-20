@@ -55,7 +55,7 @@ var FinValidate = (function () {
     if (t.note.length > MAX_NOTE) err('note', '備註過長（上限 ' + MAX_NOTE + ' 字）');
 
     // ---- 每一端 ----
-    function checkLeg(prefix, label, required) {
+    function checkLeg(prefix, label, required, instKind) {
       var acct = t[prefix + 'Account'], sym = t[prefix + 'Symbol'], qty = t[prefix + 'Qty'];
       var any = acct || sym || (qty !== null);
       if (!any) { if (required) err(prefix + 'Account', '請選擇' + label + '帳戶'); return; }
@@ -65,6 +65,8 @@ var FinValidate = (function () {
       var inst = ctx.instruments[sym];
       if (!sym || !inst) err(prefix + 'Symbol', '找不到' + label + '幣別／標的');
       else if (!inst.active && !(existing && existing[prefix + 'Symbol'] === sym)) err(prefix + 'Symbol', label + '幣別／標的「' + sym + '」已停用');
+      else if (instKind === 'cash' && inst.type !== '法幣') err(prefix + 'Symbol', label + '請選擇現金（法幣）');
+      else if (instKind === 'invest' && inst.type === '法幣') err(prefix + 'Symbol', label + '請選擇股票／ETF／加密貨幣等投資標的，不能是現金');
       if (qty === null) err(prefix + 'Qty', '請輸入' + label + '金額');
       else if (isNaN(qty)) err(prefix + 'Qty', label + '金額不是有效數字');
       else if (qty <= 0) err(prefix + 'Qty', label + '金額必須大於 0');
@@ -76,6 +78,12 @@ var FinValidate = (function () {
     }
     function mustEmpty(prefix, label) {
       if (t[prefix + 'Account'] || t[prefix + 'Symbol'] || t[prefix + 'Qty'] !== null) err(prefix + 'Account', t.type + '不需要填' + label);
+    }
+    function checkMoney(field, label, required) {
+      var v = t[field];
+      if (v === null) { if (required) err(field, '請輸入' + label); return; }
+      if (isNaN(v)) { err(field, label + '不是有效數字'); return; }
+      if (v < 0) err(field, label + '不能是負數');
     }
 
     var typeOk = FinSchema.ENUMS.txTypes.indexOf(t.type) >= 0;
@@ -108,6 +116,31 @@ var FinValidate = (function () {
             if (t.srcAccount || t.srcSymbol || t.srcQty !== null) checkLeg('src', '調整', true); else checkLeg('dst', '調整', true);
           }
           break;
+        case '買入':
+          checkLeg('src', '付款', true, 'cash'); checkLeg('dst', '投資', true, 'invest');
+          checkMoney('amount', '成交金額', true); checkMoney('fee', '手續費', false); checkMoney('tax', '稅款', false);
+          break;
+        case '賣出':
+          checkLeg('src', '賣出', true, 'invest'); checkLeg('dst', '收款', true, 'cash');
+          checkMoney('amount', '成交金額', true); checkMoney('fee', '手續費', false); checkMoney('tax', '稅款', false);
+          break;
+        case '股息':
+          mustEmpty('src', '來源'); checkLeg('dst', '入帳', true);
+          checkMoney('amount', '稅前股息', false); checkMoney('fee', '手續費', false); checkMoney('tax', '稅款／預扣稅', false);
+          if (!t.relatedSymbol) err('relatedSymbol', '請選擇這筆股息屬於哪個標的');
+          else if (!ctx.instruments[t.relatedSymbol]) err('relatedSymbol', '找不到關聯標的');
+          break;
+        case '股數調整':
+          if ((t.srcAccount || t.srcSymbol || t.srcQty !== null) && (t.dstAccount || t.dstSymbol || t.dstQty !== null)) {
+            err('srcAccount', '股數調整只能填一邊（減少填來源、增加填目的）');
+          } else if (!(t.srcAccount || t.srcSymbol || t.srcQty !== null) && !(t.dstAccount || t.dstSymbol || t.dstQty !== null)) {
+            err('dstAccount', '請輸入股數調整的帳戶與股數');
+          } else if (t.srcAccount || t.srcSymbol || t.srcQty !== null) {
+            checkLeg('src', '調整', true, 'invest');
+          } else {
+            checkLeg('dst', '調整', true, 'invest');
+          }
+          break;
         default:
           break; // 尚未開放的類型：只在編輯既有資料時走到這裡，不重新驗證兩端
       }
@@ -125,7 +158,10 @@ var FinValidate = (function () {
     } else if (t.type === '調整') {
       var sys = Object.keys(cats).map(function (k) { return cats[k]; }).filter(function (c) { return c.type === '系統' && c.name === '餘額調整'; })[0];
       t.categoryId = sys ? sys.id : '';
-    } else if (t.type === '轉帳' || t.type === '換匯') {
+    } else if (t.type === '股息') {
+      var sysDiv = Object.keys(cats).map(function (k) { return cats[k]; }).filter(function (c) { return c.type === '系統' && c.name === '股息'; })[0];
+      t.categoryId = sysDiv ? sysDiv.id : '';
+    } else if (t.type === '轉帳' || t.type === '換匯' || t.type === '買入' || t.type === '賣出' || t.type === '股數調整') {
       t.categoryId = '';
     }
 
@@ -141,6 +177,7 @@ var FinValidate = (function () {
     } else if (t.type !== '退款') {
       t.relatedTxId = '';
     }
+    if (t.type !== '股息') t.relatedSymbol = '';
 
     // ---- 換匯匯率合理性（與市價差太多多半是輸入錯誤）----
     if (t.type === '換匯' && !errors.length && ctx.prices) {
@@ -151,6 +188,25 @@ var FinValidate = (function () {
         var ratio = (t.dstQty * dv) / (t.srcQty * sv);
         if (Math.abs(ratio - 1) > 0.03) {
           warnings.push('這筆換匯的匯率與目前市價相差約 ' + Math.round(Math.abs(ratio - 1) * 100) + '%，請確認金額');
+        }
+      }
+    }
+
+    // ---- 複委託「隱含匯率」合理性：實付/實收台幣 vs（成交金額+手續費+稅款）換算出的匯率，與市價差太多多半是輸入錯誤（暫定 3%）----
+    if ((t.type === '買入' || t.type === '賣出') && !errors.length && ctx.prices) {
+      var baseC = ctx.base || 'TWD';
+      var dstInst = t.type === '買入' ? ctx.instruments[t.dstSymbol] : null;
+      var cashSym = t.type === '買入' ? t.srcSymbol : t.dstSymbol;
+      var cashQty = t.type === '買入' ? t.srcQty : t.dstQty;
+      var quoteSym = t.type === '買入' ? (dstInst ? dstInst.quote : null) : (ctx.instruments[t.srcSymbol] ? ctx.instruments[t.srcSymbol].quote : null);
+      if (quoteSym && cashSym !== quoteSym) {
+        var gross = (t.amount || 0) + (t.fee || 0) + (t.tax || 0);
+        if (gross > 0 && cashQty > 0) {
+          var implied = cashQty / gross;
+          var marketFx = FinValuation.unitPrice(quoteSym, ctx.instruments, ctx.prices, cashSym, 0);
+          if (marketFx && Math.abs(implied - marketFx) / marketFx > 0.03) {
+            warnings.push('隱含匯率約 ' + implied.toFixed(4) + '，與目前市價匯率 ' + marketFx.toFixed(4) + ' 相差超過 3%，請確認金額是否輸入正確');
+          }
         }
       }
     }

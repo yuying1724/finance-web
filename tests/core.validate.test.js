@@ -101,9 +101,7 @@ test('日期：格式錯誤、超出範圍被擋；未來日期只警告', () =>
   assert.ok(fut.ok); assert.equal(fut.warnings.length, 1);
 });
 
-test('尚未開放的類型（買入、賣出…）在第 1 批會被拒絕', () => {
-  const r = V.validateTransaction({ type: '買入', date: '2026-03-02', srcAccount: 'A001', srcSymbol: 'TWD', srcQty: 1000, dstAccount: 'A002', dstSymbol: '0050', dstQty: 10 }, ctx());
-  assert.ok(fields(r).includes('type'));
+test('不存在的交易類型會被拒絕', () => {
   assert.ok(!V.validateTransaction({ type: 'abc', date: '2026-03-02' }, ctx()).ok);
 });
 

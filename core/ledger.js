@@ -89,7 +89,36 @@ var FinLedger = (function () {
     return out;
   }
 
-  return { computeBalances: computeBalances, balanceList: balanceList, adjustmentFor: adjustmentFor, filterTransactions: filterTransactions, legDate: legDate };
+  /** 待交割款（設計文件 7.4）：成交日 <= asOf < 現金腿的交割日，這段期間的現金還沒真的進出，回傳 [{accountId,symbol,qty}]（買入為負待付、賣出為正待收） */
+  function pendingSettlement(txs, instruments, asOf) {
+    var out = {};
+    function apply(tx, acct, sym, qty, sign) {
+      if (!acct || !sym || qty === null || qty === undefined || qty === '') return;
+      var inst = instruments[sym];
+      if (!inst || inst.type !== '法幣') return;
+      var ld = legDate(tx, inst);
+      if (tx.date <= asOf && ld > asOf) {
+        var key = acct + '|' + sym;
+        out[key] = (out[key] || 0) + sign * qty;
+      }
+    }
+    for (var i = 0; i < txs.length; i++) {
+      var tx = txs[i];
+      if (tx.status !== '有效') continue;
+      apply(tx, tx.srcAccount, tx.srcSymbol, tx.srcQty, -1);
+      apply(tx, tx.dstAccount, tx.dstSymbol, tx.dstQty, +1);
+    }
+    var list = [];
+    Object.keys(out).forEach(function (k) {
+      if (!out[k]) return;
+      var p = k.split('|');
+      list.push({ accountId: p[0], symbol: p[1], qty: out[k] });
+    });
+    list.sort(function (a, b) { return a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : (a.symbol < b.symbol ? -1 : 1); });
+    return list;
+  }
+
+  return { computeBalances: computeBalances, balanceList: balanceList, adjustmentFor: adjustmentFor, filterTransactions: filterTransactions, legDate: legDate, pendingSettlement: pendingSettlement };
 })();
 //#ifnode
 module.exports = FinLedger;

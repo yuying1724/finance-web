@@ -1,6 +1,6 @@
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
-import { state, accountById, balanceOf, instrumentBySymbol } from '../store.js';
+import { state, accountById, balanceOf, instrumentBySymbol, brokerSettingsOf, suggestSettleDate } from '../store.js';
 import * as api from '../api.js';
 import { money, decimalsOf, categoryInfo } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
@@ -8,7 +8,9 @@ import { refresh } from '../data.js';
 
 const last = { type: '支出', acct: '', acct2: '' };
 const PRIMARY = ['支出', '收入', '轉帳', '換匯'];
-const EXTRA = ['退款', '調整'];
+const EXTRA = ['退款', '調整', '買入', '賣出', '股息', '股數調整'];
+const EXTRA_LABEL = { 調整: '餘額調整（對帳）', 股數調整: '拆股／併股' };
+const INVEST_TYPES = ['買入', '賣出', '股息', '股數調整'];
 
 function parseAmount(s) {
   const t = String(s === null || s === undefined ? '' : s).replace(/[,\s]/g, '');
@@ -20,6 +22,26 @@ function parseAmount(s) {
 /** 把後端回報的欄位名稱換成畫面上的欄位 */
 function uiField(type, serverField) {
   const twoSided = type === '轉帳' || type === '換匯';
+  if (type === '買入') {
+    const m = { date: 'date', note: 'note', settleDate: 'settleDate', amount: 'gross', fee: 'fee', tax: 'tax',
+      srcAccount: 'cashAcct', srcSymbol: 'cashSym', srcQty: 'cashQty', dstAccount: 'instAcct', dstSymbol: 'instSym', dstQty: 'instQty' };
+    return m[serverField] || 'form';
+  }
+  if (type === '賣出') {
+    const m = { date: 'date', note: 'note', settleDate: 'settleDate', amount: 'gross', fee: 'fee', tax: 'tax',
+      srcAccount: 'instAcct', srcSymbol: 'instSym', srcQty: 'instQty', dstAccount: 'cashAcct', dstSymbol: 'cashSym', dstQty: 'cashQty' };
+    return m[serverField] || 'form';
+  }
+  if (type === '股息') {
+    const m = { date: 'date', note: 'note', amount: 'gross', fee: 'fee', tax: 'tax', relatedSymbol: 'relatedSymbol',
+      dstAccount: 'cashAcct', dstSymbol: 'cashSym', dstQty: 'cashQty' };
+    return m[serverField] || 'form';
+  }
+  if (type === '股數調整') {
+    const m = { date: 'date', note: 'note', srcAccount: 'instAcct', srcSymbol: 'instSym', srcQty: 'instQty',
+      dstAccount: 'instAcct', dstSymbol: 'instSym', dstQty: 'instQty' };
+    return m[serverField] || 'form';
+  }
   const map = {
     date: 'date', note: 'note', categoryId: 'cat', relatedTxId: 'related', type: 'type',
     srcAccount: 'acct', srcSymbol: 'sym', srcQty: 'amount',
@@ -38,11 +60,17 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
   const accounts = d.accounts.filter((a) => a.active || usedAccounts.includes(a.id));
   const symbols = d.instruments.filter((i) => i.active || usedSymbols.includes(i.symbol)).sort((a, b) => (a.type === '法幣' ? 0 : 1) - (b.type === '法幣' ? 0 : 1));
   const currencies = symbols.filter((i) => i.type === '法幣');
+  const investSymbols = symbols.filter((i) => i.type !== '法幣');
 
   if (!accounts.length) { toast('請先到「帳戶」新增至少一個帳戶', { kind: 'bad' }); return; }
 
   let type = editing ? tx.type : preset.type || (d.enabledTxTypes.includes(last.type) ? last.type : '支出');
-  const f = { date: editing ? tx.date : today, note: editing ? tx.note : '', categoryId: editing ? tx.categoryId : '', acct: '', sym: '', amount: '', acct2: '', sym2: '', amount2: '', side: 'dst', actual: '', related: preset.related || null };
+  const f = {
+    date: editing ? tx.date : today, note: editing ? tx.note : '', categoryId: editing ? tx.categoryId : '',
+    acct: '', sym: '', amount: '', acct2: '', sym2: '', amount2: '', side: 'dst', actual: '', related: preset.related || null,
+    instAcct: '', instSym: '', instQty: '', cashAcct: '', cashSym: '', cashQty: '', gross: '', fee: '', tax: '',
+    settleDate: '', settleTouched: false, relatedSymbol: '', adjSide: 'dst',
+  };
 
   const fmtNum = (n) => String(n);
   if (editing) {
@@ -50,6 +78,10 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
     else if (type === '收入' || type === '退款') Object.assign(f, { acct: tx.dstAccount, sym: tx.dstSymbol, amount: fmtNum(tx.dstQty) });
     else if (type === '轉帳' || type === '換匯') Object.assign(f, { acct: tx.srcAccount, sym: tx.srcSymbol, amount: fmtNum(tx.srcQty), acct2: tx.dstAccount, sym2: tx.dstSymbol, amount2: fmtNum(tx.dstQty) });
     else if (type === '調整') Object.assign(f, { acct: tx.dstAccount || tx.srcAccount, sym: tx.dstSymbol || tx.srcSymbol, side: tx.dstAccount ? 'dst' : 'src', amount: fmtNum(tx.dstQty !== null && tx.dstAccount ? tx.dstQty : tx.srcQty) });
+    else if (type === '買入') Object.assign(f, { cashAcct: tx.srcAccount, cashSym: tx.srcSymbol, cashQty: fmtNum(tx.srcQty), instAcct: tx.dstAccount, instSym: tx.dstSymbol, instQty: fmtNum(tx.dstQty), gross: fmtNum(tx.amount), fee: fmtNum(tx.fee || 0), tax: fmtNum(tx.tax || 0), settleDate: tx.settleDate || tx.date, settleTouched: true });
+    else if (type === '賣出') Object.assign(f, { instAcct: tx.srcAccount, instSym: tx.srcSymbol, instQty: fmtNum(tx.srcQty), cashAcct: tx.dstAccount, cashSym: tx.dstSymbol, cashQty: fmtNum(tx.dstQty), gross: fmtNum(tx.amount), fee: fmtNum(tx.fee || 0), tax: fmtNum(tx.tax || 0), settleDate: tx.settleDate || tx.date, settleTouched: true });
+    else if (type === '股息') Object.assign(f, { cashAcct: tx.dstAccount, cashSym: tx.dstSymbol, cashQty: fmtNum(tx.dstQty), gross: fmtNum(tx.amount || 0), fee: fmtNum(tx.fee || 0), tax: fmtNum(tx.tax || 0), relatedSymbol: tx.relatedSymbol });
+    else if (type === '股數調整') Object.assign(f, { instAcct: tx.dstAccount || tx.srcAccount, instSym: tx.dstSymbol || tx.srcSymbol, adjSide: tx.dstAccount ? 'dst' : 'src', instQty: fmtNum(tx.dstAccount ? tx.dstQty : tx.srcQty) });
     f.related = null;
   } else if (preset.related) {
     const r = preset.related;
@@ -64,6 +96,10 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
   if (!f.acct2) { const other = accounts.find((a) => a.id !== f.acct && a.id === last.acct2) || accounts.find((a) => a.id !== f.acct) || accounts[0]; f.acct2 = other.id; }
   if (!f.sym) f.sym = (accountById(f.acct) || {}).defaultSymbol || 'TWD';
   if (!f.sym2) f.sym2 = (currencies.find((c) => c.symbol !== f.sym) || currencies[0] || { symbol: 'TWD' }).symbol;
+  if (!f.instAcct) { const a = accounts.find((a2) => a2.type === '證券' || a2.type === '加密交易所') || accounts[0]; f.instAcct = a.id; }
+  if (!f.cashAcct) { const a = accounts.find((a2) => a2.id !== f.instAcct && (a2.type === '銀行' || a2.type === '數位錢包')) || accounts.find((a2) => a2.id !== f.instAcct) || accounts[0]; f.cashAcct = a.id; }
+  if (!f.instSym && investSymbols.length) f.instSym = investSymbols[0].symbol;
+  if (!f.cashSym) f.cashSym = (accountById(f.cashAcct) || {}).defaultSymbol || 'TWD';
 
   const bodyBox = h('div');
   const banner = h('div', { class: 'notice bad', role: 'alert', style: { display: 'none', marginBottom: '10px' } });
@@ -89,19 +125,20 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
   }
 
   let wantFocus = true;
-  function accountSelect(key, label, accKey, symKey, changesSym = true) {
+  function accountSelect(key, label, accKey, symKey, changesSym = true, list) {
     const hint = h('div', { class: 'muted small', style: { marginTop: '3px' } });
     const paint = () => {
       if (type === '調整' && !editing) { hint.textContent = ''; return; }
       const bal = balanceOf(f[accKey], f[symKey]);
       hint.textContent = f[accKey] ? `目前餘額 ${money(bal, f[symKey], { noMask: false })}` : '';
     };
+    const opts = list || accounts;
     const sel = h('select', { 'aria-label': label, onchange: (e) => {
       f[accKey] = e.target.value;
       const a = accountById(f[accKey]);
       if (a && symKey && changesSym && !f[symKey + 'Touched']) { f[symKey] = a.defaultSymbol; }
       draw();
-    } }, accounts.map((a) => h('option', { value: a.id, selected: a.id === f[accKey] }, a.name + (a.active ? '' : '（已停用）'))));
+    } }, opts.map((a) => h('option', { value: a.id, selected: a.id === f[accKey] }, a.name + (a.active ? '' : '（已停用）'))));
     paint();
     return field(key, label, sel, hint);
   }
@@ -120,14 +157,38 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
       h('div', { class: 'muted small', style: { marginTop: '3px' } }, dec === 0 ? `${f[symKey]} 不含小數` : `${f[symKey]} 最多 ${dec} 位小數`));
   }
 
+  /** 投資用：一個純數字輸入（不含幣別選單，幣別/股數位數已經由旁邊的標的或帳戶選單決定） */
+  function plainAmountField(key, label, valKey, decSym, placeholder, autofocus) {
+    const dec = decimalsOf(decSym);
+    const input = h('input', { type: 'text', inputmode: 'decimal', class: 'amount-input', autocomplete: 'off', placeholder: placeholder || '0', value: f[valKey], 'aria-label': label,
+      oninput: (e) => { f[valKey] = e.target.value; paintImplied(); } });
+    if (autofocus && wantFocus && !editing) { wantFocus = false; setTimeout(() => input.focus(), 60); }
+    return field(key, label, input, h('div', { class: 'muted small', style: { marginTop: '3px' } }, dec === 0 ? `${decSym} 不含小數` : `${decSym} 最多 ${dec} 位小數`));
+  }
+
   function dateField() {
-    const input = h('input', { type: 'date', value: f.date, 'aria-label': '日期', onchange: (e) => { f.date = e.target.value; } });
+    const input = h('input', { type: 'date', value: f.date, 'aria-label': '日期', onchange: (e) => { f.date = e.target.value; autoSettleDate(); } });
     const quick = h('div', { class: 'chips', style: { marginTop: '6px' } },
       [['今天', today], ['昨天', FinDates.addDays(today, -1)], ['前天', FinDates.addDays(today, -2)]].map(([t, v]) =>
-        h('button', { type: 'button', class: 'chip', onclick: () => { f.date = v; input.value = v; } }, t)));
+        h('button', { type: 'button', class: 'chip', onclick: () => { f.date = v; input.value = v; autoSettleDate(); } }, t)));
     return field('date', '日期', input, quick);
   }
   const noteField = () => field('note', '備註（選填）', h('input', { type: 'text', maxlength: 500, value: f.note, placeholder: '例如：和同事聚餐', oninput: (e) => { f.note = e.target.value; } }));
+
+  /** 交割日：依證券帳戶設定與休市日自動帶出，除非使用者手動改過就不再自動覆蓋 */
+  const settleHint = h('div', { class: 'muted small', style: { marginTop: '3px' } });
+  function autoSettleDate() {
+    if (f.settleTouched) return;
+    f.settleDate = suggestSettleDate(f.instAcct, f.date, type === '買入' ? 'buy' : 'sell');
+    if (settleInputRef) settleInputRef.value = f.settleDate;
+    settleHint.textContent = '已依證券帳戶設定與休市日自動帶出，可手動修改';
+  }
+  let settleInputRef = null;
+  function settleDateField() {
+    settleInputRef = h('input', { type: 'date', value: f.settleDate, 'aria-label': '交割日', onchange: (e) => { f.settleDate = e.target.value; f.settleTouched = true; } });
+    autoSettleDate();
+    return field('settleDate', '交割日', settleInputRef, settleHint);
+  }
 
   function categoryField(catType) {
     const box = h('div');
@@ -157,6 +218,19 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
       const fx = f.sym === 'TWD' ? b.n : a.n, fxSym = f.sym === 'TWD' ? f.sym2 : f.sym;
       rateBox.textContent = `匯率：1 ${fxSym} ≈ ${FinMoney.format(twd / fx, 3, { trim: true })} TWD`;
     } else rateBox.textContent = `匯率：1 ${f.sym} ≈ ${FinMoney.format(b.n / a.n, 4, { trim: true })} ${f.sym2}`;
+  }
+
+  const impliedBox = h('div', { class: 'muted small', style: { marginTop: '-4px', marginBottom: '10px' } });
+  /** 買入／賣出：實付／實收金額 vs（成交金額+手續費+稅款）換算出的隱含匯率，只是給使用者參考，真正的合理性檢查在後端 */
+  function paintImplied() {
+    if (type !== '買入' && type !== '賣出') { impliedBox.textContent = ''; return; }
+    const inst = instrumentBySymbol(f.instSym);
+    if (!inst || inst.quote === f.cashSym) { impliedBox.textContent = ''; return; }
+    const g = parseAmount(f.gross), fee = parseAmount(f.fee), cash = parseAmount(f.cashQty);
+    if (!g.n || !cash.n) { impliedBox.textContent = ''; return; }
+    const total = g.n + (fee.n || 0) + (parseAmount(f.tax).n || 0);
+    if (!total) { impliedBox.textContent = ''; return; }
+    impliedBox.textContent = `隱含匯率：1 ${inst.quote} ≈ ${FinMoney.format(cash.n / total, 4, { trim: true })} ${f.cashSym}`;
   }
 
   // ---------- 依類型畫出欄位 ----------
@@ -196,9 +270,54 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
           accountSelect('acct', '帳戶', 'acct', 'sym'),
           field('actual', '實際餘額', h('div', { class: 'two' }, input, symbolSelect('sym')), diffBox), dateField(), noteField());
       }
+    } else if (type === '買入' || type === '賣出') {
+      const isBuy = type === '買入';
+      const instSel = h('select', { 'aria-label': '標的', onchange: (e) => { f.instSym = e.target.value; f.settleTouched = false; autoSettleDate(); draw(); } },
+        investSymbols.map((i) => h('option', { value: i.symbol, selected: i.symbol === f.instSym }, `${i.symbol}　${i.name}`)));
+      const quote = (instrumentBySymbol(f.instSym) || {}).quote || 'TWD';
+      if (!f.cashSymTouched && f.cashSym !== quote && !editing) f.cashSym = quote;
+      parts.push(
+        field('instSym', '標的', instSel, investSymbols.length ? null : h('div', { class: 'notice bad', style: { marginTop: '6px' } }, '請先到「標的」新增股票／ETF／加密貨幣等投資標的')),
+        accountSelect('instAcct', isBuy ? '證券帳戶（存入股票）' : '證券帳戶（賣出股票）', 'instAcct', null, false),
+        plainAmountField('instQty', isBuy ? '成交股數' : '賣出股數', 'instQty', f.instSym, '0', true),
+        plainAmountField('gross', '成交金額（' + quote + '）', 'gross', quote),
+        plainAmountField('fee', '手續費（' + quote + '，選填）', 'fee', quote),
+        plainAmountField('tax', '稅款（' + quote + '，選填）', 'tax', quote),
+        accountSelect('cashAcct', isBuy ? '付款帳戶' : '收款帳戶', 'cashAcct', 'cashSym'),
+        h('div', { class: 'field' }, h('span', { class: 'lbl' }, isBuy ? '實付幣別' : '實收幣別'), symbolSelect('cashSym', currencies)),
+        plainAmountField('cashQty', isBuy ? '實付金額' : '實收金額', 'cashQty', f.cashSym),
+        impliedBox,
+        settleDateField(),
+        dateField(), noteField(),
+      );
+    } else if (type === '股息') {
+      const relSel = h('select', { 'aria-label': '關聯標的', onchange: (e) => { f.relatedSymbol = e.target.value; draw(); } },
+        [h('option', { value: '' }, '請選擇')].concat(investSymbols.map((i) => h('option', { value: i.symbol, selected: i.symbol === f.relatedSymbol }, `${i.symbol}　${i.name}`))));
+      if (!f.relatedSymbol && investSymbols.length) f.relatedSymbol = investSymbols[0].symbol;
+      parts.push(
+        field('relatedSymbol', '這筆股息屬於哪個標的', relSel),
+        accountSelect('cashAcct', '入帳帳戶', 'cashAcct', 'cashSym'),
+        h('div', { class: 'field' }, h('span', { class: 'lbl' }, '入帳幣別'), symbolSelect('cashSym', currencies)),
+        plainAmountField('cashQty', '實收金額', 'cashQty', f.cashSym, '0', true),
+        plainAmountField('gross', '稅前股息（選填）', 'gross', f.cashSym),
+        plainAmountField('tax', '預扣稅（選填）', 'tax', f.cashSym),
+        plainAmountField('fee', '手續費（選填）', 'fee', f.cashSym),
+        dateField(), noteField(),
+      );
+    } else if (type === '股數調整') {
+      parts.push(
+        h('div', { class: 'notice', style: { marginBottom: '12px' } }, '用於拆股、併股、股票更名：只改變股數，投資成本不變。'),
+        field('adjSide', '方向', h('div', { class: 'seg' }, [['dst', '增加（拆股、配股）'], ['src', '減少（併股）']].map(([v, t]) =>
+          h('button', { type: 'button', class: f.adjSide === v ? 'on' : '', onclick: () => { f.adjSide = v; draw(); } }, t)))),
+        field('instSym', '標的', h('select', { 'aria-label': '標的', onchange: (e) => { f.instSym = e.target.value; draw(); } },
+          investSymbols.map((i) => h('option', { value: i.symbol, selected: i.symbol === f.instSym }, `${i.symbol}　${i.name}`)))),
+        accountSelect('instAcct', '帳戶', 'instAcct', null, false),
+        plainAmountField('instQty', f.adjSide === 'dst' ? '增加的股數' : '減少的股數', 'instQty', f.instSym, '0', true),
+        dateField(), noteField(),
+      );
     }
     mount(bodyBox, ...parts);
-    paintRate();
+    paintRate(); paintImplied();
   }
 
   // ---------- 送出 ----------
@@ -212,6 +331,18 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
       const symKey = key === 'amount2' ? 'sym2' : 'sym';
       if (!FinMoney.fitsDecimals(a.n, decimalsOf(f[symKey]))) return { error: { field: key, message: `${f[symKey]} 最多 ${decimalsOf(f[symKey])} 位小數` } };
       return { n: a.n };
+    };
+    const invAmt = (key, label, decSym) => {
+      const a = parseAmount(f[key]);
+      if (a.empty) return { error: { field: key, message: `請輸入${label}` } };
+      if (a.bad) return { error: { field: key, message: `${label}不是有效的數字` } };
+      if (!(a.n > 0)) return { error: { field: key, message: `${label}必須大於 0` } };
+      if (!FinMoney.fitsDecimals(a.n, decimalsOf(decSym))) return { error: { field: key, message: `${decSym} 最多 ${decimalsOf(decSym)} 位小數` } };
+      return { n: a.n };
+    };
+    const invAmtOpt = (key, label, decSym) => {
+      if (String(f[key]).trim() === '') return { n: undefined };
+      return invAmt(key, label, decSym);
     };
     if (!FinDates.isValid(f.date)) return { error: { field: 'date', message: '請選擇日期' } };
     if (type === '支出' || type === '收入' || type === '退款') {
@@ -248,6 +379,31 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
       if (diff === 0) return { error: { field: 'actual', message: '和系統餘額相同，不需要調整' } };
       const qty = FinMoney.fromUnits(Math.abs(diff), dec);
       return { tx: { ...base, ...(diff > 0 ? { dstAccount: f.acct, dstSymbol: f.sym, dstQty: qty } : { srcAccount: f.acct, srcSymbol: f.sym, srcQty: qty }) } };
+    }
+    if (type === '買入' || type === '賣出') {
+      if (!f.instSym) return { error: { field: 'instSym', message: '請先新增投資標的' } };
+      const qty = invAmt('instQty', '股數', f.instSym); if (qty.error) return qty;
+      const gross = invAmt('gross', '成交金額', (instrumentBySymbol(f.instSym) || {}).quote || 'TWD'); if (gross.error) return gross;
+      const fee = invAmtOpt('fee', '手續費', (instrumentBySymbol(f.instSym) || {}).quote || 'TWD'); if (fee.error) return fee;
+      const tax = invAmtOpt('tax', '稅款', (instrumentBySymbol(f.instSym) || {}).quote || 'TWD'); if (tax.error) return tax;
+      const cash = invAmt('cashQty', type === '買入' ? '實付金額' : '實收金額', f.cashSym); if (cash.error) return cash;
+      const t = { ...base, settleDate: f.settleDate, amount: gross.n, fee: fee.n || 0, tax: tax.n || 0 };
+      if (type === '買入') Object.assign(t, { srcAccount: f.cashAcct, srcSymbol: f.cashSym, srcQty: cash.n, dstAccount: f.instAcct, dstSymbol: f.instSym, dstQty: qty.n });
+      else Object.assign(t, { srcAccount: f.instAcct, srcSymbol: f.instSym, srcQty: qty.n, dstAccount: f.cashAcct, dstSymbol: f.cashSym, dstQty: cash.n });
+      return { tx: t };
+    }
+    if (type === '股息') {
+      if (!f.relatedSymbol) return { error: { field: 'relatedSymbol', message: '請選擇這筆股息屬於哪個標的' } };
+      const cash = invAmt('cashQty', '實收金額', f.cashSym); if (cash.error) return cash;
+      const gross = invAmtOpt('gross', '稅前股息', f.cashSym); if (gross.error) return gross;
+      const tax = invAmtOpt('tax', '預扣稅', f.cashSym); if (tax.error) return tax;
+      const fee = invAmtOpt('fee', '手續費', f.cashSym); if (fee.error) return fee;
+      return { tx: { ...base, dstAccount: f.cashAcct, dstSymbol: f.cashSym, dstQty: cash.n, amount: gross.n || 0, tax: tax.n || 0, fee: fee.n || 0, relatedSymbol: f.relatedSymbol } };
+    }
+    if (type === '股數調整') {
+      if (!f.instSym) return { error: { field: 'instSym', message: '請先新增投資標的' } };
+      const qty = invAmt('instQty', '股數', f.instSym); if (qty.error) return qty;
+      return { tx: { ...base, ...(f.adjSide === 'dst' ? { dstAccount: f.instAcct, dstSymbol: f.instSym, dstQty: qty.n } : { srcAccount: f.instAcct, srcSymbol: f.instSym, srcQty: qty.n }) } };
     }
     return { error: { field: 'form', message: '不支援的類型' } };
   }
@@ -286,7 +442,7 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
   function drawTypes() {
     const enabled = d.enabledTxTypes;
     mount(typeSeg, PRIMARY.filter((t) => enabled.includes(t)).map((t) => h('button', { type: 'button', role: 'tab', 'aria-selected': type === t, 'data-type': t, class: (type === t ? 'on ' : '') + (t === '收入' ? 't-inc' : ''), onclick: () => { type = t; wantFocus = true; drawTypes(); draw(); } }, t)));
-    mount(extraRow, EXTRA.filter((t) => enabled.includes(t)).map((t) => h('button', { type: 'button', 'data-type': t, class: 'chip' + (type === t ? ' on' : ''), onclick: () => { type = t; wantFocus = true; drawTypes(); draw(); } }, t === '調整' ? '餘額調整（對帳）' : t)));
+    mount(extraRow, EXTRA.filter((t) => enabled.includes(t)).map((t) => h('button', { type: 'button', 'data-type': t, class: 'chip' + (type === t ? ' on' : '') + (INVEST_TYPES.includes(t) ? ' chip-invest' : ''), onclick: () => { type = t; wantFocus = true; f.settleTouched = false; drawTypes(); draw(); } }, EXTRA_LABEL[t] || t)));
   }
   drawTypes(); draw();
 

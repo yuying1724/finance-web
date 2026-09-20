@@ -2,6 +2,7 @@
 var FinSeed = (function () {
   //#ifnode
   var FinSchema = require('./schema.js');
+  var FinUsHolidays = require('./us-holidays.js');
   //#endif
 
   var EXPENSE = [
@@ -28,6 +29,26 @@ var FinSeed = (function () {
     ['TWD', '新台幣', 0, 'TWD'], ['USD', '美元', 2, 'USDTWD'], ['JPY', '日圓', 0, 'JPYTWD'], ['EUR', '歐元', 2, 'EURTWD'],
     ['CNY', '人民幣', 2, 'CNYTWD'], ['HKD', '港幣', 2, 'HKDTWD'], ['KRW', '韓元', 0, 'KRWTWD'],
     ['GBP', '英鎊', 2, 'GBPTWD'], ['AUD', '澳幣', 2, 'AUDTWD'],
+  ];
+
+  // 台灣證券市場 2026 年休市日（對照 twse.com.tw 開休市公告、元大證券春節交易公告核對，之後年度需自行更新或改為排程匯入，見 db-design.md §9）
+  var TW_HOLIDAYS_2026 = [
+    ['2026-01-01', '元旦', false],
+    ['2026-02-12', '農曆春節（僅辦理結算交割作業）', true],
+    ['2026-02-13', '農曆春節（僅辦理結算交割作業）', true],
+    ['2026-02-16', '農曆春節', false], ['2026-02-17', '農曆春節', false], ['2026-02-18', '農曆春節', false],
+    ['2026-02-19', '農曆春節', false], ['2026-02-20', '農曆春節', false],
+    ['2026-02-27', '和平紀念日補假', false],
+    ['2026-04-03', '兒童節補假', false],
+    ['2026-04-06', '民族掃墓節（清明）補假', false],
+    ['2026-05-01', '勞動節', false],
+    ['2026-06-19', '端午節', false],
+    ['2026-09-25', '中秋節', false],
+    ['2026-09-28', '教師節', false],
+    ['2026-10-09', '國慶日補假', false],
+    ['2026-10-26', '台灣光復節補假', false],
+    ['2026-12-25', '行憲紀念日', false],
+    ['2027-01-01', '元旦（跨年安全邊界）', false],
   ];
 
   function build(nowStr) {
@@ -64,6 +85,7 @@ var FinSeed = (function () {
       return {
         symbol: c[0], name: c[1], type: '法幣', quote: 'TWD', decimals: c[2],
         priceSource: isBase ? '固定值' : 'GOOGLEFINANCE', quoteCode: isBase ? '' : 'CURRENCY:' + c[3], active: true, note: '',
+        createdAt: nowStr, updatedAt: nowStr,
       };
     });
     var prices = CURRENCIES.filter(function (c) { return c[0] !== 'TWD'; }).map(function (c) {
@@ -73,7 +95,18 @@ var FinSeed = (function () {
     var options = {};
     FinSchema.OPTION_LISTS.forEach(function (l) { options[l.header] = l.enumKey ? FinSchema.ENUMS[l.enumKey].slice() : []; });
 
-    return { settings: settings, categories: categories, instruments: instruments, prices: prices, options: options };
+    var holidays = TW_HOLIDAYS_2026.map(function (r) {
+      return { market: '台灣', date: r[0], name: r[1], trading: false, settling: r[2], source: '手動' };
+    });
+    var year = +String(nowStr).slice(0, 4) || 2026;
+    [year, year + 1].forEach(function (y) {
+      FinUsHolidays.generate(y).forEach(function (r) {
+        holidays.push({ market: '美國', date: r.date, name: r.name, trading: false, settling: false, source: '程式產生' });
+      });
+    });
+    holidays.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+
+    return { settings: settings, categories: categories, instruments: instruments, prices: prices, options: options, holidays: holidays };
   }
 
   return { build: build };

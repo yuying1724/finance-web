@@ -40,7 +40,7 @@ var FinSetup = (function () {
 
   function seedIfEmpty(ss, report, nowStr) {
     var seed = FinSeed.build(nowStr);
-    var plan = [['settings', seed.settings, {}], ['categories', seed.categories, {}], ['instruments', seed.instruments, {}], ['prices', seed.prices, { allowFormulas: true }]];
+    var plan = [['settings', seed.settings, {}], ['categories', seed.categories, {}], ['instruments', seed.instruments, {}], ['prices', seed.prices, { allowFormulas: true }], ['holidays', seed.holidays, {}]];
     plan.forEach(function (p) {
       var sheet = ss.getSheetByName(FinSchema.TABLES[p[0]].sheet);
       if (hasData(sheet)) return;

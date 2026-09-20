@@ -179,6 +179,57 @@ test('餘額調整（對帳）：輸入實際餘額，自動算出差額', { ski
   });
 });
 
+test('投資頁：新增標的、設定券商帳戶，持倉正確顯示', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page } = a;
+    const b = a.s.backend;
+    const brokerAcct = b.call('upsertAccount', { account: { name: '國泰證券', type: '證券', defaultSymbol: 'TWD', institution: '國泰' } }).data.account.id;
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('invest');
+    await page.waitForSelector('.subtabs');
+
+    // 新增標的
+    await page.click('[data-testid=subtab-instruments]');
+    await page.click('[data-testid=add-instrument]');
+    await page.waitForSelector('.sheet');
+    await page.fill('.sheet input[maxlength="20"]', '2330');
+    await page.fill('.sheet input[maxlength="60"]', '台積電');
+    await page.click('[data-testid=instrument-save]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    await page.waitForFunction(() => /2330/.test(document.body.innerText));
+    assert.ok(a.bootstrap().instruments.some((i) => i.symbol === '2330' && i.name === '台積電'), '新標的已建立');
+
+    // 設定券商（用預設值直接儲存）
+    await page.click('[data-testid=subtab-brokers]');
+    await page.waitForSelector('.card .item');
+    await page.click('.card .item:has-text("國泰證券")');
+    await page.waitForSelector('.sheet');
+    await page.click('[data-testid=broker-save]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    assert.ok(b.call('bootstrap').data.brokerSettings.some((x) => x.accountId === brokerAcct && x.market === '台股'), '券商設定已建立');
+
+    // 買入 2330，確認持倉頁顯示正確
+    await a.fab();
+    await page.click('.sheet button[data-type="買入"]');
+    await page.selectOption('select[aria-label="標的"]', { label: '2330　台積電' });
+    await page.selectOption('select[aria-label="證券帳戶（存入股票）"]', { label: '國泰證券' });
+    await page.fill('input[aria-label="成交股數"]', '100');
+    await page.fill('input[aria-label="成交金額（TWD）"]', '100000');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '玉山活存' });
+    await page.fill('input[aria-label="實付金額"]', '100000');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+
+    await page.click('.subtabs button:has-text("持倉")');
+    await page.waitForFunction(() => /台積電/.test(document.body.innerText) && /缺價格/.test(document.body.innerText));
+    const holdings = b.call('getHoldings', {}).data;
+    const pos = holdings.positions.find((p) => p.symbol === '2330');
+    assert.equal(pos.qty, 100);
+    assert.equal(pos.costNative, 100000);
+  });
+});
+
 test('交易清單：篩選、開啟詳情、編輯、作廢、顯示已作廢並還原', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page } = a;
@@ -283,7 +334,7 @@ test('版面：各頁在 360px 寬度不會左右捲動；電腦寬度顯示側�
   await withApp({ viewport: { width: 360, height: 740 } }, async (a) => {
     const { page } = a;
     await a.login(); await page.waitForSelector('[data-testid=networth]');
-    for (const id of ['home', 'tx', 'accounts', 'settings']) {
+    for (const id of ['home', 'tx', 'accounts', 'invest', 'settings']) {
       await a.tab(id); await page.waitForTimeout(400);
       const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       assert.ok(over <= 0, `${id} 頁橫向溢出 ${over}px`);

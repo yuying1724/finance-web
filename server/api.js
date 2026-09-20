@@ -27,7 +27,8 @@ var FinApi = (function () {
   // ---------- 載入主檔與交易 ----------
   function loadContext(now) {
     var settings = FinRepo.getSettings();
-    var instruments = mapBy(FinRepo.goodRows('instruments'), 'symbol');
+    var instrumentRows = FinRepo.goodRows('instruments');
+    var instruments = mapBy(instrumentRows, 'symbol');
     var accountRows = FinRepo.goodRows('accounts').sort(bySort);
     var categoryRows = FinRepo.goodRows('categories').sort(bySort);
     var txAll = FinRepo.readTable('transactions');
@@ -39,12 +40,15 @@ var FinApi = (function () {
       priceInfo[r.symbol] = { price: p, status: r.price > 0 ? '正常' : (r.lastValid > 0 ? '沿用舊值' : '缺價格'), updatedAt: r.updatedAt };
     });
     var base = settings['基準幣別'] || 'TWD';
+    var brokerRows = FinRepo.goodRows('brokerSettings');
+    var holidayRows = FinRepo.goodRows('holidays');
     return {
-      now: now, today: FinDates.today(now), base: base, settings: settings, instruments: instruments,
+      now: now, today: FinDates.today(now), base: base, settings: settings, instruments: instruments, instrumentRows: instrumentRows,
       accountRows: accountRows, accounts: mapBy(accountRows, 'id'), categoryRows: categoryRows, categories: mapBy(categoryRows, 'id'),
       txRows: txRows, txById: mapBy(txRows, 'id'), prices: prices, priceInfo: priceInfo,
+      brokerRows: brokerRows, brokerByAccount: mapBy(brokerRows, 'accountId'), holidayRows: holidayRows,
       bad: [].concat(FinRepo.readTable('accounts').bad, FinRepo.readTable('categories').bad, FinRepo.readTable('instruments').bad,
-        txAll.bad, FinRepo.readTable('prices').bad),
+        txAll.bad, FinRepo.readTable('prices').bad, FinRepo.readTable('brokerSettings').bad, FinRepo.readTable('holidays').bad),
     };
   }
 
@@ -56,7 +60,8 @@ var FinApi = (function () {
     var bal = FinLedger.computeBalances(c.txRows, c.instruments, { asOf: c.today });
     var list = FinLedger.balanceList(bal.units, c.instruments);
     var nw = FinValuation.netWorth(list, { instruments: c.instruments, prices: c.prices, accounts: c.accounts, base: c.base });
-    return { balances: list, netWorth: nw, ledgerIssues: bal.issues };
+    var pending = FinLedger.pendingSettlement(c.txRows, c.instruments, c.today);
+    return { balances: list, netWorth: nw, ledgerIssues: bal.issues, pending: pending };
   }
 
   function failValidation(res) {
@@ -107,8 +112,10 @@ var FinApi = (function () {
         options: FinRepo.readOptions(),
         accounts: c.accountRows.map(pub), categories: c.categoryRows.map(pub),
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
+        brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
         prices: c.priceInfo,
         balances: calc.balances.map(function (b) { return { accountId: b.accountId, symbol: b.symbol, qty: b.qty }; }),
+        pending: calc.pending,
         netWorth: { base: nw.base, total: nw.total, assets: nw.assets, liabilities: nw.liabilities, byAccount: nw.byAccount, byType: nw.byType, missing: nw.missing },
         month: month, recent: recent,
         issues: { count: c.bad.length + calc.ledgerIssues.length, items: c.bad.slice(0, 20), ledger: calc.ledgerIssues.slice(0, 20) },
@@ -362,6 +369,155 @@ var FinApi = (function () {
         var out = pub(row); out.active = active; out.updatedAt = now;
         return { category: out };
       });
+    },
+  };
+
+  // ---------- 標的（股票／ETF／加密貨幣／貨幣） ----------
+  function validateInstrumentInput(a, c, existing) {
+    var errors = [];
+    var symbol = str(a.symbol).toUpperCase();
+    if (!symbol) errors.push({ field: 'symbol', message: '請輸入標的代號' });
+    else if (symbol.length > 20) errors.push({ field: 'symbol', message: '標的代號最多 20 字' });
+    else if (!existing && c.instruments[symbol]) errors.push({ field: 'symbol', message: '已經有這個標的代號' });
+    else if (existing && existing.symbol !== symbol) errors.push({ field: 'symbol', message: '標的代號建立後不能修改' });
+    var name = str(a.name);
+    if (!name) errors.push({ field: 'name', message: '請輸入標的名稱' });
+    else if (name.length > 60) errors.push({ field: 'name', message: '標的名稱最多 60 字' });
+    var type = str(a.type);
+    if (FinSchema.ENUMS.instrumentTypes.indexOf(type) < 0) errors.push({ field: 'type', message: '請選擇標的類型' });
+    var quote = str(a.quote) || 'TWD';
+    var quoteInst = c.instruments[quote];
+    if (type !== '法幣') {
+      if (!quoteInst || quoteInst.type !== '法幣') errors.push({ field: 'quote', message: '計價幣別必須是已存在的法幣標的' });
+    } else if (quote !== symbol) {
+      errors.push({ field: 'quote', message: '法幣的計價幣別必須是自己' });
+    }
+    var decimals = a.decimals === undefined || a.decimals === null || a.decimals === '' ? 0 : Number(a.decimals);
+    if (!isFinite(decimals) || decimals < 0 || decimals > 8 || Math.floor(decimals) !== decimals) errors.push({ field: 'decimals', message: '小數位數必須是 0～8 的整數' });
+    var priceSource = str(a.priceSource) || '手動';
+    if (FinSchema.ENUMS.priceSources.indexOf(priceSource) < 0) errors.push({ field: 'priceSource', message: '請選擇價格來源' });
+    var quoteCode = str(a.quoteCode), note = str(a.note);
+    if (quoteCode.length > 60) errors.push({ field: 'quoteCode', message: '行情代碼最多 60 字' });
+    if (note.length > 200) errors.push({ field: 'note', message: '備註最多 200 字' });
+    return { errors: errors, value: { symbol: symbol, name: FinValidate.safeText(name), type: type, quote: quote, decimals: decimals, priceSource: priceSource, quoteCode: quoteCode, note: FinValidate.safeText(note) } };
+  }
+
+  H.upsertInstrument = {
+    fn: function (p, env) {
+      var a = p.instrument;
+      if (!a || typeof a !== 'object') throw FinFail('BAD_REQUEST', '缺少標的資料');
+      var isNew = a.isNew !== false; // 標的以代號本身當主鍵，不是自動編號，一律靠前端明確標示是新增還是編輯
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var symbolIn = str(a.symbol).toUpperCase();
+        var existing = symbolIn ? FinRepo.findById('instruments', symbolIn) : null;
+        if (!isNew) {
+          if (!existing) throw FinFail('NOT_FOUND', '找不到標的 ' + symbolIn);
+          if (existing._bad) throw FinFail('DATA_BAD', '這個標的的資料有問題，請直接在試算表修正');
+          checkExpected(existing, p.expectedUpdatedAt);
+        }
+        var r = validateInstrumentInput(a, c, isNew ? null : existing);
+        if (r.errors.length) throw FinFail('VALIDATION', r.errors[0].message, { errors: r.errors, warnings: [] });
+        var now = ts(env.now), v = r.value, out;
+        if (!isNew) {
+          var patch = { name: v.name, type: v.type, quote: v.quote, decimals: v.decimals, priceSource: v.priceSource, quoteCode: v.quoteCode, note: v.note, updatedAt: now };
+          FinRepo.updateRow('instruments', existing._row, patch);
+          out = pub(existing); Object.keys(patch).forEach(function (k) { out[k] = patch[k]; });
+          FinRepo.audit('修改', 'instruments', out.symbol, out.name, env.device);
+        } else {
+          out = { symbol: v.symbol, name: v.name, type: v.type, quote: v.quote, decimals: v.decimals, priceSource: v.priceSource, quoteCode: v.quoteCode, active: true, note: v.note, createdAt: now, updatedAt: now };
+          FinRepo.append('instruments', [out]);
+          FinRepo.audit('新增', 'instruments', out.symbol, out.name, env.device);
+          // 新標的沒有現價，先補一列「價格」，避免持倉估值找不到資料
+          try {
+            if (!FinRepo.findById('prices', out.symbol)) {
+              FinRepo.append('prices', [{ symbol: out.symbol, price: '', lastValid: '', quote: out.quote, updatedAt: '', status: '尚未更新' }]);
+            }
+          } catch (e) { /* 價格表若不存在不影響標的新增 */ }
+        }
+        return { instrument: out };
+      });
+    },
+  };
+
+  H.setInstrumentActive = {
+    fn: function (p, env) {
+      return FinRepo.withLock(function () {
+        loadContext(env.now);
+        var row = FinRepo.findById('instruments', str(p.symbol).toUpperCase());
+        if (!row) throw FinFail('NOT_FOUND', '找不到標的');
+        var active = !!p.active, now = ts(env.now);
+        FinRepo.updateRow('instruments', row._row, { active: active, updatedAt: now });
+        FinRepo.audit(active ? '啟用' : '停用', 'instruments', row.symbol, row.name, env.device);
+        var out = pub(row); out.active = active; out.updatedAt = now;
+        return { instrument: out };
+      });
+    },
+  };
+
+  // ---------- 證券帳戶設定 ----------
+  function validateBrokerInput(a, c) {
+    var errors = [];
+    var accountId = str(a.accountId);
+    var acct = c.accounts[accountId];
+    if (!acct) errors.push({ field: 'accountId', message: '找不到帳戶' });
+    else if (acct.type !== '證券' && acct.type !== '加密交易所') errors.push({ field: 'accountId', message: '只有「證券」或「加密交易所」類型的帳戶能設定券商資料' });
+    var market = str(a.market);
+    if (market && ['台股', '複委託'].indexOf(market) < 0) errors.push({ field: 'market', message: '市場請選擇「台股」或「複委託」' });
+    var calendar = str(a.calendar) || (market === '複委託' ? '台灣+美國' : '台灣');
+    if (['台灣', '台灣+美國'].indexOf(calendar) < 0) errors.push({ field: 'calendar', message: '交割日曆請選擇「台灣」或「台灣+美國」' });
+    function num(field, label, def) {
+      var v = a[field];
+      if (v === undefined || v === null || v === '') return def;
+      var n = Number(v);
+      if (!isFinite(n) || n < 0) { errors.push({ field: field, message: label + '必須是不小於 0 的數字' }); return def; }
+      return n;
+    }
+    var value = {
+      accountId: accountId, market: market, feeRate: num('feeRate', '手續費率', 0), feeDiscount: num('feeDiscount', '手續費折扣', 1),
+      feeCurrency: str(a.feeCurrency) || (market === '複委託' ? 'USD' : 'TWD'), minFee: num('minFee', '最低手續費', 0), oddLotMinFee: num('oddLotMinFee', '零股最低手續費', 0),
+      sipFixedFee: num('sipFixedFee', '定期定額固定手續費', 0), sipFeeRate: num('sipFeeRate', '定期定額手續費率', 0), sipFeeCap: num('sipFeeCap', '定期定額每筆上限', 0),
+      sipMinAmount: num('sipMinAmount', '定期定額最低單筆投入', 0), taxRateStock: num('taxRateStock', '證交稅率(股票)', market === '複委託' ? 0 : 0.003),
+      taxRateEtf: num('taxRateEtf', '證交稅率(ETF)', market === '複委託' ? 0 : 0.001), buySettleDays: num('buySettleDays', '買入交割天數', market === '複委託' ? 1 : 2),
+      sellSettleDays: num('sellSettleDays', '賣出交割天數', 2), calendar: calendar, settleAccountId: str(a.settleAccountId), note: FinValidate.safeText(str(a.note)),
+    };
+    if (value.settleAccountId && !c.accounts[value.settleAccountId]) errors.push({ field: 'settleAccountId', message: '找不到預設交割帳戶' });
+    return { errors: errors, value: value };
+  }
+
+  H.upsertBrokerSettings = {
+    fn: function (p, env) {
+      var a = p.broker;
+      if (!a || typeof a !== 'object') throw FinFail('BAD_REQUEST', '缺少證券帳戶設定資料');
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var r = validateBrokerInput(a, c);
+        if (r.errors.length) throw FinFail('VALIDATION', r.errors[0].message, { errors: r.errors, warnings: [] });
+        var v = r.value, existing = FinRepo.findById('brokerSettings', v.accountId), out;
+        if (existing) {
+          FinRepo.updateRow('brokerSettings', existing._row, v);
+          out = v;
+        } else {
+          FinRepo.append('brokerSettings', [v]);
+          out = v;
+        }
+        FinRepo.audit(existing ? '修改' : '新增', 'brokerSettings', v.accountId, (c.accounts[v.accountId] || {}).name || v.accountId, env.device);
+        return { broker: out };
+      });
+    },
+  };
+
+  // ---------- 持倉／投資損益 ----------
+  H.getHoldings = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
+      var priceHistoryRows = FinRepo.goodRows('priceHistory');
+      var priceHistory = {};
+      priceHistoryRows.forEach(function (r) { priceHistory[r.date + '|' + r.symbol] = r.close; });
+      var h = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: asOf, prices: c.prices, priceHistory: priceHistory });
+      var valued = FinHoldings.valuePositions(h.positions, c.instruments, c.prices, c.base);
+      return { asOf: asOf, positions: valued, realized: h.realized, dividends: h.dividends, issues: h.issues };
     },
   };
 

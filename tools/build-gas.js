@@ -9,8 +9,8 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const ORDER = [
-  'core/schema.js', 'core/money.js', 'core/dates.js', 'core/ids.js', 'core/valuation.js',
-  'core/ledger.js', 'core/validate.js', 'core/report.js', 'core/seed.js',
+  'core/schema.js', 'core/money.js', 'core/dates.js', 'core/ids.js', 'core/us-holidays.js', 'core/valuation.js',
+  'core/ledger.js', 'core/holdings.js', 'core/validate.js', 'core/report.js', 'core/seed.js',
   'server/repo.js', 'server/auth.js', 'server/api.js', 'server/setup.js', 'server/main.js',
 ];
 

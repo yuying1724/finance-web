@@ -8,6 +8,7 @@ import { renderLogin } from './views/login.js';
 import { renderHome } from './views/home.js';
 import { renderTransactions } from './views/transactions.js';
 import { renderAccounts } from './views/accounts.js';
+import { renderInvest } from './views/invest.js';
 import { renderSettings } from './views/settings.js';
 import { openTxForm } from './views/txform.js';
 
@@ -16,6 +17,7 @@ const TABS = [
   { id: 'home', label: '首頁', icon: 'home', render: renderHome },
   { id: 'tx', label: '交易', icon: 'list', render: renderTransactions },
   { id: 'accounts', label: '帳戶', icon: 'wallet', render: renderAccounts },
+  { id: 'invest', label: '投資', icon: 'graphUp', render: renderInvest },
   { id: 'settings', label: '設定', icon: 'sliders', render: renderSettings },
 ];
 
