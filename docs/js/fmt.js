@@ -34,11 +34,11 @@ export function monthLabel(ym) { return `${ym.slice(0, 4)} 年 ${Number(ym.slice
 /** 分類的顯示資訊：圖示取自本身或上層；名稱顯示「上層 › 子分類」 */
 export function categoryInfo(id) {
   const c = categoryById(id);
-  if (!c) return { icon: '•', name: '未分類', short: '未分類', color: '' };
+  if (!c) return { icon: 'dots', name: '未分類', short: '未分類', color: '' };
   const parent = c.parentId ? categoryById(c.parentId) : null;
-  return { icon: c.icon || (parent && parent.icon) || '•', name: parent ? `${parent.name} › ${c.name}` : c.name, short: c.name, color: c.color };
+  return { icon: c.icon || (parent && parent.icon) || 'dots', name: parent ? `${parent.name} › ${c.name}` : c.name, short: c.name, color: c.color };
 }
 
 export function amountClass(kind) { return kind === 'pos' ? 'amt amt-pos' : kind === 'neg' ? 'amt amt-neg' : kind === 'mute' ? 'amt amt-mute' : 'amt'; }
 
-export const ACCOUNT_ICON = { 銀行: '🏦', 數位錢包: '📱', 現金: '💵', 證券: '📈', 加密交易所: '🪙', 信用卡: '💳', 貸款: '🏠', 應收: '📥', 應付: '📤', 點數: '🎫' };
+export const ACCOUNT_ICON = { 銀行: 'bank', 數位錢包: 'wallet', 現金: 'cash', 證券: 'graphUp', 加密交易所: 'btc', 信用卡: 'card', 貸款: 'percent', 應收: 'arrowDownCircle', 應付: 'arrowUpCircle', 點數: 'ticket' };

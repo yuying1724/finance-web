@@ -32,7 +32,7 @@ export function renderAccounts(root, route) {
     }
     body.push(card);
   }
-  if (!list.length) body.push(h('div', { class: 'card empty' }, h('div', { class: 'big' }, '🏦'), '還沒有帳戶。按右上角「＋」新增。'));
+  if (!list.length) body.push(h('div', { class: 'card empty' }, h('div', { class: 'big' }, icon('wallet')), '還沒有帳戶。按右上角「＋」新增。'));
 
   mount(root,
     h('div', { class: 'page-head' }, h('h1', null, '帳戶'), h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-account', onclick: () => openAccountForm({ onDone: refresh }) }, icon('plus'), '新增')),
@@ -53,7 +53,7 @@ function accountItem(a) {
   const total = d.netWorth.byAccount[a.id];
   const sub = holdings.length ? holdings.map((b) => money(b.qty, b.symbol)).join('　') : '無餘額';
   return h('button', { class: 'item', onclick: () => openAccountDetail(a), 'data-account': a.name },
-    h('div', { class: 'ico' }, ACCOUNT_ICON[a.type] || '💼'),
+    h('div', { class: 'ico' }, icon(ACCOUNT_ICON[a.type] || 'briefcase')),
     h('div', { class: 'grow' }, h('div', { class: 't' }, a.name, a.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')), h('div', { class: 's' }, `${a.type} · ${sub}`)),
     h('div', { class: 'amt' }, total === undefined ? '' : money(total, d.base)));
 }

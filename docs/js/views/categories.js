@@ -1,5 +1,5 @@
 import { h, mount } from '../dom.js';
-import { icon } from '../icons.js';
+import { icon, CATEGORY_ICON_CHOICES } from '../icons.js';
 import { state } from '../store.js';
 import * as api from '../api.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
@@ -13,7 +13,7 @@ export function renderCategories(root, { subtabs }) {
   const card = h('div', { class: 'card' });
   for (const p of parents) {
     card.appendChild(h('div', { class: 'item', style: { borderTop: '1px solid var(--line)' } },
-      h('div', { class: 'ico', style: { background: 'color-mix(in srgb, ' + (p.color || '#b3a58c') + ' 22%, var(--card))' } }, p.icon || '•'),
+      h('div', { class: 'ico', style: { background: 'color-mix(in srgb, ' + (p.color || '#b3a58c') + ' 22%, var(--card))', color: p.color || '#b3a58c' } }, icon(p.icon || 'dots')),
       h('div', { class: 'grow' }, h('div', { class: 't' }, p.name, p.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用'))),
       h('button', { class: 'icon-btn', 'aria-label': `編輯 ${p.name}`, onclick: () => openCategoryForm({ category: p }) }, icon('edit')),
       h('button', { class: 'icon-btn', 'aria-label': `在 ${p.name} 底下新增子分類`, onclick: () => openCategoryForm({ parentId: p.id, type: catType }) }, icon('plus'))));
@@ -54,16 +54,28 @@ export function openCategoryForm({ category = null, parentId = '', type = '支�
     });
   } }, category.active ? '停用' : '重新啟用') : null;
 
+  const iconPicker = h('div', { class: 'icon-pick' }, CATEGORY_ICON_CHOICES.map((key) =>
+    h('button', {
+      type: 'button',
+      class: 'icon-pick-btn' + (f.icon === key ? ' on' : ''),
+      style: { color: f.color },
+      'aria-label': key,
+      onclick: (e) => {
+        f.icon = key;
+        iconPicker.querySelectorAll('.icon-pick-btn').forEach((b) => b.classList.remove('on'));
+        e.currentTarget.classList.add('on');
+      },
+    }, icon(key))));
+
   const sheet = openSheet({
     title: editing ? '編輯分類' : (parentId ? '新增子分類' : '新增分類'), dismissable: false,
     body: h('div', null, banner,
       h('label', { class: 'field' }, h('span', { class: 'lbl' }, `名稱（${catT}）`), h('input', { type: 'text', maxlength: 30, value: f.name, oninput: (e) => { f.name = e.target.value; } })),
-      h('div', { class: 'two', style: { gridTemplateColumns: '1fr 1fr' } },
-        h('label', { class: 'field' }, h('span', { class: 'lbl' }, '圖示（1 個 emoji，選填）'), h('input', { type: 'text', maxlength: 8, value: f.icon, oninput: (e) => { f.icon = e.target.value; } })),
-        h('label', { class: 'field' }, h('span', { class: 'lbl' }, '顏色'), h('input', { type: 'color', value: /^#[0-9a-fA-F]{6}$/.test(f.color) ? f.color : '#b3a58c', style: { padding: '2px', height: '42px' }, onchange: (e) => { f.color = e.target.value; } }))),
+      h('label', { class: 'field' }, h('span', { class: 'lbl' }, '顏色'), h('input', { type: 'color', value: /^#[0-9a-fA-F]{6}$/.test(f.color) ? f.color : '#b3a58c', style: { padding: '2px', height: '42px', maxWidth: '120px' }, onchange: (e) => { f.color = e.target.value; iconPicker.querySelectorAll('.icon-pick-btn').forEach((b) => { b.style.color = f.color; }); } })),
+      h('label', { class: 'field' }, h('span', { class: 'lbl' }, '圖示'), iconPicker),
       h('label', { class: 'field' }, h('span', { class: 'lbl' }, '上層分類'),
         h('select', { disabled: hasKids, onchange: (e) => { f.parentId = e.target.value; } }, h('option', { value: '' }, '（無，這是一級分類）'),
-          parentOptions.map((p) => h('option', { value: p.id, selected: p.id === f.parentId }, `${p.icon} ${p.name}`))),
+          parentOptions.map((p) => h('option', { value: p.id, selected: p.id === f.parentId }, p.name))),
         hasKids ? h('div', { class: 'muted small' }, '這個分類底下有子分類，不能再放到別的分類底下。') : null)),
     footer: [toggle, h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save].filter(Boolean),
   });

@@ -1,4 +1,5 @@
 import { h, mount } from '../dom.js';
+import { icon } from '../icons.js';
 import { state, accountById, balanceOf, instrumentBySymbol } from '../store.js';
 import * as api from '../api.js';
 import { money, decimalsOf, categoryInfo } from '../fmt.js';
@@ -137,7 +138,7 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
       const kids = selParent ? d.categories.filter((c) => c.parentId === selParent && (c.active || c.id === f.categoryId)) : [];
       mount(box,
         h('div', { class: 'cat-grid' }, parents.map((p) => h('button', { type: 'button', class: p.id === selParent ? 'on' : '', 'data-cat': p.name, onclick: () => { f.categoryId = p.id; paint(); } },
-          h('span', { class: 'e' }, p.icon || '•'), h('span', null, p.name)))),
+          icon(p.icon || 'dots', 'e'), h('span', null, p.name)))),
         kids.length ? h('div', { class: 'chips', style: { marginTop: '10px' } },
           h('button', { type: 'button', class: 'chip' + (f.categoryId === selParent ? ' on' : ''), onclick: () => { f.categoryId = selParent; paint(); } }, '不細分'),
           kids.map((k) => h('button', { type: 'button', class: 'chip' + (k.id === f.categoryId ? ' on' : ''), 'data-cat': k.name, onclick: () => { f.categoryId = k.id; paint(); } }, k.name))) : null);

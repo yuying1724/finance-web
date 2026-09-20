@@ -20,7 +20,7 @@ export function renderHome(root) {
 
   if (!d.accounts.length) {
     children.push(h('div', { class: 'card empty' },
-      h('div', { class: 'big' }, '👋'),
+      h('div', { class: 'big' }, icon('wallet')),
       h('h2', { style: { marginBottom: '6px' } }, '歡迎使用'),
       h('p', null, '先建立第一個帳戶（例如銀行活存或現金），再按右下角的「＋」記第一筆。'),
       h('button', { class: 'btn btn-primary', onclick: () => openAccountForm({ onDone: async () => { await refresh(); } }) }, '新增第一個帳戶')));
@@ -85,7 +85,7 @@ export function accountRow(a, d) {
   const foreign = holdings.filter((b) => b.symbol !== d.base);
   const sub = [a.institution && a.institution !== a.name ? a.institution : '', ...foreign.map((b) => money(b.qty, b.symbol))].filter(Boolean).join(' · ');
   return h('li', null, h('a', { class: 'item', href: '#/tx?acct=' + a.id, style: { textDecoration: 'none', color: 'inherit' } },
-    h('div', { class: 'ico' }, ACCOUNT_ICON[a.type] || '💼'),
+    h('div', { class: 'ico' }, icon(ACCOUNT_ICON[a.type] || 'briefcase')),
     h('div', { class: 'grow' }, h('div', { class: 't' }, a.name, a.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')), sub ? h('div', { class: 's' }, sub) : null),
     h('div', { class: amountClass('') }, money(total, d.base))));
 }

@@ -23,21 +23,21 @@ export function describe(t) {
     }
     case '退款': {
       const c = categoryInfo(t.categoryId);
-      return { icon: '↩️', title: '退款 · ' + c.short, sub: an(dst, t.dstAccount) + note, text: '+' + money(t.dstQty, t.dstSymbol), kind: '' };
+      return { icon: 'undo', title: '退款 · ' + c.short, sub: an(dst, t.dstAccount) + note, text: '+' + money(t.dstQty, t.dstSymbol), kind: '' };
     }
     case '轉帳':
-      return { icon: '🔁', title: '轉帳', sub: `${an(src, t.srcAccount)} → ${an(dst, t.dstAccount)}` + note, text: money(t.srcQty, t.srcSymbol), kind: 'mute' };
+      return { icon: 'transfer', title: '轉帳', sub: `${an(src, t.srcAccount)} → ${an(dst, t.dstAccount)}` + note, text: money(t.srcQty, t.srcSymbol), kind: 'mute' };
     case '換匯': {
       const rate = t.srcQty && t.dstQty ? rateText(t) : '';
-      return { icon: '💱', title: `換匯 ${t.srcSymbol} → ${t.dstSymbol}`, sub: `${an(src, t.srcAccount)} → ${an(dst, t.dstAccount)}${rate ? ' · ' + rate : ''}` + note, text: money(t.dstQty, t.dstSymbol), kind: 'mute' };
+      return { icon: 'exchange', title: `換匯 ${t.srcSymbol} → ${t.dstSymbol}`, sub: `${an(src, t.srcAccount)} → ${an(dst, t.dstAccount)}${rate ? ' · ' + rate : ''}` + note, text: money(t.dstQty, t.dstSymbol), kind: 'mute' };
     }
     case '調整': {
       const up = !!t.dstAccount;
-      return { icon: '⚖️', title: '餘額調整', sub: an(up ? dst : src, up ? t.dstAccount : t.srcAccount) + note,
+      return { icon: 'sliders', title: '餘額調整', sub: an(up ? dst : src, up ? t.dstAccount : t.srcAccount) + note,
         text: (up ? '+' : '-') + money(up ? t.dstQty : t.srcQty, up ? t.dstSymbol : t.srcSymbol), kind: 'mute' };
     }
     default:
-      return { icon: '•', title: t.type, sub: note.slice(3), text: '', kind: 'mute' };
+      return { icon: 'dots', title: t.type, sub: note.slice(3), text: '', kind: 'mute' };
   }
 }
 
@@ -52,7 +52,7 @@ function rateText(t) {
 export function txRow(t) {
   const d = describe(t);
   return h('button', { class: 'item' + (t.status === '作廢' ? ' voided' : ''), onclick: () => openTxDetail(t) },
-    h('div', { class: 'ico' }, d.icon),
+    h('div', { class: 'ico' }, icon(d.icon)),
     h('div', { class: 'grow' }, h('div', { class: 't' }, d.title, t.status !== '有效' ? h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, t.status) : null), h('div', { class: 's' }, d.sub)),
     h('div', { class: amountClass(d.kind) }, d.text));
 }
@@ -130,7 +130,7 @@ export function renderTransactions(root, route) {
     h('option', { value: '' }, '全部帳戶'), d.accounts.map((a) => h('option', { value: a.id, selected: S.filters.accountId === a.id }, a.name + (a.active ? '' : '（停用）'))));
   const catOptions = [];
   d.categories.filter((c) => !c.parentId && c.type !== '系統').forEach((p) => {
-    catOptions.push(h('option', { value: p.id, selected: S.filters.categoryId === p.id }, `${p.icon} ${p.name}`));
+    catOptions.push(h('option', { value: p.id, selected: S.filters.categoryId === p.id }, p.name));
     d.categories.filter((c) => c.parentId === p.id).forEach((c) => catOptions.push(h('option', { value: c.id, selected: S.filters.categoryId === c.id }, `　${c.name}`)));
   });
   const catSel = h('select', { 'aria-label': '分類', onchange: (e) => { S.filters.categoryId = e.target.value; load(); } }, h('option', { value: '' }, '全部分類'), catOptions);
@@ -163,7 +163,7 @@ export function renderTransactions(root, route) {
       mount(summaryBox, m('收入', money(sum.income, sum.base), 'pos'), m('支出', money(sum.expense, sum.base)), m('結餘', money(sum.net, sum.base, { sign: true }), sum.net > 0 ? 'pos' : ''));
       clear(listBox);
       if (!list.items.length) {
-        listBox.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '🗒️'), S.filters.q || S.filters.type || S.filters.accountId || S.filters.categoryId ? '沒有符合條件的交易' : '這個月還沒有交易'));
+        listBox.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, icon('list')), S.filters.q || S.filters.type || S.filters.accountId || S.filters.categoryId ? '沒有符合條件的交易' : '這個月還沒有交易'));
         return;
       }
       for (const g of groupRows(list.items)) {

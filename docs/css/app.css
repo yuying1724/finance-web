@@ -127,6 +127,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb
 .cat-grid button .e { font-size: 22px; line-height: 1.2; }
 .cat-grid button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-strong); font-weight: 600; }
 @media (min-width: 560px) { .cat-grid { grid-template-columns: repeat(6, 1fr); } }
+.icon-pick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.icon-pick-btn { width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); display: grid; place-items: center; color: var(--sub); }
+.icon-pick-btn.on { background: color-mix(in srgb, currentColor 18%, var(--card)); border-color: currentColor; }
 
 .list { margin: 0; padding: 0; list-style: none; }
 .list > li { border-top: 1px solid var(--line); }
