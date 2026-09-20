@@ -9,6 +9,7 @@ import { renderHome } from './views/home.js';
 import { renderTransactions } from './views/transactions.js';
 import { renderAccounts } from './views/accounts.js';
 import { renderInvest } from './views/invest.js';
+import { renderRecurring, pendingCount } from './views/recurring.js';
 import { renderSettings } from './views/settings.js';
 import { openTxForm } from './views/txform.js';
 
@@ -18,6 +19,7 @@ const TABS = [
   { id: 'tx', label: '交易', icon: 'list', render: renderTransactions },
   { id: 'accounts', label: '帳戶', icon: 'wallet', render: renderAccounts },
   { id: 'invest', label: '投資', icon: 'graphUp', render: renderInvest },
+  { id: 'recurring', label: '定期', icon: 'refresh', render: renderRecurring, badge: pendingCount },
   { id: 'settings', label: '設定', icon: 'sliders', render: renderSettings },
 ];
 
@@ -31,6 +33,17 @@ export function parseRoute() {
   return { tab: TABS.some((t) => t.id === parts[0]) ? parts[0] : 'home', sub: parts[1] || '', params: Object.fromEntries(new URLSearchParams(query)) };
 }
 
+function updateBadges() {
+  TABS.forEach((t) => {
+    if (!t.badge) return;
+    const n = t.badge();
+    document.querySelectorAll('.nav-badge[data-badge-tab="' + t.id + '"]').forEach((el) => {
+      el.textContent = n ? String(n) : '';
+      el.style.display = n ? '' : 'none';
+    });
+  });
+}
+
 function renderView() {
   if (!viewRoot || !state.data) return;
   const r = parseRoute();
@@ -42,10 +55,13 @@ function renderView() {
     console.error(e);
     mount(viewRoot, h('div', { class: 'notice bad' }, '畫面發生錯誤：' + e.message));
   }
+  updateBadges();
 }
 
 function showShell() {
-  const nav = (cls) => TABS.map((t) => h('a', { href: '#/' + t.id, 'data-tab': t.id, class: cls }, icon(t.icon), h('span', null, t.label)));
+  const nav = (cls) => TABS.map((t) =>
+    h('a', { href: '#/' + t.id, 'data-tab': t.id, class: cls }, icon(t.icon), h('span', null, t.label),
+      t.badge ? h('span', { class: 'badge nav-badge', 'data-badge-tab': t.id, style: { marginLeft: '4px', display: 'none' } }) : null));
   viewRoot = h('main', { class: 'main', id: 'view' });
   const shell = h('div', { class: 'shell' },
     h('aside', { class: 'sidebar' },

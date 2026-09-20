@@ -26,6 +26,7 @@ function doPost(e) {
 
 function dailyJob() {
   FinJobs.refreshPrices();
+  try { FinRecurringJob.runDaily(FinClock.now()); } catch (e) { try { Logger.log('定期排程失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
 }
 
 // ---------- 試算表選單 ----------
@@ -38,7 +39,7 @@ function onOpen() {
     .addItem('新增裝置授權碼', 'menuAddDevice')
     .addItem('查看或撤銷裝置', 'menuManageDevices')
     .addItem('登出所有裝置', 'menuSignOutAll')
-    .addItem('安裝每日排程（更新匯率）', 'menuInstallTriggers')
+    .addItem('安裝每日排程（匯率、定期交易、提醒信）', 'menuInstallTriggers')
     .addItem('檢查目前狀態', 'menuStatus')
     .addToUi();
 }
@@ -115,7 +116,8 @@ function menuSignOutAll() {
 
 function menuInstallTriggers() {
   FinSetup.installDailyTrigger();
-  alert_('已安裝', '每天早上 7 點會自動更新匯率。第一次安裝時 Google 可能會要求你授權，請按允許。');
+  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信。' +
+    '第一次安裝、或第一次寄信時 Google 可能會要求你另外授權（寄信需要的 script.send_mail 權限），請按允許。');
 }
 
 function menuStatus() {

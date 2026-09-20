@@ -9,9 +9,9 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const ORDER = [
-  'core/schema.js', 'core/money.js', 'core/dates.js', 'core/ids.js', 'core/us-holidays.js', 'core/valuation.js',
+  'core/schema.js', 'core/money.js', 'core/dates.js', 'core/recurring.js', 'core/ids.js', 'core/us-holidays.js', 'core/valuation.js',
   'core/ledger.js', 'core/holdings.js', 'core/loan.js', 'core/creditcard.js', 'core/validate.js', 'core/report.js', 'core/seed.js',
-  'server/repo.js', 'server/auth.js', 'server/api.js', 'server/setup.js', 'server/main.js',
+  'server/repo.js', 'server/auth.js', 'server/mail.js', 'server/api.js', 'server/recurring.js', 'server/setup.js', 'server/main.js',
 ];
 
 function strip(src) {

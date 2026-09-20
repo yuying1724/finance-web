@@ -17,6 +17,8 @@ var FinSchema = (function () {
     categoryTypes: ['收入', '支出', '系統'],
     recurFreq: ['每週', '每月', '每季', '每年'],
     recurMode: ['自動入帳', '提醒確認', '券商定期定額', '手動下單'],
+    recurHoliday: ['順延', '提前', '不調整'],
+    recurTypes: ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '貸款還款'],
     priceSources: ['GOOGLEFINANCE', 'CoinGecko', '固定值', '手動'],
   };
   // 第 1 批已開放的交易類型；其餘類型在後續批次啟用
@@ -73,7 +75,8 @@ var FinSchema = (function () {
         c('dstAccount', '目的帳戶'), c('dstSymbol', '目的標的'), c('dstQty', '目的數量', 'num'),
         c('categoryId', '分類ID'), c('amount', '成交金額', 'num'), c('fee', '手續費', 'num'), c('tax', '稅款', 'num'),
         c('relatedSymbol', '關聯標的'), c('groupId', '群組ID'), c('relatedTxId', '關聯交易ID'), c('recurringId', '定期ID'),
-        c('note', '備註'), c('status', '狀態'), c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts')],
+        c('note', '備註'), c('status', '狀態'), c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts'),
+        c('plannedDate', '計畫日期', 'date')],
     },
     txTags: { sheet: '交易標籤', idKey: null, cols: [c('txId', '交易ID'), c('tag', '標籤')] },
     recurring: {
@@ -128,7 +131,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.3.0',
+    APP_VERSION: '0.4.0',
   };
   return api;
 })();
@@ -275,6 +278,16 @@ var FinDates = (function () {
     return true;
   }
 
+  /** 某市場在這天是否「有交易」：週六日一律不算；holidaySet 為 {'市場|日期': {trading,settling}}。
+   * 與 isSettleDay 的差異：春節封關「僅辦理結算交割作業」的日子 trading=false、settling=true，isTradingDay 回傳 false、isSettleDay 回傳 true。 */
+  function isTradingDay(str, market, holidaySet) {
+    var wd = weekday(str);
+    if (wd === 0 || wd === 6) return false;
+    var h = holidaySet ? holidaySet[market + '|' + str] : null;
+    if (h && h.trading === false) return false;
+    return true;
+  }
+
   /** 成交日後第 n 個營業日（依 markets 陣列全部都要是營業日才算，例如複委託用 ['台灣','美國']） */
   function addSettleDays(tradeDate, n, markets, holidaySet) {
     var d = tradeDate, count = 0, guard = 0;
@@ -298,7 +311,185 @@ var FinDates = (function () {
   var api = {
     parse: parse, isValid: isValid, format: format, addDays: addDays, weekday: weekday, ymOf: ymOf, monthRange: monthRange,
     addMonths: addMonths, timestamp: timestamp, today: today, fromCell: fromCell, daysInMonth: daysInMonth,
-    isSettleDay: isSettleDay, addSettleDays: addSettleDays, buildHolidaySet: buildHolidaySet,
+    isSettleDay: isSettleDay, isTradingDay: isTradingDay, addSettleDays: addSettleDays, buildHolidaySet: buildHolidaySet,
+  };
+  return api;
+})();
+
+// ==================== core/recurring.js ====================
+/**
+ * 定期交易（設計文件 db-design.md §7.5）：到期日推算、資金備妥提醒日、交割天數預設值、
+ * 「交割日是自動算出還是手動改過」判斷、去重、定期不定額的建議金額。全部是純函式，不做任何 I/O。
+ *
+ * 名詞：
+ *  - 「預定日」（planned）：範本設定的日期（例如每月 6 號），不受假日調整影響，是去重用的鍵。
+ *  - 「到期日」（due）：依「假日處理」規則調整後、實際會執行／產生待確認的日子。
+ *  - 「有交易」：休市日表的 trading 欄位，用在到期日的假日順延／提前判斷。
+ *  - 「有辦理交割」：休市日表的 settling 欄位，用在資金備妥提醒與交割日推算；春節封關「僅辦理交割」的日子
+ *    trading=false、settling=true，兩者在這種日子會給出不同答案（db-design 7.4／7.5 的重點）。
+ */
+var FinRecurring = (function () {
+
+  var HOLIDAY_POLICIES = ['順延', '提前', '不調整'];
+
+  function allTradingDay(d, markets, holidaySet) {
+    for (var i = 0; i < markets.length; i++) if (!FinDates.isTradingDay(d, markets[i], holidaySet)) return false;
+    return true;
+  }
+  function allSettleDay(d, markets, holidaySet) {
+    for (var i = 0; i < markets.length; i++) if (!FinDates.isSettleDay(d, markets[i], holidaySet)) return false;
+    return true;
+  }
+
+  // ---------- 到期日推算 ----------
+
+  /** 範本「每月」頻率在某年某月的候選「預定日」（未經假日調整），31 號遇小月取月底 */
+  function monthlyRawDates(days, year, month) {
+    var last = FinDates.daysInMonth(year, month);
+    var uniq = {};
+    (days || []).forEach(function (dd) { uniq[Math.min(Math.max(1, Number(dd) || 1), 31)] = true; });
+    return Object.keys(uniq).map(Number).sort(function (a, b) { return a - b; })
+      .map(function (dd) { return FinDates.format(year, month, Math.min(dd, last)); });
+  }
+
+  /** 把「預定日」依假日處理政策調整成「到期日」：markets 全部都要「有交易」才算 */
+  function adjustForHoliday(planned, holiday, markets, holidaySet) {
+    var d = planned;
+    if (holiday === '提前') {
+      while (!allTradingDay(d, markets, holidaySet)) d = FinDates.addDays(d, -1);
+      return d;
+    }
+    if (holiday === '不調整') return d;
+    // 預設／'順延'：順延到下一個「有交易」的日子（元大台股定期定額的做法）
+    while (!allTradingDay(d, markets, holidaySet)) d = FinDates.addDays(d, 1);
+    return d;
+  }
+
+  /** 資金備妥提醒日 = 到期日之前第 remindDays 個「有辦理交割」的營業日（預設 1） */
+  function fundingReminderDate(dueDate, remindDays, markets, holidaySet) {
+    var n = remindDays === undefined || remindDays === null || remindDays === '' ? 1 : Math.max(0, Number(remindDays) || 0);
+    var d = dueDate;
+    for (var i = 0; i < n; i++) {
+      d = FinDates.addDays(d, -1);
+      while (!allSettleDay(d, markets, holidaySet)) d = FinDates.addDays(d, -1);
+    }
+    return d;
+  }
+
+  /**
+   * 範本在 (fromExclusive, toInclusive] 區間內的所有「(預定日, 到期日)」，依頻率展開，
+   * 並依範本的起始日／結束日裁切。用於排程「漏跑補跑」一次補齊多筆，以及查詢「即將到來」的到期日。
+   */
+  function occurrences(tpl, fromExclusive, toInclusive, markets, holidaySet) {
+    var out = [];
+    var lowerBound = tpl.startDate && tpl.startDate > fromExclusive ? FinDates.addDays(tpl.startDate, -1) : fromExclusive;
+    function pushIfInRange(planned) {
+      if (planned <= lowerBound) return;
+      if (planned > toInclusive) return;
+      if (tpl.endDate && planned > tpl.endDate) return;
+      out.push({ planned: planned, due: adjustForHoliday(planned, tpl.holiday, markets, holidaySet) });
+    }
+    if (toInclusive < lowerBound) return out;
+    var guard = 0;
+    if (tpl.freq === '每月') {
+      var ym = FinDates.ymOf(FinDates.addDays(lowerBound, 1));
+      var endYm = FinDates.ymOf(toInclusive);
+      while (ym <= endYm) {
+        var y = +ym.slice(0, 4), m = +ym.slice(5, 7);
+        monthlyRawDates(tpl.days, y, m).forEach(pushIfInRange);
+        ym = FinDates.addMonths(ym, 1);
+        if (++guard > 2400) throw new Error('定期範圍推算超出範圍');
+      }
+    } else if (tpl.freq === '每週') {
+      var d = FinDates.addDays(lowerBound, 1);
+      var weekdays = (tpl.days || []).map(Number);
+      while (d <= toInclusive) {
+        if (weekdays.indexOf(FinDates.weekday(d)) >= 0) pushIfInRange(d);
+        d = FinDates.addDays(d, 1);
+        if (++guard > 3660) throw new Error('定期範圍推算超出範圍');
+      }
+    } else if (tpl.freq === '每季' || tpl.freq === '每年') {
+      var step = tpl.freq === '每季' ? 3 : 12;
+      var anchorYm = FinDates.ymOf(tpl.startDate || FinDates.addDays(lowerBound, 1));
+      var startYm2 = FinDates.ymOf(FinDates.addDays(lowerBound, 1));
+      var ym2 = anchorYm;
+      while (ym2 < startYm2) ym2 = FinDates.addMonths(ym2, step);
+      // 找不到明確頻率日時，用起始日的「幾號」當每次發生的日子
+      var fallbackDay = tpl.startDate ? +tpl.startDate.slice(8, 10) : 1;
+      var endYm2 = FinDates.ymOf(toInclusive);
+      while (ym2 <= endYm2) {
+        var y2 = +ym2.slice(0, 4), m2 = +ym2.slice(5, 7);
+        monthlyRawDates(tpl.days && tpl.days.length ? tpl.days : [fallbackDay], y2, m2).forEach(pushIfInRange);
+        ym2 = FinDates.addMonths(ym2, step);
+        if (++guard > 800) throw new Error('定期範圍推算超出範圍');
+      }
+    }
+    out.sort(function (a, b) { return a.planned < b.planned ? -1 : a.planned > b.planned ? 1 : 0; });
+    return out;
+  }
+
+  // ---------- 交割天數與交割日 ----------
+
+  /** 範本的交割天數：範本本身有填就優先；否則券商定期定額固定 0（扣款當天）、手動下單取證券帳戶設定的買入交割天數 */
+  function defaultSettleDays(tpl, brokerBuySettleDays) {
+    if (tpl.settleDays !== null && tpl.settleDays !== undefined && tpl.settleDays !== '') return Number(tpl.settleDays);
+    if (tpl.mode === '券商定期定額') return 0;
+    return brokerBuySettleDays === null || brokerBuySettleDays === undefined ? 2 : Number(brokerBuySettleDays);
+  }
+
+  function computeSettleDate(tradeDate, settleDays, markets, holidaySet) {
+    return FinDates.addSettleDays(tradeDate, settleDays, markets, holidaySet);
+  }
+
+  /** 現有交割日是否等於「依舊成交日自動算出」的結果——是就代表當初是自動帶出的 */
+  function wasSettleDateAuto(currentSettleDate, oldTradeDate, settleDays, markets, holidaySet) {
+    if (!currentSettleDate) return true;
+    return currentSettleDate === computeSettleDate(oldTradeDate, settleDays, markets, holidaySet);
+  }
+
+  /** 修改成交日時的交割日：自動帶出的就跟著重算，手動改過的維持不動（不需要額外欄位，見 db-design 7.5） */
+  function recalcSettleDateOnTradeChange(opts) {
+    var wasAuto = wasSettleDateAuto(opts.currentSettleDate, opts.oldTradeDate, opts.settleDays, opts.markets, opts.holidaySet);
+    return wasAuto ? computeSettleDate(opts.newTradeDate, opts.settleDays, opts.markets, opts.holidaySet) : opts.currentSettleDate;
+  }
+
+  // ---------- 去重 ----------
+
+  function dedupKey(recurringId, plannedDate) { return recurringId + '|' + plannedDate; }
+
+  // ---------- 定期不定額的建議金額（選配功能，db-design 7.5「待你決定要不要做」）----------
+  //
+  // 設計決策（詳見 claude/進度與決策.md 第 4 批）：只用在「手動下單」模式的買入範本。
+  // 基準價＝該持倉的平均成本（有部位時）或近 20 個交易日均價（沒有部位時，例如第一次買）；
+  // 現價偏離基準 ±5% 時，用「預計金額」的 20% 當一級加碼／減碼（現價低就加碼、現價高就減碼），
+  // 偏離在 ±5% 以內則維持原本的預計金額。這只是畫面上的提示，使用者確認時仍可自行輸入任何金額。
+  var SUGGEST_THRESHOLD_PCT = 0.05;
+  var SUGGEST_STEP_RATIO = 0.2;
+
+  function suggestedAmount(baseAmount, referencePrice, currentPrice) {
+    var base = Number(baseAmount) || 0;
+    if (!(referencePrice > 0) || !(currentPrice > 0) || !(base > 0)) {
+      return { amount: base, adjustment: 0, deviationPct: null, reason: '' };
+    }
+    var dev = (currentPrice - referencePrice) / referencePrice;
+    var step = base * SUGGEST_STEP_RATIO;
+    if (dev <= -SUGGEST_THRESHOLD_PCT) {
+      return { amount: base + step, adjustment: step, deviationPct: dev, reason: '現價比基準低 ' + Math.round(Math.abs(dev) * 100) + '%，建議加碼' };
+    }
+    if (dev >= SUGGEST_THRESHOLD_PCT) {
+      var amt = Math.max(base - step, 0);
+      return { amount: amt, adjustment: amt - base, deviationPct: dev, reason: '現價比基準高 ' + Math.round(dev * 100) + '%，建議減碼' };
+    }
+    return { amount: base, adjustment: 0, deviationPct: dev, reason: '現價接近基準，維持預計金額' };
+  }
+
+  var api = {
+    HOLIDAY_POLICIES: HOLIDAY_POLICIES,
+    monthlyRawDates: monthlyRawDates, adjustForHoliday: adjustForHoliday, fundingReminderDate: fundingReminderDate,
+    occurrences: occurrences, defaultSettleDays: defaultSettleDays, computeSettleDate: computeSettleDate,
+    wasSettleDateAuto: wasSettleDateAuto, recalcSettleDateOnTradeChange: recalcSettleDateOnTradeChange,
+    dedupKey: dedupKey, suggestedAmount: suggestedAmount,
+    SUGGEST_THRESHOLD_PCT: SUGGEST_THRESHOLD_PCT, SUGGEST_STEP_RATIO: SUGGEST_STEP_RATIO,
   };
   return api;
 })();
@@ -1801,6 +1992,92 @@ var FinAuth = (function () {
   };
 })();
 
+// ==================== server/mail.js ====================
+/**
+ * 提醒信：內容組成（純函式、可測試）與實際寄送（呼叫 MailApp，隔開來以便測試不必真的寄信）。
+ * 收件人固定是這個 Apps Script 的擁有者（Session.getEffectiveUser()），不需要另外設定信箱。
+ */
+var FinMail = (function () {
+  // ---------- 內容組成（純函式）----------
+  function fundingReminder(items) {
+    // items: [{templateName, accountName, dueDate, amount, symbol}]
+    var lines = items.map(function (it) {
+      return '・' + it.templateName + '　' + it.accountName + '　預計 ' + it.amount + ' ' + it.symbol + '（' + it.dueDate + ' 扣款）';
+    });
+    return {
+      subject: '［財務系統］資金備妥提醒（' + items.length + ' 筆）',
+      body: '以下定期扣款即將到期，請在扣款日前備妥款項：\n\n' + lines.join('\n') + '\n\n（此信由財務系統排程自動寄出）',
+    };
+  }
+
+  function manualOrderToday(item) {
+    // item: {templateName, accountName, symbol, amount}
+    return {
+      subject: '［財務系統］今天該買 ' + item.symbol + ' 了',
+      body: '定期範本「' + item.templateName + '」今天到期，請自行到券商下單：\n\n' +
+        '標的：' + item.symbol + '\n預計金額：' + item.amount + '\n帳戶：' + item.accountName + '\n\n' +
+        '買完之後，請到「財務管理」App 的「待確認」把實際成交結果填進去（成交日、股數、金額、手續費），交割日會依成交日自動算出。\n\n（此信由財務系統排程自動寄出）',
+    };
+  }
+
+  function settlementReminder(items) {
+    // items: [{accountName, settleDate, amount, symbol, side}]  side: '買入'扣款 / '賣出'入帳
+    var lines = items.map(function (it) {
+      return '・' + it.accountName + '　' + it.settleDate + ' ' + (it.side === '買入' ? '將扣款' : '將入帳') + ' ' + it.amount + ' ' + it.symbol;
+    });
+    return {
+      subject: '［財務系統］交割款提醒（' + items.length + ' 筆）',
+      body: '以下交易明天辦理交割，請留意帳戶款項：\n\n' + lines.join('\n') + '\n\n（此信由財務系統排程自動寄出）',
+    };
+  }
+
+  function stalePending(items) {
+    // items: [{templateName, plannedDate, days}]
+    var lines = items.map(function (it) {
+      return '・' + it.templateName + '　預定日 ' + it.plannedDate + '　已經待確認 ' + it.days + ' 天';
+    });
+    return {
+      subject: '［財務系統］有 ' + items.length + ' 筆待確認放了好幾天了',
+      body: '以下定期交易已經產生「待確認」一段時間，請記得到 App 確認或略過：\n\n' + lines.join('\n') + '\n\n（此信由財務系統排程自動寄出）',
+    };
+  }
+
+  function cardDueReminder(items) {
+    // items: [{accountName, dueDate, amount, symbol}]
+    var lines = items.map(function (it) {
+      return '・' + it.accountName + '　' + it.dueDate + ' 到期，待繳 ' + it.amount + ' ' + it.symbol;
+    });
+    return {
+      subject: '［財務系統］信用卡繳款日將近（' + items.length + ' 筆）',
+      body: '以下信用卡帳單即將到期：\n\n' + lines.join('\n') + '\n\n（此信由財務系統排程自動寄出）',
+    };
+  }
+
+  // ---------- 實際寄送 ----------
+  function send(subject, body) {
+    try {
+      var to = Session.getEffectiveUser().getEmail();
+      if (!to) return false;
+      MailApp.sendEmail(to, subject, body);
+      return true;
+    } catch (e) {
+      try { Logger.log('寄信失敗：' + (e && e.message)); } catch (x) { /* ignore */ }
+      return false;
+    }
+  }
+
+  function sendIfAny(items, builder) {
+    if (!items || !items.length) return false;
+    var m = builder(items);
+    return send(m.subject, m.body);
+  }
+
+  return {
+    fundingReminder: fundingReminder, manualOrderToday: manualOrderToday, settlementReminder: settlementReminder,
+    stalePending: stalePending, cardDueReminder: cardDueReminder, send: send, sendIfAny: sendIfAny,
+  };
+})();
+
 // ==================== server/api.js ====================
 /**
  * API：所有請求走 POST { action, params, session }；回應 { ok, data, session? } 或 { ok:false, error:{code,message,details?} }。
@@ -1856,7 +2133,8 @@ var FinApi = (function () {
       cardRows: cardRows, cardByAccount: mapBy(cardRows, 'accountId'), loanRows: loanRows, loanByAccount: mapBy(loanRows, 'accountId'),
       bad: [].concat(FinRepo.readTable('accounts').bad, FinRepo.readTable('categories').bad, FinRepo.readTable('instruments').bad,
         txAll.bad, FinRepo.readTable('prices').bad, FinRepo.readTable('brokerSettings').bad, FinRepo.readTable('holidays').bad,
-        FinRepo.readTable('cardSettings').bad, FinRepo.readTable('loanSettings').bad),
+        FinRepo.readTable('cardSettings').bad, FinRepo.readTable('loanSettings').bad, FinRepo.readTable('recurring').bad),
+      recurringRows: FinRepo.goodRows('recurring'),
     };
   }
 
@@ -1875,6 +2153,46 @@ var FinApi = (function () {
   function failValidation(res) {
     var first = res.errors.length ? res.errors[0].message : '資料不正確';
     return FinFail('VALIDATION', first, { errors: res.errors, warnings: res.warnings });
+  }
+
+  function holidaySetOf(c) {
+    if (!c.__holidaySet) c.__holidaySet = FinDates.buildHolidaySet(c.holidayRows);
+    return c.__holidaySet;
+  }
+  function marketsForAccount(c, accountId) {
+    var bs = c.brokerByAccount[accountId];
+    return bs && bs.calendar === '台灣+美國' ? ['台灣', '美國'] : ['台灣'];
+  }
+
+  /** 「待確認」清單，附上範本名稱／執行方式；手動下單的買入範本另外算「建議金額」（見 core/recurring.js 的設計說明） */
+  function pendingConfirmations(c) {
+    var tplById = mapBy(c.recurringRows, 'id');
+    var list = c.txRows.filter(function (t) { return t.status === '待確認'; }).map(function (t) {
+      var tpl = tplById[t.recurringId];
+      var o = pub(t);
+      o.templateName = tpl ? tpl.name : '';
+      o.mode = tpl ? tpl.mode : '';
+      if (tpl && tpl.mode === '手動下單' && t.type === '買入' && t.dstSymbol && t.srcQty) {
+        var cur = c.prices[t.dstSymbol];
+        var ref = referencePriceFor(c, t.dstAccount, t.dstSymbol);
+        if (ref && cur) o.suggested = FinRecurring.suggestedAmount(t.srcQty, ref, cur);
+      }
+      return o;
+    });
+    list.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    return list;
+  }
+
+  /** 建議金額用的基準價：有部位就用平均成本，沒有就用近 20 個交易日均價；都沒有回傳 null（畫面上就不顯示建議） */
+  function referencePriceFor(c, accountId, symbol) {
+    var h = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: c.today, prices: c.prices });
+    var pos = h.positions.filter(function (p) { return p.accountId === accountId && p.symbol === symbol; })[0];
+    if (pos && pos.qty > 0 && pos.costNative) return pos.costNative / pos.qty;
+    var rows = FinRepo.goodRows('priceHistory').filter(function (r) { return r.symbol === symbol; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    var last = rows.slice(-20);
+    if (!last.length) return null;
+    var sum = 0; last.forEach(function (r) { sum += r.close; });
+    return sum / last.length;
   }
 
   function summarizeTx(t) {
@@ -1922,6 +2240,7 @@ var FinApi = (function () {
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
         brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
         cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub),
+        recurring: c.recurringRows.map(pub), pendingConfirmations: pendingConfirmations(c),
         prices: c.priceInfo,
         balances: calc.balances.map(function (b) { return { accountId: b.accountId, symbol: b.symbol, qty: b.qty }; }),
         pending: calc.pending,
@@ -2003,7 +2322,7 @@ var FinApi = (function () {
         t.updatedAt = ts(env.now);
         var patch = {};
         FinSchema.TABLES.transactions.cols.forEach(function (col) {
-          if (col.key === 'id' || col.key === 'createdAt' || col.key === 'status') return;
+          if (col.key === 'id' || col.key === 'createdAt' || col.key === 'status' || col.key === 'plannedDate' || col.key === 'recurringId') return;
           patch[col.key] = t[col.key];
         });
         FinRepo.updateRow('transactions', row._row, patch);
@@ -2481,6 +2800,258 @@ var FinApi = (function () {
     },
   };
 
+  // ---------- 定期交易範本 ----------
+  function parseDays(v) {
+    if (Array.isArray(v)) return v.map(Number).filter(function (n) { return isFinite(n); });
+    return String(v === null || v === undefined ? '' : v).split(',').map(function (s) { return Number(s.trim()); }).filter(function (n) { return isFinite(n); });
+  }
+
+  function validateRecurringInput(a, c) {
+    var errors = [];
+    function err(field, message) { errors.push({ field: field, message: message }); }
+    var name = str(a.name);
+    if (!name) err('name', '請輸入名稱');
+    else if (name.length > 40) err('name', '名稱最多 40 字');
+    var freq = str(a.freq) || '每月';
+    if (FinSchema.ENUMS.recurFreq.indexOf(freq) < 0) err('freq', '請選擇頻率');
+    var daysArr = parseDays(a.days);
+    if (!daysArr.length) err('days', '請至少填一個執行日');
+    else if (freq === '每週' && daysArr.some(function (d) { return d < 0 || d > 6; })) err('days', '每週頻率的執行日請填 0～6（0＝週日）');
+    else if (freq !== '每週' && daysArr.some(function (d) { return d < 1 || d > 31; })) err('days', '執行日請填 1～31');
+    var holiday = str(a.holiday) || '順延';
+    if (FinSchema.ENUMS.recurHoliday.indexOf(holiday) < 0) err('holiday', '假日處理請選擇：' + FinSchema.ENUMS.recurHoliday.join('、'));
+    var startDate = str(a.startDate);
+    if (!FinDates.isValid(startDate)) err('startDate', '請輸入起始日');
+    var endDate = str(a.endDate);
+    if (endDate && !FinDates.isValid(endDate)) err('endDate', '結束日格式不正確');
+    else if (endDate && startDate && endDate < startDate) err('endDate', '結束日不能早於起始日');
+    var type = str(a.type);
+    if (FinSchema.ENUMS.recurTypes.indexOf(type) < 0) err('type', '請選擇類型');
+    var mode = str(a.mode);
+    if (FinSchema.ENUMS.recurMode.indexOf(mode) < 0) err('mode', '請選擇執行方式');
+    if (type === '貸款還款' && (mode === '券商定期定額' || mode === '手動下單')) err('mode', '貸款還款只能用「自動入帳」或「提醒確認」');
+    if ((mode === '券商定期定額' || mode === '手動下單') && type !== '買入' && type !== '賣出') err('mode', '「' + mode + '」只能用在「買入」或「賣出」');
+
+    var srcAccount = str(a.srcAccount), srcSymbol = str(a.srcSymbol), srcQty = a.srcQty === '' || a.srcQty === undefined || a.srcQty === null ? null : Number(a.srcQty);
+    var dstAccount = str(a.dstAccount), dstSymbol = str(a.dstSymbol), dstQty = a.dstQty === '' || a.dstQty === undefined || a.dstQty === null ? null : Number(a.dstQty);
+    function checkAccount(field, id, label) { if (id && !c.accounts[id]) err(field, '找不到' + label + '帳戶'); }
+    function checkSymbol(field, sym, label) { if (sym && !c.instruments[sym]) err(field, '找不到' + label + '標的'); }
+    checkAccount('srcAccount', srcAccount, '來源'); checkAccount('dstAccount', dstAccount, '目的');
+    checkSymbol('srcSymbol', srcSymbol, '來源'); checkSymbol('dstSymbol', dstSymbol, '目的');
+
+    if (type === '收入' || type === '股息') { if (!dstAccount || !dstSymbol) err('dstAccount', '請填目的帳戶與標的'); }
+    else if (type === '支出') { if (!srcAccount || !srcSymbol) err('srcAccount', '請填來源帳戶與標的'); }
+    else if (type === '轉帳' || type === '換匯') {
+      if (!srcAccount || !srcSymbol) err('srcAccount', '請填來源帳戶與標的');
+      if (!dstAccount || !dstSymbol) err('dstAccount', '請填目的帳戶與標的');
+    } else if (type === '買入') {
+      if (!srcAccount || !srcSymbol) err('srcAccount', '請填付款帳戶與幣別');
+      if (!dstAccount || !dstSymbol) err('dstAccount', '請填證券帳戶與標的');
+      if (c.instruments[dstSymbol] && c.instruments[dstSymbol].type === '法幣') err('dstSymbol', '目的標的請選股票／ETF／加密貨幣等投資標的');
+    } else if (type === '賣出') {
+      if (!srcAccount || !srcSymbol) err('srcAccount', '請填證券帳戶與標的');
+      if (!dstAccount || !dstSymbol) err('dstAccount', '請填收款帳戶與幣別');
+    } else if (type === '貸款還款') {
+      var loanAcct = c.accounts[dstAccount];
+      if (!loanAcct || loanAcct.type !== '貸款') err('dstAccount', '目的請選擇「貸款」類型的帳戶');
+    }
+    if (srcQty !== null && (!isFinite(srcQty) || srcQty <= 0)) err('srcQty', '來源數量必須大於 0');
+    if (dstQty !== null && (!isFinite(dstQty) || dstQty <= 0)) err('dstQty', '目的數量必須大於 0');
+
+    var categoryId = str(a.categoryId);
+    if (type === '收入' || type === '支出') {
+      var cat = c.categories[categoryId];
+      var wantType = type === '收入' ? '收入' : '支出';
+      if (!categoryId) err('categoryId', '請選擇分類');
+      else if (!cat) err('categoryId', '找不到分類');
+      else if (cat.type !== wantType) err('categoryId', type + '請選擇「' + wantType + '」分類');
+    } else categoryId = '';
+
+    var remindDays = a.remindDays === '' || a.remindDays === undefined || a.remindDays === null ? 1 : Number(a.remindDays);
+    if (!isFinite(remindDays) || remindDays < 0) err('remindDays', '資金備妥提醒天數必須是不小於 0 的數字');
+    var settleDaysRaw = a.settleDays;
+    var settleDays = settleDaysRaw === '' || settleDaysRaw === undefined || settleDaysRaw === null ? null : Number(settleDaysRaw);
+    if (settleDays !== null && (!isFinite(settleDays) || settleDays < 0)) err('settleDays', '交割天數必須是不小於 0 的數字');
+    var note = str(a.note);
+    if (note.length > 200) err('note', '備註最多 200 字');
+
+    var value = {
+      name: FinValidate.safeText(name), freq: freq, days: daysArr.slice().sort(function (x, y) { return x - y; }).join(','), holiday: holiday,
+      startDate: startDate, endDate: endDate, type: type, srcAccount: srcAccount, srcSymbol: srcSymbol, srcQty: srcQty,
+      dstAccount: dstAccount, dstSymbol: dstSymbol, dstQty: dstQty, categoryId: categoryId, mode: mode,
+      remindDays: remindDays, settleDays: settleDays, note: FinValidate.safeText(note),
+    };
+    return { errors: errors, value: value };
+  }
+
+  H.upsertRecurring = {
+    fn: function (p, env) {
+      var a = p.recurring;
+      if (!a || typeof a !== 'object') throw FinFail('BAD_REQUEST', '缺少定期範本資料');
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var existing = a.id ? FinRepo.findById('recurring', str(a.id)) : null;
+        if (a.id && !existing) throw FinFail('NOT_FOUND', '找不到定期範本 ' + a.id);
+        if (existing && existing._bad) throw FinFail('DATA_BAD', '這筆定期範本的資料有問題，請直接在試算表修正');
+        if (existing) checkExpected(existing, p.expectedUpdatedAt);
+        var r = validateRecurringInput(a, c);
+        if (r.errors.length) throw FinFail('VALIDATION', r.errors[0].message, { errors: r.errors, warnings: [] });
+        var now = ts(env.now), v = r.value, out;
+        if (existing) {
+          var patch = { name: v.name, freq: v.freq, days: v.days, holiday: v.holiday, startDate: v.startDate, endDate: v.endDate,
+            type: v.type, srcAccount: v.srcAccount, srcSymbol: v.srcSymbol, srcQty: v.srcQty, dstAccount: v.dstAccount, dstSymbol: v.dstSymbol,
+            dstQty: v.dstQty, categoryId: v.categoryId, mode: v.mode, remindDays: v.remindDays, settleDays: v.settleDays, note: v.note, updatedAt: now };
+          FinRepo.updateRow('recurring', existing._row, patch);
+          out = pub(existing); Object.keys(patch).forEach(function (k) { out[k] = patch[k]; });
+          FinRepo.audit('修改', 'recurring', out.id, out.name, env.device);
+        } else {
+          out = { id: FinRepo.nextIds('recurring', 1)[0], name: v.name, freq: v.freq, days: v.days, holiday: v.holiday,
+            startDate: v.startDate, endDate: v.endDate, type: v.type, srcAccount: v.srcAccount, srcSymbol: v.srcSymbol, srcQty: v.srcQty,
+            dstAccount: v.dstAccount, dstSymbol: v.dstSymbol, dstQty: v.dstQty, categoryId: v.categoryId, mode: v.mode,
+            remindDays: v.remindDays, settleDays: v.settleDays, active: true, lastRun: '', note: v.note, createdAt: now, updatedAt: now };
+          FinRepo.append('recurring', [out]);
+          FinRepo.audit('新增', 'recurring', out.id, out.name, env.device);
+        }
+        return { recurring: out };
+      });
+    },
+  };
+
+  H.setRecurringActive = {
+    fn: function (p, env) {
+      return FinRepo.withLock(function () {
+        loadContext(env.now);
+        var row = FinRepo.findById('recurring', str(p.id));
+        if (!row) throw FinFail('NOT_FOUND', '找不到定期範本');
+        var active = !!p.active, now = ts(env.now);
+        FinRepo.updateRow('recurring', row._row, { active: active, updatedAt: now });
+        FinRepo.audit(active ? '啟用' : '停用', 'recurring', row.id, row.name, env.device);
+        var out = pub(row); out.active = active; out.updatedAt = now;
+        return { recurring: out };
+      });
+    },
+  };
+
+  /** 手動立即執行一次排程（正常由每日觸發器自動執行；這裡提供給畫面上的「立即檢查」按鈕與測試使用） */
+  H.runRecurringScheduler = {
+    fn: function (p, env) { return FinRecurringJob.runDaily(env.now); },
+  };
+
+  function numOrThrow(v, label) {
+    var n = Number(v);
+    if (v === undefined || v === null || v === '' || !isFinite(n)) throw FinFail('VALIDATION', '請輸入' + label);
+    return n;
+  }
+
+  /** 確認一筆（或一組，例如貸款還款的本金＋利息）待確認交易；非投資類型可同時修改日期與兩端金額 */
+  H.confirmPending = {
+    fn: function (p, env) {
+      var id = str(p.id);
+      if (!id) throw FinFail('BAD_REQUEST', '缺少交易ID');
+      var requestId = str(p.requestId).slice(0, 64);
+      return FinRepo.withLock(function () {
+        if (requestId) { var prev = cacheGet('req:' + requestId); if (prev) return JSON.parse(prev); }
+        var c = loadContext(env.now);
+        var row = loadTxForWrite(c, id);
+        if (row.status !== '待確認') throw FinFail('BAD_STATE', '這筆交易目前不是待確認狀態');
+        var now = ts(env.now);
+        var legs = row.groupId ? c.txRows.filter(function (t) { return t.groupId === row.groupId && t.status === '待確認'; }) : [row];
+        if (legs.length === 1 && (row.type === '買入' || row.type === '賣出') && !p.trade) {
+          throw FinFail('VALIDATION', '買入／賣出的定期待確認需要填實際成交結果', { errors: [{ field: 'trade', message: '請填實際成交結果' }], warnings: [] });
+        }
+        var out = [];
+        if (legs.length > 1 || !p.trade) {
+          // 一組交易（例如貸款還款的本金＋利息）或沒有帶修改資料：金額已由排程算好，直接確認、不改金額
+          legs.forEach(function (t) {
+            FinRepo.updateRow('transactions', t._row, { status: '有效', updatedAt: now });
+            FinRepo.audit('確認', 'transactions', t.id, summarizeTx(t), env.device);
+            var o = pub(t); o.status = '有效'; o.updatedAt = now; out.push(o);
+          });
+        } else {
+          var trade = p.trade || {};
+          var patch = { status: '有效', updatedAt: now };
+          if (row.type === '買入' || row.type === '賣出') {
+            var newTradeDate = FinDates.isValid(str(trade.date)) ? str(trade.date) : row.date;
+            patch.date = newTradeDate;
+            var qty = numOrThrow(trade.qty, row.type === '買入' ? '成交股數' : '賣出股數');
+            var cashQty = numOrThrow(trade.cashQty, row.type === '買入' ? '實付金額' : '實收金額');
+            if (row.type === '買入') { patch.dstQty = qty; patch.srcQty = cashQty; } else { patch.srcQty = qty; patch.dstQty = cashQty; }
+            patch.amount = numOrThrow(trade.amount, '成交金額');
+            patch.fee = trade.fee === undefined || trade.fee === null || trade.fee === '' ? 0 : Number(trade.fee);
+            patch.tax = trade.tax === undefined || trade.tax === null || trade.tax === '' ? 0 : Number(trade.tax);
+            var tpl = row.recurringId ? FinRepo.findById('recurring', row.recurringId) : null;
+            var acctForCalendar = row.type === '買入' ? row.dstAccount : row.srcAccount;
+            var markets = marketsForAccount(c, acctForCalendar);
+            var settleDays = FinRecurring.defaultSettleDays(tpl || { settleDays: null, mode: '手動下單' }, buySettleDaysForAccount(c, acctForCalendar));
+            if (str(trade.settleDate) && FinDates.isValid(str(trade.settleDate))) {
+              patch.settleDate = str(trade.settleDate); // 使用者明確指定：視為手動覆寫
+            } else if (row.date && row.date !== newTradeDate) {
+              patch.settleDate = FinRecurring.recalcSettleDateOnTradeChange({
+                currentSettleDate: row.settleDate || row.date, oldTradeDate: row.date, newTradeDate: newTradeDate,
+                settleDays: settleDays, markets: markets, holidaySet: holidaySetOf(c),
+              });
+            } else {
+              patch.settleDate = row.settleDate || FinRecurring.computeSettleDate(newTradeDate, settleDays, markets, holidaySetOf(c));
+            }
+          } else {
+            if (trade.date && FinDates.isValid(str(trade.date))) patch.date = str(trade.date);
+            if (trade.srcQty !== undefined && trade.srcQty !== null && trade.srcQty !== '' && row.srcAccount) patch.srcQty = Number(trade.srcQty);
+            if (trade.dstQty !== undefined && trade.dstQty !== null && trade.dstQty !== '' && row.dstAccount) patch.dstQty = Number(trade.dstQty);
+          }
+          FinRepo.updateRow('transactions', row._row, patch);
+          FinRepo.audit('確認', 'transactions', row.id, '定期確認入帳：' + summarizeTx(row), env.device);
+          var oo = pub(row); Object.keys(patch).forEach(function (k) { oo[k] = patch[k]; }); out.push(oo);
+        }
+        var res = { transactions: out };
+        if (requestId) cachePut('req:' + requestId, JSON.stringify(res), 600);
+        return res;
+      });
+    },
+  };
+
+  function buySettleDaysForAccount(c, accountId) {
+    var bs = c.brokerByAccount[accountId];
+    return bs && bs.buySettleDays !== null && bs.buySettleDays !== undefined ? bs.buySettleDays : 2;
+  }
+
+  H.skipPending = {
+    fn: function (p, env) {
+      var id = str(p.id);
+      if (!id) throw FinFail('BAD_REQUEST', '缺少交易ID');
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var row = loadTxForWrite(c, id);
+        if (row.status !== '待確認') throw FinFail('BAD_STATE', '這筆交易目前不是待確認狀態');
+        var legs = row.groupId ? c.txRows.filter(function (t) { return t.groupId === row.groupId && t.status === '待確認'; }) : [row];
+        var now = ts(env.now);
+        legs.forEach(function (t) {
+          FinRepo.updateRow('transactions', t._row, { status: '已略過', updatedAt: now });
+          FinRepo.audit('略過', 'transactions', t.id, summarizeTx(t), env.device);
+        });
+        return { count: legs.length };
+      });
+    },
+  };
+
+  H.postponePending = {
+    fn: function (p, env) {
+      var id = str(p.id), newDate = str(p.date);
+      if (!id || !FinDates.isValid(newDate)) throw FinFail('BAD_REQUEST', '缺少交易ID或新的日期');
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var row = loadTxForWrite(c, id);
+        if (row.status !== '待確認') throw FinFail('BAD_STATE', '這筆交易目前不是待確認狀態');
+        var tpl = row.recurringId ? FinRepo.findById('recurring', row.recurringId) : null;
+        if (!tpl || tpl.mode !== '手動下單') throw FinFail('BAD_STATE', '只有「手動下單」的定期待確認可以延後');
+        var now = ts(env.now);
+        FinRepo.updateRow('transactions', row._row, { date: newDate, updatedAt: now });
+        FinRepo.audit('延後', 'transactions', row.id, '定期待確認延後至 ' + newDate, env.device);
+        var o = pub(row); o.date = newDate; o.updatedAt = now;
+        return { tx: o };
+      });
+    },
+  };
+
   // ---------- 持倉／投資損益 ----------
   H.getHoldings = {
     fn: function (p, env) {
@@ -2534,7 +3105,252 @@ var FinApi = (function () {
     }
   }
 
-  return { handle: handle, actions: Object.keys(H) };
+  return { handle: handle, actions: Object.keys(H), loadContext: loadContext, computeAll: computeAll };
+})();
+
+// ==================== server/recurring.js ====================
+/**
+ * 定期交易排程：每天執行一次（與既有的每日排程共用同一個時間觸發器，見 server/main.js 的 dailyJob）。
+ *  1. generateDue：把到期（含漏跑補跑）的定期交易，依執行方式寫成「有效」或「待確認」交易；同一（定期ID、預定日）只會產生一次。
+ *  2. sendReminders：資金備妥提醒（券商定期定額／手動下單）、手動下單當天提醒、交割前備妥款項提醒、
+ *     待確認放太久提醒、信用卡繳款日將近提醒。寄信失敗（例如還沒授權 script.send_mail）不會讓排程整個失敗。
+ * 這裡直接沿用 FinApi.loadContext 讀主檔，避免重複一份載入邏輯。
+ */
+var FinRecurringJob = (function () {
+  var STALE_PENDING_DAYS = 3; // 待確認放超過幾天寄信提醒一次（db-design 7.5「超過設定天數會寄信提醒」，天數未特別指定，取一個合理預設值）
+  var CARD_REMIND_DAYS = 3; // 信用卡繳款日前幾天寄信提醒（db-design 沒有指定天數，取一個合理預設值）
+  var LOOKAHEAD_DAYS = 14; // 往前看幾天找「即將到來」的到期日，用來判斷今天是不是資金備妥提醒日
+
+  function ts(ms) { return FinDates.timestamp(ms); }
+  function pub(row) { var o = {}; Object.keys(row).forEach(function (k) { if (k.charAt(0) !== '_') o[k] = row[k]; }); return o; }
+
+  function marketsFor(c, accountId) {
+    var bs = c.brokerByAccount[accountId];
+    return bs && bs.calendar === '台灣+美國' ? ['台灣', '美國'] : ['台灣'];
+  }
+  function buySettleDaysFor(c, accountId) {
+    var bs = c.brokerByAccount[accountId];
+    return bs && bs.buySettleDays !== null && bs.buySettleDays !== undefined ? bs.buySettleDays : 2;
+  }
+  function holidaySetOf(c) {
+    if (!c.__holidaySet) c.__holidaySet = FinDates.buildHolidaySet(c.holidayRows);
+    return c.__holidaySet;
+  }
+  function accountName(c, id) { var a = c.accounts[id]; return a ? a.name : id; }
+
+  function alreadyGenerated(txRows, recurringId, plannedDate) {
+    for (var i = 0; i < txRows.length; i++) {
+      if (txRows[i].recurringId === recurringId && txRows[i].plannedDate === plannedDate) return true;
+    }
+    return false;
+  }
+
+  /** 一般（非貸款還款）範本：依到期日與執行方式產生一或多筆交易列（尚未寫入） */
+  function buildOccurrenceRows(tpl, occ, c, env) {
+    var now = ts(env.now);
+    var isInvest = tpl.type === '買入' || tpl.type === '賣出';
+    var status = tpl.mode === '自動入帳' ? '有效' : '待確認';
+    var row = {
+      date: occ.due, settleDate: '', type: tpl.type,
+      srcAccount: tpl.srcAccount, srcSymbol: tpl.srcSymbol, srcQty: tpl.srcQty,
+      dstAccount: tpl.dstAccount, dstSymbol: tpl.dstSymbol, dstQty: tpl.dstQty,
+      categoryId: tpl.categoryId, amount: null, fee: null, tax: null,
+      relatedSymbol: '', groupId: '', relatedTxId: '', recurringId: tpl.id, plannedDate: occ.planned,
+      note: '定期：' + tpl.name, status: status, createdAt: now, updatedAt: now,
+    };
+    if (isInvest) {
+      // 到期時股數／成交金額都還不知道（要等券商成交或你自己下單），只有「來源」的預計投入金額是已知的
+      row.dstQty = tpl.type === '買入' ? null : tpl.dstQty; // 買入：股數未知；賣出模式較少見，維持範本預設股數
+      if (tpl.mode === '券商定期定額') {
+        row.settleDate = occ.due; // 交割天數 0：當天扣款
+      } else {
+        row.settleDate = ''; // 手動下單：交割日等實際成交日確定後才算
+      }
+      if (status === '有效') { // 自動入帳且是買入/賣出的極少見情境：沒有實際成交資料可用，直接用範本預設值
+        row.amount = tpl.srcQty || 0;
+        var markets = marketsFor(c, tpl.dstAccount || tpl.srcAccount);
+        row.settleDate = FinRecurring.computeSettleDate(occ.due, FinRecurring.defaultSettleDays(tpl, buySettleDaysFor(c, tpl.dstAccount)), markets, holidaySetOf(c));
+      }
+    } else if (status === '有效') {
+      row.settleDate = occ.due;
+    }
+    return [row];
+  }
+
+  /** 貸款還款範本：依攤還表算出這一期的本金／利息，產生同群組的「轉帳」（本金）＋「支出」（利息）——沿用批次 3 的邏輯 */
+  function buildLoanRows(tpl, occ, c, env) {
+    var loanAccountId = tpl.dstAccount || tpl.srcAccount;
+    var acct = c.accounts[loanAccountId];
+    var ls = c.loanByAccount[loanAccountId];
+    if (!acct || acct.type !== '貸款' || !ls) return { rows: [], skipped: '找不到貸款帳戶或貸款設定（' + loanAccountId + '）' };
+    var inst = c.instruments[acct.defaultSymbol];
+    var decimals = inst ? inst.decimals : 0;
+    var sched = FinLoan.schedule(ls, decimals);
+    var period = FinLoan.findPeriod(sched, occ.due) || sched[sched.length - 1];
+    if (!period) return { rows: [], skipped: '貸款已繳清' };
+    var fromAccount = ls.payAccountId || tpl.srcAccount;
+    var status = tpl.mode === '自動入帳' ? '有效' : '待確認';
+    var now = ts(env.now);
+    var rows = [];
+    if (period.principal > 0) {
+      rows.push({
+        date: occ.due, settleDate: occ.due, type: '轉帳',
+        srcAccount: fromAccount, srcSymbol: acct.defaultSymbol, srcQty: period.principal,
+        dstAccount: loanAccountId, dstSymbol: acct.defaultSymbol, dstQty: period.principal,
+        categoryId: '', amount: null, fee: null, tax: null, relatedSymbol: '', groupId: '', relatedTxId: '',
+        recurringId: tpl.id, plannedDate: occ.planned, note: '定期：' + tpl.name + '（第 ' + period.period + ' 期本金）',
+        status: status, createdAt: now, updatedAt: now,
+      });
+    }
+    if (period.interest > 0) {
+      var interestCat = c.categoryRows.filter(function (x) { return x.type === '支出' && x.name === '利息'; })[0];
+      rows.push({
+        date: occ.due, settleDate: occ.due, type: '支出',
+        srcAccount: fromAccount, srcSymbol: acct.defaultSymbol, srcQty: period.interest,
+        dstAccount: '', dstSymbol: '', dstQty: null,
+        categoryId: interestCat ? interestCat.id : '', amount: null, fee: null, tax: null, relatedSymbol: '', groupId: '', relatedTxId: '',
+        recurringId: tpl.id, plannedDate: occ.planned, note: '定期：' + tpl.name + '（第 ' + period.period + ' 期利息）',
+        status: status, createdAt: now, updatedAt: now,
+      });
+    }
+    return { rows: rows };
+  }
+
+  /** 產生所有到期（含漏跑補跑）的定期交易；回傳 {created:[...], skipped:[...]} */
+  function generateDue(c, env) {
+    var created = [], skipped = [];
+    var templates = FinRepo.goodRows('recurring').filter(function (t) { return t.active; });
+    templates.forEach(function (tpl) {
+      var markets = tpl.type === '貸款還款' ? ['台灣'] : marketsFor(c, tpl.dstAccount || tpl.srcAccount);
+      var days = String(tpl.days || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean).map(Number);
+      var fromExclusive = tpl.lastRun || FinDates.addDays(tpl.startDate, -1);
+      var occ = FinRecurring.occurrences({ freq: tpl.freq, days: days, holiday: tpl.holiday, startDate: tpl.startDate, endDate: tpl.endDate },
+        fromExclusive, c.today, markets, holidaySetOf(c));
+      if (!occ.length) return;
+      var maxPlanned = tpl.lastRun || '';
+      occ.forEach(function (o) {
+        if (o.planned > maxPlanned) maxPlanned = o.planned;
+        if (alreadyGenerated(c.txRows, tpl.id, o.planned)) return; // 去重：同一（定期ID、預定日）不重複產生
+        var built = tpl.type === '貸款還款' ? buildLoanRows(tpl, o, c, env) : { rows: buildOccurrenceRows(tpl, o, c, env) };
+        if (built.skipped) { skipped.push({ recurringId: tpl.id, planned: o.planned, reason: built.skipped }); return; }
+        if (!built.rows.length) return;
+        var ids = FinRepo.nextIds('transactions', built.rows.length);
+        var groupId = built.rows.length > 1 ? ids[0] : '';
+        built.rows.forEach(function (r, i) { r.id = ids[i]; if (groupId) r.groupId = groupId; });
+        FinRepo.append('transactions', built.rows);
+        built.rows.forEach(function (r) {
+          c.txRows.push(r); // 讓同一次排程執行內，後續的到期日去重判斷看得到剛剛產生的列
+          FinRepo.audit('新增', 'transactions', r.id, '定期產生：' + tpl.name + '（' + r.date + '，' + r.status + '）', 'scheduler');
+          created.push(r);
+        });
+        if (tpl.mode === '手動下單') {
+          FinMail.sendIfAny([{ templateName: tpl.name, accountName: accountName(c, tpl.dstAccount || tpl.srcAccount), symbol: tpl.dstSymbol || tpl.srcSymbol, amount: tpl.srcQty }], FinMail.manualOrderToday);
+        }
+      });
+      if (maxPlanned && maxPlanned !== tpl.lastRun) {
+        var row = FinRepo.findById('recurring', tpl.id);
+        if (row) FinRepo.updateRow('recurring', row._row, { lastRun: maxPlanned, updatedAt: ts(env.now) });
+      }
+    });
+    return { created: created, skipped: skipped };
+  }
+
+  /** 資金備妥提醒（券商定期定額／手動下單）：往前看 LOOKAHEAD_DAYS 天內的到期日，今天剛好是提醒日就寄信 */
+  function sendFundingReminders(c, env) {
+    var items = [];
+    var templates = FinRepo.goodRows('recurring').filter(function (t) { return t.active && (t.mode === '券商定期定額' || t.mode === '手動下單'); });
+    templates.forEach(function (tpl) {
+      var markets = marketsFor(c, tpl.dstAccount || tpl.srcAccount);
+      var days = String(tpl.days || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean).map(Number);
+      var occ = FinRecurring.occurrences({ freq: tpl.freq, days: days, holiday: tpl.holiday, startDate: tpl.startDate, endDate: tpl.endDate },
+        c.today, FinDates.addDays(c.today, LOOKAHEAD_DAYS), markets, holidaySetOf(c));
+      occ.forEach(function (o) {
+        var remindOn = FinRecurring.fundingReminderDate(o.due, tpl.remindDays, markets, holidaySetOf(c));
+        if (remindOn === c.today) {
+          items.push({ templateName: tpl.name, accountName: accountName(c, tpl.srcAccount), dueDate: o.due, amount: tpl.srcQty, symbol: tpl.srcSymbol });
+        }
+      });
+    });
+    FinMail.sendIfAny(items, FinMail.fundingReminder);
+    return items.length;
+  }
+
+  /** 交割前備妥款項提醒：所有「有效」買入／賣出交易，交割日的前一個營業日剛好是今天 */
+  function sendSettlementReminders(c, env) {
+    var items = [];
+    c.txRows.forEach(function (t) {
+      if (t.status !== '有效' || (t.type !== '買入' && t.type !== '賣出') || !t.settleDate || t.settleDate <= c.today) return;
+      var acctId = t.type === '買入' ? t.srcAccount : t.dstAccount;
+      var markets = marketsFor(c, t.type === '買入' ? t.dstAccount : t.srcAccount);
+      var remindOn = FinRecurring.fundingReminderDate(t.settleDate, 1, markets, holidaySetOf(c));
+      if (remindOn === c.today) {
+        var qty = t.type === '買入' ? t.srcQty : t.dstQty;
+        var sym = t.type === '買入' ? t.srcSymbol : t.dstSymbol;
+        items.push({ accountName: accountName(c, acctId), settleDate: t.settleDate, amount: qty, symbol: sym, side: t.type });
+      }
+    });
+    FinMail.sendIfAny(items, FinMail.settlementReminder);
+    return items.length;
+  }
+
+  /** 待確認放太久提醒 */
+  function sendStalePendingReminders(c, env) {
+    var tplById = {};
+    FinRepo.goodRows('recurring').forEach(function (t) { tplById[t.id] = t; });
+    var items = [];
+    c.txRows.forEach(function (t) {
+      if (t.status !== '待確認' || !t.recurringId) return;
+      var createdDate = String(t.createdAt || '').slice(0, 10);
+      if (!createdDate) return;
+      var age = daysBetween(createdDate, c.today);
+      if (age >= STALE_PENDING_DAYS) {
+        var tpl = tplById[t.recurringId];
+        items.push({ templateName: tpl ? tpl.name : t.recurringId, plannedDate: t.plannedDate || t.date, days: age });
+      }
+    });
+    FinMail.sendIfAny(items, FinMail.stalePending);
+    return items.length;
+  }
+
+  function daysBetween(a, b) {
+    var pa = FinDates.parse(a), pb = FinDates.parse(b);
+    if (!pa || !pb) return 0;
+    var ta = Date.UTC(pa.y, pa.m - 1, pa.d), tb = Date.UTC(pb.y, pb.m - 1, pb.d);
+    return Math.round((tb - ta) / 86400000);
+  }
+
+  /** 信用卡繳款日將近提醒 */
+  function sendCardDueReminders(c, env) {
+    var items = [];
+    c.cardRows.forEach(function (cs) {
+      var acct = c.accounts[cs.accountId];
+      if (!acct || acct.type !== '信用卡') return;
+      var inst = c.instruments[acct.defaultSymbol];
+      var s = FinCreditCard.summary(c.txRows, cs.accountId, acct.defaultSymbol, inst ? inst.decimals : 0, cs, c.today);
+      if (!s.dueDate || s.statementAmountDue <= 0) return;
+      if (daysBetween(c.today, s.dueDate) === CARD_REMIND_DAYS) {
+        items.push({ accountName: acct.name, dueDate: s.dueDate, amount: s.statementAmountDue, symbol: acct.defaultSymbol });
+      }
+    });
+    FinMail.sendIfAny(items, FinMail.cardDueReminder);
+    return items.length;
+  }
+
+  /** 每天排程的進入點：先產生到期交易，再寄各種提醒信。任何一種提醒信失敗都不影響其他步驟。 */
+  function runDaily(now) {
+    FinRepo.reset();
+    var env = { now: now, device: 'scheduler' };
+    var c = FinApi.loadContext(now);
+    var gen = generateDue(c, env);
+    var summary = { created: gen.created.length, skipped: gen.skipped.length };
+    try { summary.fundingReminders = sendFundingReminders(c, env); } catch (e) { summary.fundingRemindersError = e.message; }
+    try { summary.settlementReminders = sendSettlementReminders(c, env); } catch (e) { summary.settlementRemindersError = e.message; }
+    try { summary.staleReminders = sendStalePendingReminders(c, env); } catch (e) { summary.staleRemindersError = e.message; }
+    try { summary.cardReminders = sendCardDueReminders(c, env); } catch (e) { summary.cardRemindersError = e.message; }
+    return summary;
+  }
+
+  return { runDaily: runDaily, generateDue: generateDue, sendFundingReminders: sendFundingReminders, sendSettlementReminders: sendSettlementReminders, sendStalePendingReminders: sendStalePendingReminders, sendCardDueReminders: sendCardDueReminders };
 })();
 
 // ==================== server/setup.js ====================
@@ -2700,6 +3516,7 @@ function doPost(e) {
 
 function dailyJob() {
   FinJobs.refreshPrices();
+  try { FinRecurringJob.runDaily(FinClock.now()); } catch (e) { try { Logger.log('定期排程失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
 }
 
 // ---------- 試算表選單 ----------
@@ -2712,7 +3529,7 @@ function onOpen() {
     .addItem('新增裝置授權碼', 'menuAddDevice')
     .addItem('查看或撤銷裝置', 'menuManageDevices')
     .addItem('登出所有裝置', 'menuSignOutAll')
-    .addItem('安裝每日排程（更新匯率）', 'menuInstallTriggers')
+    .addItem('安裝每日排程（匯率、定期交易、提醒信）', 'menuInstallTriggers')
     .addItem('檢查目前狀態', 'menuStatus')
     .addToUi();
 }
@@ -2789,7 +3606,8 @@ function menuSignOutAll() {
 
 function menuInstallTriggers() {
   FinSetup.installDailyTrigger();
-  alert_('已安裝', '每天早上 7 點會自動更新匯率。第一次安裝時 Google 可能會要求你授權，請按允許。');
+  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信。' +
+    '第一次安裝、或第一次寄信時 Google 可能會要求你另外授權（寄信需要的 script.send_mail 權限），請按允許。');
 }
 
 function menuStatus() {

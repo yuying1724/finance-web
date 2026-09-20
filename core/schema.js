@@ -11,6 +11,8 @@ var FinSchema = (function () {
     categoryTypes: ['收入', '支出', '系統'],
     recurFreq: ['每週', '每月', '每季', '每年'],
     recurMode: ['自動入帳', '提醒確認', '券商定期定額', '手動下單'],
+    recurHoliday: ['順延', '提前', '不調整'],
+    recurTypes: ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '貸款還款'],
     priceSources: ['GOOGLEFINANCE', 'CoinGecko', '固定值', '手動'],
   };
   // 第 1 批已開放的交易類型；其餘類型在後續批次啟用
@@ -67,7 +69,8 @@ var FinSchema = (function () {
         c('dstAccount', '目的帳戶'), c('dstSymbol', '目的標的'), c('dstQty', '目的數量', 'num'),
         c('categoryId', '分類ID'), c('amount', '成交金額', 'num'), c('fee', '手續費', 'num'), c('tax', '稅款', 'num'),
         c('relatedSymbol', '關聯標的'), c('groupId', '群組ID'), c('relatedTxId', '關聯交易ID'), c('recurringId', '定期ID'),
-        c('note', '備註'), c('status', '狀態'), c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts')],
+        c('note', '備註'), c('status', '狀態'), c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts'),
+        c('plannedDate', '計畫日期', 'date')],
     },
     txTags: { sheet: '交易標籤', idKey: null, cols: [c('txId', '交易ID'), c('tag', '標籤')] },
     recurring: {
@@ -122,7 +125,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.3.0',
+    APP_VERSION: '0.4.0',
   };
   return api;
 })();

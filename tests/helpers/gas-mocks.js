@@ -154,7 +154,7 @@ class MockUi {
 function createMocks() {
   const state = {
     clock: { now: Date.UTC(2026, 2, 10, 4, 0, 0) }, // 台灣時間 2026-03-10 12:00
-    spreadsheets: {}, props: {}, cache: {}, triggers: [], sleptMs: 0, lockHeld: false, lockCalls: 0, logs: [], ui: new MockUi(),
+    spreadsheets: {}, props: {}, cache: {}, triggers: [], sleptMs: 0, lockHeld: false, lockCalls: 0, logs: [], ui: new MockUi(), mail: [],
   };
   let active = null;
   const newSheet = (id) => { const ss = new MockSpreadsheet(id || 'sheet-' + Object.keys(state.spreadsheets).length); state.spreadsheets[ss.id] = ss; return ss; };
@@ -208,7 +208,9 @@ function createMocks() {
     },
   };
   const Logger = { log: (m) => state.logs.push(String(m)) };
-  return { state, newSheet, setActive: (ss) => { active = ss; }, globals: { SpreadsheetApp, PropertiesService, CacheService, LockService, Utilities, ContentService, ScriptApp, Logger } };
+  const MailApp = { sendEmail: (to, subject, body) => { state.mail.push({ to, subject, body }); } };
+  const Session = { getEffectiveUser: () => ({ getEmail: () => 'owner@example.com' }), getActiveUser: () => ({ getEmail: () => 'owner@example.com' }) };
+  return { state, newSheet, setActive: (ss) => { active = ss; }, globals: { SpreadsheetApp, PropertiesService, CacheService, LockService, Utilities, ContentService, ScriptApp, Logger, MailApp, Session } };
 }
 
 module.exports = { createMocks, MockSheet, MockSpreadsheet };

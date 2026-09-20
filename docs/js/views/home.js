@@ -42,6 +42,13 @@ export function renderHome(root) {
       h('div', null, h('a', { href: '#/settings' }, '到設定查看細節')))));
   }
 
+  if (d.pendingConfirmations && d.pendingConfirmations.length) {
+    children.push(h('div', { class: 'notice', 'data-testid': 'pending-notice' }, icon('refresh'), h('div', null,
+      `${d.pendingConfirmations.length} 筆待確認`,
+      h('div', { class: 'small muted' }, '定期交易到期了，請到「定期」確認金額後入帳'),
+      h('div', null, h('a', { href: '#/recurring' }, '去確認')))));
+  }
+
   const m = d.month;
   children.push(h('div', { class: 'card' },
     h('div', { class: 'card-title' }, h('h2', null, monthLabel(m.ym)), h('a', { class: 'link-btn', href: '#/tx' }, '看明細')),

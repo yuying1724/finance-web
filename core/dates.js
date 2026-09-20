@@ -75,6 +75,16 @@ var FinDates = (function () {
     return true;
   }
 
+  /** 某市場在這天是否「有交易」：週六日一律不算；holidaySet 為 {'市場|日期': {trading,settling}}。
+   * 與 isSettleDay 的差異：春節封關「僅辦理結算交割作業」的日子 trading=false、settling=true，isTradingDay 回傳 false、isSettleDay 回傳 true。 */
+  function isTradingDay(str, market, holidaySet) {
+    var wd = weekday(str);
+    if (wd === 0 || wd === 6) return false;
+    var h = holidaySet ? holidaySet[market + '|' + str] : null;
+    if (h && h.trading === false) return false;
+    return true;
+  }
+
   /** 成交日後第 n 個營業日（依 markets 陣列全部都要是營業日才算，例如複委託用 ['台灣','美國']） */
   function addSettleDays(tradeDate, n, markets, holidaySet) {
     var d = tradeDate, count = 0, guard = 0;
@@ -98,7 +108,7 @@ var FinDates = (function () {
   var api = {
     parse: parse, isValid: isValid, format: format, addDays: addDays, weekday: weekday, ymOf: ymOf, monthRange: monthRange,
     addMonths: addMonths, timestamp: timestamp, today: today, fromCell: fromCell, daysInMonth: daysInMonth,
-    isSettleDay: isSettleDay, addSettleDays: addSettleDays, buildHolidaySet: buildHolidaySet,
+    isSettleDay: isSettleDay, isTradingDay: isTradingDay, addSettleDays: addSettleDays, buildHolidaySet: buildHolidaySet,
   };
   return api;
 })();
