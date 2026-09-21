@@ -73,8 +73,12 @@ var FinCreditCard = (function () {
    * cardSettings: { statementDay, dueDay, limit }
    * txs: 全部交易（函式內部依日期與帳戶篩選）；symbol/decimals：這張卡記帳用的幣別與其小數位數
    * asOfDate: 'yyyy-MM-dd'，通常是今天
+   * group（選填）：{ limit, owed }，皆為「顯示單位」的數字（不是最小單位）。同一「額度群組」的好幾張卡共用一個額度時，
+   * 呼叫端先算好這個群組每張卡各自的 currentlyOwed 並加總成 owed，limit 則是這個群組共用的總額度；
+   * 傳入後「可用額度」會改成 group.limit − group.owed（而不是這張卡自己的 limit − currentlyOwed），
+   * 但「本期消費」「上期帳單待繳」等其他欄位維持只看這張卡自己的交易，不受影響。
    */
-  function summary(txs, cardAccountId, symbol, decimals, cardSettings, asOfDate) {
+  function summary(txs, cardAccountId, symbol, decimals, cardSettings, asOfDate, group) {
     var current = periodContaining(cardSettings.statementDay, asOfDate);
     var currentSpend = periodSpend(txs, cardAccountId, symbol, decimals, { start: current.start, end: asOfDate });
     var lastClosedEnd = prevStatementEnd(cardSettings.statementDay, current.end);
@@ -100,13 +104,17 @@ var FinCreditCard = (function () {
     var currentlyOwed = balanceTodayUnits < 0 ? FinMoney.fromUnits(-balanceTodayUnits, decimals) : 0;
 
     var limit = Number(cardSettings.limit) || 0;
-    var availableCredit = limit > 0 ? FinMoney.round(Math.max(0, limit - currentlyOwed), decimals) : null;
+    var hasGroup = !!(group && Number(group.limit) > 0);
+    var effLimit = hasGroup ? Number(group.limit) : limit;
+    var effOwed = hasGroup ? Number(group.owed) || 0 : currentlyOwed;
+    var availableCredit = effLimit > 0 ? FinMoney.round(Math.max(0, effLimit - effOwed), decimals) : null;
 
     return {
       currentPeriod: current, currentSpend: currentSpend,
       lastClosedPeriod: lastClosed, statementAmountDue: statementAmountDue, dueDate: dueDate,
       currentlyOwed: currentlyOwed, overdue: statementAmountDue > 0 && asOfDate > dueDate,
       limit: limit || null, availableCredit: availableCredit,
+      sharedLimit: hasGroup, groupLimit: hasGroup ? effLimit : null, groupOwed: hasGroup ? effOwed : null,
     };
   }
 

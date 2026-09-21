@@ -32,7 +32,7 @@ function fieldHelpers() {
 
 // ---------- 信用卡設定 ----------
 export function openCardSettingsForm({ account, card, onDone } = {}) {
-  const f = card ? { ...card } : { statementDay: '5', dueDay: '20', limit: '', payAccountId: '', note: '' };
+  const f = card ? { ...card } : { statementDay: '5', dueDay: '20', limit: '', payAccountId: '', note: '', limitGroup: '' };
   Object.keys(f).forEach((k) => { if (f[k] === null || f[k] === undefined) f[k] = ''; else f[k] = String(f[k]); });
   const { banner, fld, showErr, clearErr } = fieldHelpers();
 
@@ -40,12 +40,18 @@ export function openCardSettingsForm({ account, card, onDone } = {}) {
   const payAcctSel = h('select', { onchange: (e) => { f.payAccountId = e.target.value; } },
     [h('option', { value: '' }, '（不指定）')].concat(cashAccounts(account.id).map((a) => h('option', { value: a.id, selected: a.id === f.payAccountId }, a.name))));
   const noteInput = h('input', { type: 'text', maxlength: 200, value: f.note, oninput: (e) => { f.note = e.target.value; } });
+  // 額度群組：同一機構好幾張卡共用一個總額度時，填同一個名稱（例如「富邦」）；用既有的群組名稱做建議，避免打錯字對不起來
+  const existingGroups = Array.from(new Set((state.data.cardSettings || [])
+    .map((x) => x.limitGroup).filter((x) => x && x.trim() && x !== (card && card.limitGroup))));
+  const groupListId = 'limit-group-list';
+  const groupInput = h('input', { type: 'text', maxlength: 60, list: groupListId, value: f.limitGroup, placeholder: '例如：富邦（不填表示這張卡額度獨立）', oninput: (e) => { f.limitGroup = e.target.value; } });
+  const groupDatalist = h('datalist', { id: groupListId }, existingGroups.map((g) => h('option', { value: g })));
 
   const save = h('button', { class: 'btn btn-primary', type: 'button', 'data-testid': 'card-save', onclick: async (e) => {
     clearErr();
     await withBusy(e.currentTarget, async () => {
       try {
-        await api.call('upsertCardSettings', { card: { accountId: account.id, statementDay: f.statementDay, dueDay: f.dueDay, limit: f.limit, payAccountId: f.payAccountId, note: f.note } });
+        await api.call('upsertCardSettings', { card: { accountId: account.id, statementDay: f.statementDay, dueDay: f.dueDay, limit: f.limit, payAccountId: f.payAccountId, note: f.note, limitGroup: f.limitGroup } });
         sheet.close();
         if (onDone) await onDone();
         toast('已儲存信用卡設定');
@@ -58,11 +64,12 @@ export function openCardSettingsForm({ account, card, onDone } = {}) {
 
   const sheet = openSheet({
     title: '信用卡設定', dismissable: false,
-    body: h('div', null, banner,
+    body: h('div', null, banner, groupDatalist,
       h('div', { class: 'notice', style: { marginBottom: '12px' } }, `帳戶：${account.name}`),
       fld('statementDay', '結帳日', numInput('statementDay', '1～31'), '每個月幾號結算這一期帳單'),
       fld('dueDay', '繳款截止日', numInput('dueDay', '1～31'), '結帳日之後，帳單最晚繳款日'),
-      fld('limit', '額度（選填）', numInput('limit'), '留空或填 0 表示不限制'),
+      fld('limit', '額度（選填）', numInput('limit'), '這張卡的額度；如果跟其他卡共用額度，這裡請填「共用的總額度」'),
+      fld('limitGroup', '額度群組（選填）', groupInput, '同一群組的卡片會共用這個額度，可用額度＝總額度－群組內所有卡片欠款加總'),
       fld('payAccountId', '預設繳款帳戶（選填）', payAcctSel),
       fld('note', '備註（選填）', noteInput)),
     footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save],
@@ -129,11 +136,16 @@ export function openCardStatement(account) {
       ['目前總欠款', money(s.currentlyOwed, s.symbol)],
       ['上期帳單待繳', money(s.statementAmountDue, s.symbol)],
       ['繳款截止日', s.dueDate || '—'],
-      ['可用額度', s.availableCredit === null ? '未設定額度' : money(s.availableCredit, s.symbol)],
+      [s.sharedLimit ? `可用額度（與 ${s.groupMembers.length} 張卡共用）` : '可用額度', s.availableCredit === null ? '未設定額度' : money(s.availableCredit, s.symbol)],
     ];
+    const groupBlock = s.sharedLimit ? h('div', { class: 'notice', style: { marginTop: '12px' } },
+      h('div', { class: 't', style: { marginBottom: '6px' } }, `額度群組「${s.limitGroup}」共用總額度 ${money(s.groupLimit, s.symbol)}`),
+      s.groupLimitMismatch ? h('div', { class: 'muted small', style: { marginBottom: '6px', color: 'var(--bad)' } }, '這個群組裡的卡片，額度欄位填的數字不一致，可用額度是用這張卡自己填的數字去算，建議把群組內每張卡的額度都改成同一個總額度') : null,
+      h('ul', { class: 'list small' }, s.groupMembers.map((m) => h('li', null, `${m.name}：欠款 ${money(m.currentlyOwed, m.symbol)}`)))) : null;
     mount(body,
       s.overdue ? h('div', { class: 'notice bad', style: { marginBottom: '12px' } }, '這期帳單已逾期，請盡快繳款') : null,
       h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
+      groupBlock,
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account, card: s.cardSettings, onDone: refresh }), 0); } }, '設定信用卡')));
   }).catch((e) => { clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e)),

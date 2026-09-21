@@ -69,6 +69,49 @@ test('信用卡帳單：沒設定時明確錯誤；刷卡、退款、還款都�
   void s3;
 });
 
+test('額度群組：同一額度群組的多張卡共用總額度，可用額度＝群組總額度－群組內所有卡加總欠款', () => {
+  const b = fresh();
+  const bank = b.acct('銀行', '銀行');
+  const cardA = b.acct('富邦-J卡', '信用卡');
+  const cardB = b.acct('富邦-數位生活卡', '信用卡');
+  const cardC = b.acct('富邦-Costco卡', '信用卡'); // 同群組但目前還沒消費
+  b.card({ accountId: cardA, statementDay: 5, dueDay: 20, limit: 320000, limitGroup: '富邦' });
+  b.card({ accountId: cardB, statementDay: 5, dueDay: 20, limit: 320000, limitGroup: '富邦' });
+  b.card({ accountId: cardC, statementDay: 5, dueDay: 20, limit: 320000, limitGroup: '富邦' });
+
+  assert.ok(b.add({ type: '支出', date: '2026-03-10', srcAccount: cardA, srcSymbol: 'TWD', srcQty: 50000, categoryId: cat(b, '飲食') }).ok);
+  assert.ok(b.add({ type: '支出', date: '2026-03-11', srcAccount: cardB, srcSymbol: 'TWD', srcQty: 30000, categoryId: cat(b, '飲食') }).ok);
+
+  const sa = b.statement(cardA, '2026-03-20');
+  assert.ok(sa.ok, JSON.stringify(sa));
+  assert.equal(sa.data.sharedLimit, true);
+  assert.equal(sa.data.currentlyOwed, 50000, '這張卡自己的欠款欄位不受群組影響');
+  assert.equal(sa.data.availableCredit, 320000 - 50000 - 30000, '可用額度要扣掉整個群組（A+B+C）加總的欠款');
+  assert.equal(sa.data.groupMembers.length, 3);
+  assert.equal(sa.data.groupLimitMismatch, false);
+
+  const sc = b.statement(cardC, '2026-03-20');
+  assert.equal(sc.data.currentlyOwed, 0, '這張卡自己還沒消費');
+  assert.equal(sc.data.availableCredit, 320000 - 50000 - 30000, '同群組的可用額度對每張卡來說都一樣，因為是共用的');
+
+  // 還掉 A 卡一部分：群組可用額度要跟著回升
+  assert.ok(b.add({ type: '轉帳', date: '2026-03-15', srcAccount: bank, srcSymbol: 'TWD', srcQty: 20000, dstAccount: cardA, dstSymbol: 'TWD', dstQty: 20000 }).ok);
+  const sa2 = b.statement(cardA, '2026-03-20');
+  assert.equal(sa2.data.availableCredit, 320000 - 30000 - 30000);
+
+  // 額度填不一致時要標記出來，但仍以這張卡自己填的額度計算，不會讓系統壞掉
+  b.card({ accountId: cardC, statementDay: 5, dueDay: 20, limit: 999999, limitGroup: '富邦' });
+  const sa3 = b.statement(cardA, '2026-03-20');
+  assert.equal(sa3.data.groupLimitMismatch, true);
+
+  // 沒有填額度群組的卡（獨立）：不受富邦群組影響
+  const solo = b.acct('玉山白金卡', '信用卡');
+  b.card({ accountId: solo, statementDay: 5, dueDay: 20, limit: 50000 });
+  const ss = b.statement(solo, '2026-03-20');
+  assert.equal(ss.data.sharedLimit, false);
+  assert.equal(ss.data.availableCredit, 50000);
+});
+
 function cat(b, name) {
   const boot = b.boot();
   const found = boot.categories.find((c) => c.name === name && c.type === '支出');

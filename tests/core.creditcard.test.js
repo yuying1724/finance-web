@@ -80,3 +80,30 @@ test('沒有設定額度（limit=0）：availableCredit 回傳 null，不誤報�
   assert.equal(s.availableCredit, null);
   assert.equal(s.limit, null);
 });
+
+test('summary：傳入 group（同額度群組多張卡）時，可用額度改用「群組總額度－群組內所有卡加總欠款」，其他欄位不受影響', () => {
+  const cardSettings = { statementDay: 5, dueDay: 20, limit: 100000 };
+  const txs = [
+    tx({ date: '2026-03-10', type: '支出', srcAccount: 'CARD_A', srcSymbol: 'TWD', srcQty: 3000 }),
+  ];
+  // 沒有 group：可用額度 = 這張卡自己的額度(100000) - 自己欠款(3000)
+  const solo = FinCreditCard.summary(txs, 'CARD_A', 'TWD', 0, cardSettings, '2026-03-20');
+  assert.equal(solo.availableCredit, 97000);
+  assert.equal(solo.sharedLimit, false);
+
+  // 有 group：假設同群組另一張卡欠了 5000，群組共用總額度 100000
+  const shared = FinCreditCard.summary(txs, 'CARD_A', 'TWD', 0, cardSettings, '2026-03-20', { limit: 100000, owed: 3000 + 5000 });
+  assert.equal(shared.availableCredit, 100000 - 8000, '可用額度要扣掉群組內其他卡片的欠款，不能只看自己這張卡');
+  assert.equal(shared.sharedLimit, true);
+  assert.equal(shared.groupLimit, 100000);
+  assert.equal(shared.groupOwed, 8000);
+  // currentSpend／currentlyOwed 這些「這張卡自己」的欄位不受 group 影響
+  assert.equal(shared.currentSpend, solo.currentSpend);
+  assert.equal(shared.currentlyOwed, solo.currentlyOwed);
+});
+
+test('summary：group 內欠款加總超過總額度時，可用額度夾在 0，不會變負數', () => {
+  const cardSettings = { statementDay: 5, dueDay: 20, limit: 50000 };
+  const s = FinCreditCard.summary([], 'CARD_A', 'TWD', 0, cardSettings, '2026-03-20', { limit: 50000, owed: 70000 });
+  assert.equal(s.availableCredit, 0);
+});

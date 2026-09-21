@@ -41,7 +41,7 @@ var FinSchema = (function () {
     cardSettings: {
       sheet: '信用卡設定', idKey: 'accountId',
       cols: [c('accountId', '帳戶ID'), c('limit', '額度', 'num'), c('statementDay', '結帳日', 'num'), c('dueDay', '繳款日', 'num'),
-        c('expiry', '到期年月'), c('payAccountId', '預設繳款帳戶ID'), c('note', '備註')],
+        c('expiry', '到期年月'), c('payAccountId', '預設繳款帳戶ID'), c('note', '備註'), c('limitGroup', '額度群組')],
     },
     loanSettings: {
       sheet: '貸款設定', idKey: 'accountId',
@@ -131,7 +131,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.4.0',
+    APP_VERSION: '0.5.0',
   };
   return api;
 })();
@@ -1084,8 +1084,12 @@ var FinCreditCard = (function () {
    * cardSettings: { statementDay, dueDay, limit }
    * txs: 全部交易（函式內部依日期與帳戶篩選）；symbol/decimals：這張卡記帳用的幣別與其小數位數
    * asOfDate: 'yyyy-MM-dd'，通常是今天
+   * group（選填）：{ limit, owed }，皆為「顯示單位」的數字（不是最小單位）。同一「額度群組」的好幾張卡共用一個額度時，
+   * 呼叫端先算好這個群組每張卡各自的 currentlyOwed 並加總成 owed，limit 則是這個群組共用的總額度；
+   * 傳入後「可用額度」會改成 group.limit − group.owed（而不是這張卡自己的 limit − currentlyOwed），
+   * 但「本期消費」「上期帳單待繳」等其他欄位維持只看這張卡自己的交易，不受影響。
    */
-  function summary(txs, cardAccountId, symbol, decimals, cardSettings, asOfDate) {
+  function summary(txs, cardAccountId, symbol, decimals, cardSettings, asOfDate, group) {
     var current = periodContaining(cardSettings.statementDay, asOfDate);
     var currentSpend = periodSpend(txs, cardAccountId, symbol, decimals, { start: current.start, end: asOfDate });
     var lastClosedEnd = prevStatementEnd(cardSettings.statementDay, current.end);
@@ -1111,13 +1115,17 @@ var FinCreditCard = (function () {
     var currentlyOwed = balanceTodayUnits < 0 ? FinMoney.fromUnits(-balanceTodayUnits, decimals) : 0;
 
     var limit = Number(cardSettings.limit) || 0;
-    var availableCredit = limit > 0 ? FinMoney.round(Math.max(0, limit - currentlyOwed), decimals) : null;
+    var hasGroup = !!(group && Number(group.limit) > 0);
+    var effLimit = hasGroup ? Number(group.limit) : limit;
+    var effOwed = hasGroup ? Number(group.owed) || 0 : currentlyOwed;
+    var availableCredit = effLimit > 0 ? FinMoney.round(Math.max(0, effLimit - effOwed), decimals) : null;
 
     return {
       currentPeriod: current, currentSpend: currentSpend,
       lastClosedPeriod: lastClosed, statementAmountDue: statementAmountDue, dueDate: dueDate,
       currentlyOwed: currentlyOwed, overdue: statementAmountDue > 0 && asOfDate > dueDate,
       limit: limit || null, availableCredit: availableCredit,
+      sharedLimit: hasGroup, groupLimit: hasGroup ? effLimit : null, groupOwed: hasGroup ? effOwed : null,
     };
   }
 
@@ -2654,7 +2662,8 @@ var FinApi = (function () {
     if (!isFinite(limitVal) || limitVal < 0) { errors.push({ field: 'limit', message: '額度必須是不小於 0 的數字' }); limitVal = 0; }
     var payAccountId = str(a.payAccountId);
     if (payAccountId && !c.accounts[payAccountId]) errors.push({ field: 'payAccountId', message: '找不到預設繳款帳戶' });
-    var value = { accountId: accountId, limit: limitVal, statementDay: statementDay, dueDay: dueDay, expiry: str(a.expiry), payAccountId: payAccountId, note: FinValidate.safeText(str(a.note)) };
+    var limitGroup = FinValidate.safeText(str(a.limitGroup));
+    var value = { accountId: accountId, limit: limitVal, statementDay: statementDay, dueDay: dueDay, expiry: str(a.expiry), payAccountId: payAccountId, note: FinValidate.safeText(str(a.note)), limitGroup: limitGroup };
     return { errors: errors, value: value };
   }
 
@@ -2686,9 +2695,32 @@ var FinApi = (function () {
       var inst = c.instruments[symbol];
       if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
       var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
-      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf);
+
+      // 額度群組：同一「額度群組」名稱（完全比對、去除前後空白）的信用卡共用一個總額度；
+      // 「可用額度」＝ 群組總額度 − 群組內所有卡片目前欠款的加總，而不是只看這張卡自己的額度。
+      var group = null, groupMembers = null, groupLimitMismatch = false;
+      if (cs.limitGroup) {
+        var siblings = c.cardRows.filter(function (r) { return r.limitGroup === cs.limitGroup; });
+        if (siblings.length > 1) {
+          var owedSum = 0, limits = {};
+          groupMembers = siblings.map(function (r) {
+            var mAcct = c.accounts[r.accountId];
+            var mSymbol = mAcct ? mAcct.defaultSymbol : symbol;
+            var mInst = c.instruments[mSymbol] || inst;
+            var mSummary = FinCreditCard.summary(c.txRows, r.accountId, mSymbol, mInst.decimals, r, asOf);
+            owedSum += Number(mSummary.currentlyOwed) || 0;
+            limits[Number(r.limit) || 0] = true;
+            return { accountId: r.accountId, name: mAcct ? mAcct.name : r.accountId, currentlyOwed: mSummary.currentlyOwed, symbol: mSymbol };
+          });
+          groupLimitMismatch = Object.keys(limits).length > 1;
+          group = { limit: Number(cs.limit) || 0, owed: owedSum };
+        }
+      }
+
+      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf, group);
       var out = { accountId: accountId, symbol: symbol, cardSettings: pub(cs) };
       Object.keys(s).forEach(function (k) { out[k] = s[k]; });
+      if (group) { out.groupMembers = groupMembers; out.groupLimitMismatch = groupLimitMismatch; }
       return out;
     },
   };

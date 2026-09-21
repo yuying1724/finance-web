@@ -573,7 +573,8 @@ var FinApi = (function () {
     if (!isFinite(limitVal) || limitVal < 0) { errors.push({ field: 'limit', message: '額度必須是不小於 0 的數字' }); limitVal = 0; }
     var payAccountId = str(a.payAccountId);
     if (payAccountId && !c.accounts[payAccountId]) errors.push({ field: 'payAccountId', message: '找不到預設繳款帳戶' });
-    var value = { accountId: accountId, limit: limitVal, statementDay: statementDay, dueDay: dueDay, expiry: str(a.expiry), payAccountId: payAccountId, note: FinValidate.safeText(str(a.note)) };
+    var limitGroup = FinValidate.safeText(str(a.limitGroup));
+    var value = { accountId: accountId, limit: limitVal, statementDay: statementDay, dueDay: dueDay, expiry: str(a.expiry), payAccountId: payAccountId, note: FinValidate.safeText(str(a.note)), limitGroup: limitGroup };
     return { errors: errors, value: value };
   }
 
@@ -605,9 +606,32 @@ var FinApi = (function () {
       var inst = c.instruments[symbol];
       if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
       var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
-      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf);
+
+      // 額度群組：同一「額度群組」名稱（完全比對、去除前後空白）的信用卡共用一個總額度；
+      // 「可用額度」＝ 群組總額度 − 群組內所有卡片目前欠款的加總，而不是只看這張卡自己的額度。
+      var group = null, groupMembers = null, groupLimitMismatch = false;
+      if (cs.limitGroup) {
+        var siblings = c.cardRows.filter(function (r) { return r.limitGroup === cs.limitGroup; });
+        if (siblings.length > 1) {
+          var owedSum = 0, limits = {};
+          groupMembers = siblings.map(function (r) {
+            var mAcct = c.accounts[r.accountId];
+            var mSymbol = mAcct ? mAcct.defaultSymbol : symbol;
+            var mInst = c.instruments[mSymbol] || inst;
+            var mSummary = FinCreditCard.summary(c.txRows, r.accountId, mSymbol, mInst.decimals, r, asOf);
+            owedSum += Number(mSummary.currentlyOwed) || 0;
+            limits[Number(r.limit) || 0] = true;
+            return { accountId: r.accountId, name: mAcct ? mAcct.name : r.accountId, currentlyOwed: mSummary.currentlyOwed, symbol: mSymbol };
+          });
+          groupLimitMismatch = Object.keys(limits).length > 1;
+          group = { limit: Number(cs.limit) || 0, owed: owedSum };
+        }
+      }
+
+      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf, group);
       var out = { accountId: accountId, symbol: symbol, cardSettings: pub(cs) };
       Object.keys(s).forEach(function (k) { out[k] = s[k]; });
+      if (group) { out.groupMembers = groupMembers; out.groupLimitMismatch = groupLimitMismatch; }
       return out;
     },
   };

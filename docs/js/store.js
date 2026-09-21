@@ -9,7 +9,7 @@ function set(key, value) {
 export const prefs = {
   get token() { return get('fin.token'); }, set token(v) { set('fin.token', v); },
   get apiUrl() { return get('fin.apiUrl') || (window.FIN_CONFIG && window.FIN_CONFIG.apiUrl) || ''; }, set apiUrl(v) { set('fin.apiUrl', v); },
-  get theme() { return get('fin.theme') || 'auto'; },
+  get theme() { return get('fin.theme') || 'light'; },
   set theme(v) { set('fin.theme', v === 'auto' ? null : v); applyTheme(); },
   get updown() { return get('fin.updown') || 'tw'; },
   set updown(v) { set('fin.updown', v === 'tw' ? null : v); applyTheme(); },
