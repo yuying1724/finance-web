@@ -139,7 +139,7 @@ export function openCardStatement(account) {
       [s.sharedLimit ? `可用額度（與 ${s.groupMembers.length} 張卡共用）` : '可用額度', s.availableCredit === null ? '未設定額度' : money(s.availableCredit, s.symbol)],
     ];
     const groupBlock = s.sharedLimit ? h('div', { class: 'notice', style: { marginTop: '12px' } },
-      h('div', { class: 't', style: { marginBottom: '6px' } }, `額度群組「${s.limitGroup}」共用總額度 ${money(s.groupLimit, s.symbol)}`),
+      h('div', { class: 't', style: { marginBottom: '6px' } }, `額度群組「${s.cardSettings.limitGroup}」共用總額度 ${money(s.groupLimit, s.symbol)}`),
       s.groupLimitMismatch ? h('div', { class: 'muted small', style: { marginBottom: '6px', color: 'var(--bad)' } }, '這個群組裡的卡片，額度欄位填的數字不一致，可用額度是用這張卡自己填的數字去算，建議把群組內每張卡的額度都改成同一個總額度') : null,
       h('ul', { class: 'list small' }, s.groupMembers.map((m) => h('li', null, `${m.name}：欠款 ${money(m.currentlyOwed, m.symbol)}`)))) : null;
     mount(body,
