@@ -607,31 +607,37 @@ var FinApi = (function () {
       if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
       var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
 
-      // 額度群組：同一「額度群組」名稱（完全比對、去除前後空白）的信用卡共用一個總額度；
-      // 「可用額度」＝ 群組總額度 − 群組內所有卡片目前欠款的加總，而不是只看這張卡自己的額度。
-      var group = null, groupMembers = null, groupLimitMismatch = false;
+      // 額度群組：同一「額度群組」名稱（完全比對、去除前後空白）的信用卡不只共用額度，
+      // 台灣的信用卡實務上這種情況通常是銀行把這幾張卡合併成一張帳單寄出（同一結帳日／繳款日、一個總金額）。
+      // 所以本期消費／上期帳單待繳／目前總欠款／可用額度都要用整個群組加總計算，不是只看這張卡自己的交易；
+      // groupMembers 只用來顯示「這期各自刷了多少」給使用者參考，不影響上面那些整組加總的數字。
+      var groupIds = null, groupMembers = null, groupLimitMismatch = false, groupDateMismatch = false;
       if (cs.limitGroup) {
         var siblings = c.cardRows.filter(function (r) { return r.limitGroup === cs.limitGroup; });
         if (siblings.length > 1) {
-          var owedSum = 0, limits = {};
+          groupIds = siblings.map(function (r) { return r.accountId; });
+          var limits = {}, statementDays = {}, dueDays = {};
+          siblings.forEach(function (r) {
+            limits[Number(r.limit) || 0] = true;
+            statementDays[String(r.statementDay)] = true;
+            dueDays[String(r.dueDay)] = true;
+          });
+          groupLimitMismatch = Object.keys(limits).length > 1;
+          groupDateMismatch = Object.keys(statementDays).length > 1 || Object.keys(dueDays).length > 1;
           groupMembers = siblings.map(function (r) {
             var mAcct = c.accounts[r.accountId];
             var mSymbol = mAcct ? mAcct.defaultSymbol : symbol;
             var mInst = c.instruments[mSymbol] || inst;
-            var mSummary = FinCreditCard.summary(c.txRows, r.accountId, mSymbol, mInst.decimals, r, asOf);
-            owedSum += Number(mSummary.currentlyOwed) || 0;
-            limits[Number(r.limit) || 0] = true;
-            return { accountId: r.accountId, name: mAcct ? mAcct.name : r.accountId, currentlyOwed: mSummary.currentlyOwed, symbol: mSymbol };
+            var mSpend = FinCreditCard.periodSpend(c.txRows, r.accountId, mSymbol, mInst.decimals, FinCreditCard.periodContaining(cs.statementDay, asOf));
+            return { accountId: r.accountId, name: mAcct ? mAcct.name : r.accountId, currentSpend: mSpend, symbol: mSymbol };
           });
-          groupLimitMismatch = Object.keys(limits).length > 1;
-          group = { limit: Number(cs.limit) || 0, owed: owedSum };
         }
       }
 
-      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf, group);
+      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf, groupIds);
       var out = { accountId: accountId, symbol: symbol, cardSettings: pub(cs) };
       Object.keys(s).forEach(function (k) { out[k] = s[k]; });
-      if (group) { out.groupMembers = groupMembers; out.groupLimitMismatch = groupLimitMismatch; }
+      if (groupIds) { out.groupMembers = groupMembers; out.groupLimitMismatch = groupLimitMismatch; out.groupDateMismatch = groupDateMismatch; }
       return out;
     },
   };

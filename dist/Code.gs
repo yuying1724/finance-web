@@ -1052,30 +1052,39 @@ var FinCreditCard = (function () {
     return d;
   }
 
-  /** 某帳戶、某標的，從交易列表算出「截至 asOfDate」的餘額（整數單位）；只看兩端是這張卡本身的部分 */
-  function balanceUnitsAsOf(txs, cardAccountId, symbol, decimals, asOfDate) {
+  /** 某帳戶（或同額度群組多張卡，cardAccountIds 可傳陣列）、某標的，從交易列表算出「截至 asOfDate」的餘額（整數單位） */
+  function balanceUnitsAsOf(txs, cardAccountIds, symbol, decimals, asOfDate) {
+    var idSet = toIdSet(cardAccountIds);
     var units = 0;
     for (var i = 0; i < txs.length; i++) {
       var t = txs[i];
       if (t.status !== '有效' || t.date > asOfDate) continue;
-      if (t.srcAccount === cardAccountId && t.srcSymbol === symbol && t.srcQty !== null && t.srcQty !== undefined && t.srcQty !== '') {
+      if (idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null && t.srcQty !== undefined && t.srcQty !== '') {
         units -= FinMoney.toUnits(t.srcQty, decimals);
       }
-      if (t.dstAccount === cardAccountId && t.dstSymbol === symbol && t.dstQty !== null && t.dstQty !== undefined && t.dstQty !== '') {
+      if (idSet[t.dstAccount] && t.dstSymbol === symbol && t.dstQty !== null && t.dstQty !== undefined && t.dstQty !== '') {
         units += FinMoney.toUnits(t.dstQty, decimals);
       }
     }
     return units;
   }
 
-  /** 某區間內：以該卡為來源的「支出」總額，扣掉退回這張卡的「退款」（不含還款轉帳，還款不算這期的消費） */
-  function periodSpend(txs, cardAccountId, symbol, decimals, period) {
+  function toIdSet(cardAccountIds) {
+    var ids = Array.isArray(cardAccountIds) ? cardAccountIds : [cardAccountIds];
+    var set = {};
+    ids.forEach(function (id) { set[id] = true; });
+    return set;
+  }
+
+  /** 某區間內：以這張卡（或同額度群組多張卡，cardAccountIds 可傳陣列）為來源的「支出」總額，扣掉退回的「退款」（不含還款轉帳，還款不算這期的消費） */
+  function periodSpend(txs, cardAccountIds, symbol, decimals, period) {
+    var idSet = toIdSet(cardAccountIds);
     var spendUnits = 0, refundUnits = 0;
     for (var i = 0; i < txs.length; i++) {
       var t = txs[i];
       if (t.status !== '有效' || t.date < period.start || t.date > period.end) continue;
-      if (t.type === '支出' && t.srcAccount === cardAccountId && t.srcSymbol === symbol && t.srcQty !== null) spendUnits += FinMoney.toUnits(t.srcQty, decimals);
-      else if (t.type === '退款' && t.dstAccount === cardAccountId && t.dstSymbol === symbol && t.dstQty !== null) refundUnits += FinMoney.toUnits(t.dstQty, decimals);
+      if (t.type === '支出' && idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null) spendUnits += FinMoney.toUnits(t.srcQty, decimals);
+      else if (t.type === '退款' && idSet[t.dstAccount] && t.dstSymbol === symbol && t.dstQty !== null) refundUnits += FinMoney.toUnits(t.dstQty, decimals);
     }
     return FinMoney.fromUnits(spendUnits - refundUnits, decimals);
   }
@@ -1084,48 +1093,51 @@ var FinCreditCard = (function () {
    * cardSettings: { statementDay, dueDay, limit }
    * txs: 全部交易（函式內部依日期與帳戶篩選）；symbol/decimals：這張卡記帳用的幣別與其小數位數
    * asOfDate: 'yyyy-MM-dd'，通常是今天
-   * group（選填）：{ limit, owed }，皆為「顯示單位」的數字（不是最小單位）。同一「額度群組」的好幾張卡共用一個額度時，
-   * 呼叫端先算好這個群組每張卡各自的 currentlyOwed 並加總成 owed，limit 則是這個群組共用的總額度；
-   * 傳入後「可用額度」會改成 group.limit − group.owed（而不是這張卡自己的 limit − currentlyOwed），
-   * 但「本期消費」「上期帳單待繳」等其他欄位維持只看這張卡自己的交易，不受影響。
+   * groupAccountIds（選填）：同一「額度群組」所有卡片的帳戶ID陣列（含 cardAccountId 自己），長度 > 1 才視為有群組。
+   * 台灣的信用卡實務上，共用額度的多張卡通常是銀行合併成一張帳單寄出（同一結帳日／繳款日、一個總金額），
+   * 所以傳入 groupAccountIds 時，本期消費／上期帳單待繳／目前總欠款／可用額度全部都是「整個群組加總」的結果，
+   * 不是只看 cardAccountId 這張卡自己的交易；cardSettings（結帳日／繳款日／額度）則沿用呼叫端傳入的這一份
+   * （假設同群組卡片的結帳日／繳款日／額度本來就該一致，呼叫端另外用 groupDateMismatch／groupLimitMismatch 標記不一致的情況）。
+   * 沒有傳 groupAccountIds（或只有 1 個 id）時，行為等同單張卡，不受影響。
    */
-  function summary(txs, cardAccountId, symbol, decimals, cardSettings, asOfDate, group) {
+  function summary(txs, cardAccountId, symbol, decimals, cardSettings, asOfDate, groupAccountIds) {
+    var ids = (groupAccountIds && groupAccountIds.length > 1) ? groupAccountIds : [cardAccountId];
+    var hasGroup = ids.length > 1;
+
     var current = periodContaining(cardSettings.statementDay, asOfDate);
-    var currentSpend = periodSpend(txs, cardAccountId, symbol, decimals, { start: current.start, end: asOfDate });
+    var currentSpend = periodSpend(txs, ids, symbol, decimals, { start: current.start, end: asOfDate });
     var lastClosedEnd = prevStatementEnd(cardSettings.statementDay, current.end);
     var lastClosedStart = FinDates.addDays(prevStatementEnd(cardSettings.statementDay, lastClosedEnd), 1);
     var lastClosed = { start: lastClosedStart, end: lastClosedEnd };
 
     var dueDate = dueDateFor(cardSettings.dueDay, lastClosed.end);
-    var balanceAtCloseUnits = balanceUnitsAsOf(txs, cardAccountId, symbol, decimals, lastClosed.end);
+    var balanceAtCloseUnits = balanceUnitsAsOf(txs, ids, symbol, decimals, lastClosed.end);
     var debtAtCloseUnits = balanceAtCloseUnits < 0 ? -balanceAtCloseUnits : 0;
-    // 結帳之後、今天之前，任何轉入這張卡的金額（還款、退款…）都算已經繳掉這期帳單，扣掉之後才是這期還欠多少
+    // 結帳之後、今天之前，任何轉入這張卡（或同群組任一張卡）的金額（還款、退款…）都算已經繳掉這期帳單，扣掉之後才是這期還欠多少
+    var idSet = toIdSet(ids);
     var creditsAfterCloseUnits = 0;
     for (var ci = 0; ci < txs.length; ci++) {
       var ct = txs[ci];
       if (ct.status !== '有效' || ct.date <= lastClosed.end || ct.date > asOfDate) continue;
-      if (ct.dstAccount === cardAccountId && ct.dstSymbol === symbol && ct.dstQty !== null && ct.dstQty !== undefined && ct.dstQty !== '') {
+      if (idSet[ct.dstAccount] && ct.dstSymbol === symbol && ct.dstQty !== null && ct.dstQty !== undefined && ct.dstQty !== '') {
         creditsAfterCloseUnits += FinMoney.toUnits(ct.dstQty, decimals);
       }
     }
     var statementDueUnits = Math.max(0, debtAtCloseUnits - creditsAfterCloseUnits);
     var statementAmountDue = FinMoney.fromUnits(statementDueUnits, decimals);
 
-    var balanceTodayUnits = balanceUnitsAsOf(txs, cardAccountId, symbol, decimals, asOfDate);
+    var balanceTodayUnits = balanceUnitsAsOf(txs, ids, symbol, decimals, asOfDate);
     var currentlyOwed = balanceTodayUnits < 0 ? FinMoney.fromUnits(-balanceTodayUnits, decimals) : 0;
 
     var limit = Number(cardSettings.limit) || 0;
-    var hasGroup = !!(group && Number(group.limit) > 0);
-    var effLimit = hasGroup ? Number(group.limit) : limit;
-    var effOwed = hasGroup ? Number(group.owed) || 0 : currentlyOwed;
-    var availableCredit = effLimit > 0 ? FinMoney.round(Math.max(0, effLimit - effOwed), decimals) : null;
+    var availableCredit = limit > 0 ? FinMoney.round(Math.max(0, limit - currentlyOwed), decimals) : null;
 
     return {
       currentPeriod: current, currentSpend: currentSpend,
       lastClosedPeriod: lastClosed, statementAmountDue: statementAmountDue, dueDate: dueDate,
       currentlyOwed: currentlyOwed, overdue: statementAmountDue > 0 && asOfDate > dueDate,
       limit: limit || null, availableCredit: availableCredit,
-      sharedLimit: hasGroup, groupLimit: hasGroup ? effLimit : null, groupOwed: hasGroup ? effOwed : null,
+      sharedLimit: hasGroup, groupSize: hasGroup ? ids.length : null,
     };
   }
 
@@ -2696,31 +2708,37 @@ var FinApi = (function () {
       if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
       var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
 
-      // 額度群組：同一「額度群組」名稱（完全比對、去除前後空白）的信用卡共用一個總額度；
-      // 「可用額度」＝ 群組總額度 − 群組內所有卡片目前欠款的加總，而不是只看這張卡自己的額度。
-      var group = null, groupMembers = null, groupLimitMismatch = false;
+      // 額度群組：同一「額度群組」名稱（完全比對、去除前後空白）的信用卡不只共用額度，
+      // 台灣的信用卡實務上這種情況通常是銀行把這幾張卡合併成一張帳單寄出（同一結帳日／繳款日、一個總金額）。
+      // 所以本期消費／上期帳單待繳／目前總欠款／可用額度都要用整個群組加總計算，不是只看這張卡自己的交易；
+      // groupMembers 只用來顯示「這期各自刷了多少」給使用者參考，不影響上面那些整組加總的數字。
+      var groupIds = null, groupMembers = null, groupLimitMismatch = false, groupDateMismatch = false;
       if (cs.limitGroup) {
         var siblings = c.cardRows.filter(function (r) { return r.limitGroup === cs.limitGroup; });
         if (siblings.length > 1) {
-          var owedSum = 0, limits = {};
+          groupIds = siblings.map(function (r) { return r.accountId; });
+          var limits = {}, statementDays = {}, dueDays = {};
+          siblings.forEach(function (r) {
+            limits[Number(r.limit) || 0] = true;
+            statementDays[String(r.statementDay)] = true;
+            dueDays[String(r.dueDay)] = true;
+          });
+          groupLimitMismatch = Object.keys(limits).length > 1;
+          groupDateMismatch = Object.keys(statementDays).length > 1 || Object.keys(dueDays).length > 1;
           groupMembers = siblings.map(function (r) {
             var mAcct = c.accounts[r.accountId];
             var mSymbol = mAcct ? mAcct.defaultSymbol : symbol;
             var mInst = c.instruments[mSymbol] || inst;
-            var mSummary = FinCreditCard.summary(c.txRows, r.accountId, mSymbol, mInst.decimals, r, asOf);
-            owedSum += Number(mSummary.currentlyOwed) || 0;
-            limits[Number(r.limit) || 0] = true;
-            return { accountId: r.accountId, name: mAcct ? mAcct.name : r.accountId, currentlyOwed: mSummary.currentlyOwed, symbol: mSymbol };
+            var mSpend = FinCreditCard.periodSpend(c.txRows, r.accountId, mSymbol, mInst.decimals, FinCreditCard.periodContaining(cs.statementDay, asOf));
+            return { accountId: r.accountId, name: mAcct ? mAcct.name : r.accountId, currentSpend: mSpend, symbol: mSymbol };
           });
-          groupLimitMismatch = Object.keys(limits).length > 1;
-          group = { limit: Number(cs.limit) || 0, owed: owedSum };
         }
       }
 
-      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf, group);
+      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf, groupIds);
       var out = { accountId: accountId, symbol: symbol, cardSettings: pub(cs) };
       Object.keys(s).forEach(function (k) { out[k] = s[k]; });
-      if (group) { out.groupMembers = groupMembers; out.groupLimitMismatch = groupLimitMismatch; }
+      if (groupIds) { out.groupMembers = groupMembers; out.groupLimitMismatch = groupLimitMismatch; out.groupDateMismatch = groupDateMismatch; }
       return out;
     },
   };
@@ -3351,17 +3369,28 @@ var FinRecurringJob = (function () {
     return Math.round((tb - ta) / 86400000);
   }
 
-  /** 信用卡繳款日將近提醒 */
+  /** 信用卡繳款日將近提醒。同一「額度群組」的卡片視為一張合併帳單，同一組只寄一封（合併帳號名稱、金額用整組加總），不會重複寄好幾封 */
   function sendCardDueReminders(c, env) {
     var items = [];
+    var seenGroups = {};
     c.cardRows.forEach(function (cs) {
       var acct = c.accounts[cs.accountId];
       if (!acct || acct.type !== '信用卡') return;
+      var siblings = cs.limitGroup ? c.cardRows.filter(function (r) {
+        var a = c.accounts[r.accountId];
+        return r.limitGroup === cs.limitGroup && a && a.type === '信用卡';
+      }) : [cs];
+      var ids = siblings.length > 1 ? siblings.map(function (r) { return r.accountId; }) : null;
+      if (ids) {
+        if (seenGroups[cs.limitGroup]) return; // 這個群組已經算過一次，避免同一張合併帳單被重複寄好幾封信
+        seenGroups[cs.limitGroup] = true;
+      }
       var inst = c.instruments[acct.defaultSymbol];
-      var s = FinCreditCard.summary(c.txRows, cs.accountId, acct.defaultSymbol, inst ? inst.decimals : 0, cs, c.today);
+      var s = FinCreditCard.summary(c.txRows, cs.accountId, acct.defaultSymbol, inst ? inst.decimals : 0, cs, c.today, ids);
       if (!s.dueDate || s.statementAmountDue <= 0) return;
       if (daysBetween(c.today, s.dueDate) === CARD_REMIND_DAYS) {
-        items.push({ accountName: acct.name, dueDate: s.dueDate, amount: s.statementAmountDue, symbol: acct.defaultSymbol });
+        var name = ids ? siblings.map(function (r) { return (c.accounts[r.accountId] || {}).name || r.accountId; }).join('、') : acct.name;
+        items.push({ accountName: name, dueDate: s.dueDate, amount: s.statementAmountDue, symbol: acct.defaultSymbol });
       }
     });
     FinMail.sendIfAny(items, FinMail.cardDueReminder);

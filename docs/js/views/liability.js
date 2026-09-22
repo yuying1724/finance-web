@@ -131,17 +131,22 @@ export function openCardStatement(account) {
   const sheet = openSheet({ title: `${account.name}　帳單`, body });
   api.call('getCardStatement', { accountId: account.id }).then((s) => {
     clear(body);
+    // 額度群組：同群組的卡片視為銀行合併成一張帳單（同結帳日／繳款日、一個總金額），
+    // 所以本期消費／目前總欠款／上期帳單待繳／可用額度都是「整組加總」，不是只看這張卡自己的交易。
+    const suffix = s.sharedLimit ? `（「${s.cardSettings.limitGroup}」合併帳單）` : '';
     const rows = [
-      ['本期消費', money(s.currentSpend, s.symbol)],
-      ['目前總欠款', money(s.currentlyOwed, s.symbol)],
-      ['上期帳單待繳', money(s.statementAmountDue, s.symbol)],
+      [`本期消費${suffix}`, money(s.currentSpend, s.symbol)],
+      [`目前總欠款${suffix}`, money(s.currentlyOwed, s.symbol)],
+      [`上期帳單待繳${suffix}`, money(s.statementAmountDue, s.symbol)],
       ['繳款截止日', s.dueDate || '—'],
-      [s.sharedLimit ? `可用額度（與 ${s.groupMembers.length} 張卡共用）` : '可用額度', s.availableCredit === null ? '未設定額度' : money(s.availableCredit, s.symbol)],
+      [`可用額度${suffix}`, s.availableCredit === null ? '未設定額度' : money(s.availableCredit, s.symbol)],
     ];
     const groupBlock = s.sharedLimit ? h('div', { class: 'notice', style: { marginTop: '12px' } },
-      h('div', { class: 't', style: { marginBottom: '6px' } }, `額度群組「${s.cardSettings.limitGroup}」共用總額度 ${money(s.groupLimit, s.symbol)}`),
-      s.groupLimitMismatch ? h('div', { class: 'muted small', style: { marginBottom: '6px', color: 'var(--bad)' } }, '這個群組裡的卡片，額度欄位填的數字不一致，可用額度是用這張卡自己填的數字去算，建議把群組內每張卡的額度都改成同一個總額度') : null,
-      h('ul', { class: 'list small' }, s.groupMembers.map((m) => h('li', null, `${m.name}：欠款 ${money(m.currentlyOwed, m.symbol)}`)))) : null;
+      h('div', { class: 't', style: { marginBottom: '6px' } }, `額度群組「${s.cardSettings.limitGroup}」共 ${s.groupMembers.length} 張卡合併帳單，共用總額度 ${money(s.limit, s.symbol)}`),
+      s.groupLimitMismatch ? h('div', { class: 'muted small', style: { marginBottom: '6px', color: 'var(--bad)' } }, '這個群組裡的卡片，額度欄位填的數字不一致，目前是用這張卡自己填的數字去算，建議把群組內每張卡的額度都改成同一個總額度') : null,
+      s.groupDateMismatch ? h('div', { class: 'muted small', style: { marginBottom: '6px', color: 'var(--bad)' } }, '這個群組裡的卡片，結帳日或繳款日填的不一樣，以上合併帳單的數字是用這張卡自己的結帳日／繳款日去算，建議把群組內每張卡的結帳日與繳款日都改成一致') : null,
+      h('div', { class: 'muted small', style: { marginBottom: '4px' } }, '這期各卡刷了多少：'),
+      h('ul', { class: 'list small' }, s.groupMembers.map((m) => h('li', null, `${m.name}：${money(m.currentSpend, m.symbol)}`)))) : null;
     mount(body,
       s.overdue ? h('div', { class: 'notice bad', style: { marginBottom: '12px' } }, '這期帳單已逾期，請盡快繳款') : null,
       h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])),

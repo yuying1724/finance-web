@@ -208,17 +208,28 @@ var FinRecurringJob = (function () {
     return Math.round((tb - ta) / 86400000);
   }
 
-  /** 信用卡繳款日將近提醒 */
+  /** 信用卡繳款日將近提醒。同一「額度群組」的卡片視為一張合併帳單，同一組只寄一封（合併帳號名稱、金額用整組加總），不會重複寄好幾封 */
   function sendCardDueReminders(c, env) {
     var items = [];
+    var seenGroups = {};
     c.cardRows.forEach(function (cs) {
       var acct = c.accounts[cs.accountId];
       if (!acct || acct.type !== '信用卡') return;
+      var siblings = cs.limitGroup ? c.cardRows.filter(function (r) {
+        var a = c.accounts[r.accountId];
+        return r.limitGroup === cs.limitGroup && a && a.type === '信用卡';
+      }) : [cs];
+      var ids = siblings.length > 1 ? siblings.map(function (r) { return r.accountId; }) : null;
+      if (ids) {
+        if (seenGroups[cs.limitGroup]) return; // 這個群組已經算過一次，避免同一張合併帳單被重複寄好幾封信
+        seenGroups[cs.limitGroup] = true;
+      }
       var inst = c.instruments[acct.defaultSymbol];
-      var s = FinCreditCard.summary(c.txRows, cs.accountId, acct.defaultSymbol, inst ? inst.decimals : 0, cs, c.today);
+      var s = FinCreditCard.summary(c.txRows, cs.accountId, acct.defaultSymbol, inst ? inst.decimals : 0, cs, c.today, ids);
       if (!s.dueDate || s.statementAmountDue <= 0) return;
       if (daysBetween(c.today, s.dueDate) === CARD_REMIND_DAYS) {
-        items.push({ accountName: acct.name, dueDate: s.dueDate, amount: s.statementAmountDue, symbol: acct.defaultSymbol });
+        var name = ids ? siblings.map(function (r) { return (c.accounts[r.accountId] || {}).name || r.accountId; }).join('、') : acct.name;
+        items.push({ accountName: name, dueDate: s.dueDate, amount: s.statementAmountDue, symbol: acct.defaultSymbol });
       }
     });
     FinMail.sendIfAny(items, FinMail.cardDueReminder);

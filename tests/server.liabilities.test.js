@@ -69,7 +69,7 @@ test('信用卡帳單：沒設定時明確錯誤；刷卡、退款、還款都�
   void s3;
 });
 
-test('額度群組：同一額度群組的多張卡共用總額度，可用額度＝群組總額度－群組內所有卡加總欠款', () => {
+test('額度群組：同一額度群組的多張卡視為一張合併帳單，本期消費／目前總欠款／上期待繳／可用額度都是整組加總', () => {
   const b = fresh();
   const bank = b.acct('銀行', '銀行');
   const cardA = b.acct('富邦-J卡', '信用卡');
@@ -85,26 +85,44 @@ test('額度群組：同一額度群組的多張卡共用總額度，可用額�
   const sa = b.statement(cardA, '2026-03-20');
   assert.ok(sa.ok, JSON.stringify(sa));
   assert.equal(sa.data.sharedLimit, true);
-  assert.equal(sa.data.currentlyOwed, 50000, '這張卡自己的欠款欄位不受群組影響');
+  assert.equal(sa.data.currentSpend, 50000 + 30000, '本期消費是整組（A+B+C）加總，不是只看這張卡自己刷了多少');
+  assert.equal(sa.data.currentlyOwed, 50000 + 30000, '目前總欠款是整組加總，因為銀行實際上是合併成一張帳單');
   assert.equal(sa.data.availableCredit, 320000 - 50000 - 30000, '可用額度要扣掉整個群組（A+B+C）加總的欠款');
   assert.equal(sa.data.groupMembers.length, 3);
   assert.equal(sa.data.groupLimitMismatch, false);
+  assert.equal(sa.data.groupDateMismatch, false);
+  const memberA = sa.data.groupMembers.find((m) => m.accountId === cardA);
+  assert.equal(memberA.currentSpend, 50000, 'groupMembers 顯示的是「這張卡自己這期刷了多少」，供參考用，不是欠款');
+
+  // 開 B 卡的帳單，看到的整組數字要跟開 A 卡完全一樣（因為是同一張合併帳單）
+  const sb = b.statement(cardB, '2026-03-20');
+  assert.equal(sb.data.currentSpend, sa.data.currentSpend);
+  assert.equal(sb.data.currentlyOwed, sa.data.currentlyOwed);
+  assert.equal(sb.data.availableCredit, sa.data.availableCredit);
 
   const sc = b.statement(cardC, '2026-03-20');
-  assert.equal(sc.data.currentlyOwed, 0, '這張卡自己還沒消費');
+  assert.equal(sc.data.currentSpend, 50000 + 30000, '這張卡自己還沒消費，但因為是合併帳單，看到的本期消費仍是整組加總');
   assert.equal(sc.data.availableCredit, 320000 - 50000 - 30000, '同群組的可用額度對每張卡來說都一樣，因為是共用的');
 
-  // 還掉 A 卡一部分：群組可用額度要跟著回升
+  // 還款轉進「群組內任一張卡」（這裡轉進 A 卡）：整組的欠款與可用額度都要跟著降低／回升，不管實際轉進哪一張卡
   assert.ok(b.add({ type: '轉帳', date: '2026-03-15', srcAccount: bank, srcSymbol: 'TWD', srcQty: 20000, dstAccount: cardA, dstSymbol: 'TWD', dstQty: 20000 }).ok);
   const sa2 = b.statement(cardA, '2026-03-20');
   assert.equal(sa2.data.availableCredit, 320000 - 30000 - 30000);
+  const sc2 = b.statement(cardC, '2026-03-20');
+  assert.equal(sc2.data.availableCredit, sa2.data.availableCredit, '還進 A 卡的錢，C 卡看到的整組可用額度要一起跟著回升');
 
-  // 額度填不一致時要標記出來，但仍以這張卡自己填的額度計算，不會讓系統壞掉
+  // 額度填不一致時要標記出來，但仍能正常運作、不會讓系統壞掉
   b.card({ accountId: cardC, statementDay: 5, dueDay: 20, limit: 999999, limitGroup: '富邦' });
   const sa3 = b.statement(cardA, '2026-03-20');
   assert.equal(sa3.data.groupLimitMismatch, true);
 
-  // 沒有填額度群組的卡（獨立）：不受富邦群組影響
+  // 結帳日／繳款日填不一致時也要標記出來
+  b.card({ accountId: cardC, statementDay: 10, dueDay: 20, limit: 320000, limitGroup: '富邦' });
+  const sa4 = b.statement(cardA, '2026-03-20');
+  assert.equal(sa4.data.groupDateMismatch, true);
+  b.card({ accountId: cardC, statementDay: 5, dueDay: 20, limit: 320000, limitGroup: '富邦' }); // 改回一致，避免影響後面的斷言
+
+  // 沒有填額度群組的卡（獨立）：不受富邦群組影響，帳單只看自己
   const solo = b.acct('玉山白金卡', '信用卡');
   b.card({ accountId: solo, statementDay: 5, dueDay: 20, limit: 50000 });
   const ss = b.statement(solo, '2026-03-20');

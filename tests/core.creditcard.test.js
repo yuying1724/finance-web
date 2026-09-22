@@ -81,29 +81,39 @@ test('沒有設定額度（limit=0）：availableCredit 回傳 null，不誤報�
   assert.equal(s.limit, null);
 });
 
-test('summary：傳入 group（同額度群組多張卡）時，可用額度改用「群組總額度－群組內所有卡加總欠款」，其他欄位不受影響', () => {
+test('summary：傳入 groupAccountIds（同額度群組多張卡）時，本期消費／欠款／待繳／可用額度都是整組加總（比照台灣信用卡「合併帳單」的實務）', () => {
   const cardSettings = { statementDay: 5, dueDay: 20, limit: 100000 };
   const txs = [
     tx({ date: '2026-03-10', type: '支出', srcAccount: 'CARD_A', srcSymbol: 'TWD', srcQty: 3000 }),
+    tx({ date: '2026-03-12', type: '支出', srcAccount: 'CARD_B', srcSymbol: 'TWD', srcQty: 5000 }),
   ];
-  // 沒有 group：可用額度 = 這張卡自己的額度(100000) - 自己欠款(3000)
+  // 沒有 groupAccountIds（或陣列只有自己 1 個）：只看這張卡自己的交易
   const solo = FinCreditCard.summary(txs, 'CARD_A', 'TWD', 0, cardSettings, '2026-03-20');
+  assert.equal(solo.currentSpend, 3000);
+  assert.equal(solo.currentlyOwed, 3000);
   assert.equal(solo.availableCredit, 97000);
   assert.equal(solo.sharedLimit, false);
 
-  // 有 group：假設同群組另一張卡欠了 5000，群組共用總額度 100000
-  const shared = FinCreditCard.summary(txs, 'CARD_A', 'TWD', 0, cardSettings, '2026-03-20', { limit: 100000, owed: 3000 + 5000 });
-  assert.equal(shared.availableCredit, 100000 - 8000, '可用額度要扣掉群組內其他卡片的欠款，不能只看自己這張卡');
+  // 傳入同群組兩張卡的 id：本期消費、欠款、可用額度都變成兩張卡加總
+  const shared = FinCreditCard.summary(txs, 'CARD_A', 'TWD', 0, cardSettings, '2026-03-20', ['CARD_A', 'CARD_B']);
+  assert.equal(shared.currentSpend, 3000 + 5000, '本期消費是整組加總，不是只看 CARD_A 自己');
+  assert.equal(shared.currentlyOwed, 3000 + 5000, '目前總欠款是整組加總');
+  assert.equal(shared.availableCredit, 100000 - 8000, '可用額度要扣掉整組加總的欠款');
   assert.equal(shared.sharedLimit, true);
-  assert.equal(shared.groupLimit, 100000);
-  assert.equal(shared.groupOwed, 8000);
-  // currentSpend／currentlyOwed 這些「這張卡自己」的欄位不受 group 影響
-  assert.equal(shared.currentSpend, solo.currentSpend);
-  assert.equal(shared.currentlyOwed, solo.currentlyOwed);
+  assert.equal(shared.groupSize, 2);
+
+  // 還款轉進「群組內任一張卡」（不一定是查詢的這張），一樣算整組已經繳掉這期帳單
+  const paid = txs.concat([tx({ date: '2026-03-25', type: '轉帳', srcAccount: 'BANK', srcSymbol: 'TWD', srcQty: 4000, dstAccount: 'CARD_B', dstSymbol: 'TWD', dstQty: 4000 })]);
+  const sharedAfterPay = FinCreditCard.summary(paid, 'CARD_A', 'TWD', 0, cardSettings, '2026-03-26', ['CARD_A', 'CARD_B']);
+  assert.equal(sharedAfterPay.currentlyOwed, 3000 + 5000 - 4000, '還進 CARD_B 的錢一樣要反映在整組的目前總欠款');
 });
 
 test('summary：group 內欠款加總超過總額度時，可用額度夾在 0，不會變負數', () => {
   const cardSettings = { statementDay: 5, dueDay: 20, limit: 50000 };
-  const s = FinCreditCard.summary([], 'CARD_A', 'TWD', 0, cardSettings, '2026-03-20', { limit: 50000, owed: 70000 });
+  const txs = [
+    tx({ date: '2026-03-10', type: '支出', srcAccount: 'CARD_A', srcSymbol: 'TWD', srcQty: 30000 }),
+    tx({ date: '2026-03-11', type: '支出', srcAccount: 'CARD_B', srcSymbol: 'TWD', srcQty: 40000 }),
+  ];
+  const s = FinCreditCard.summary(txs, 'CARD_A', 'TWD', 0, cardSettings, '2026-03-20', ['CARD_A', 'CARD_B']);
   assert.equal(s.availableCredit, 0);
 });
