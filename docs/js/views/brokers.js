@@ -2,12 +2,11 @@ import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
 import { state, brokerSettingsOf } from '../store.js';
 import { openBrokerForm } from './brokerform.js';
-import { refresh } from '../data.js';
 
 function acctItem(a) {
   const bs = brokerSettingsOf(a.id);
   const sub = bs ? `${bs.market} · ${bs.calendar} · 買 T+${bs.buySettleDays} 賣 T+${bs.sellSettleDays}` : '尚未設定';
-  return h('button', { class: 'item', onclick: () => openBrokerForm({ account: a, broker: bs, onDone: refresh }) },
+  return h('button', { class: 'item', onclick: () => openBrokerForm({ account: a, broker: bs }) },
     h('div', { class: 'ico' }, icon('briefcase')),
     h('div', { class: 'grow' }, h('div', { class: 't' }, a.name, a.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')), h('div', { class: 's' }, sub)),
     h('span', { class: 'link-btn' }, bs ? '編輯' : '設定'));

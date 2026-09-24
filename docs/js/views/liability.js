@@ -3,7 +3,7 @@ import { state, accountById } from '../store.js';
 import * as api from '../api.js';
 import { money } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
-import { refresh } from '../data.js';
+import { mergeRow, refreshInBackground } from '../data.js';
 
 const LOAN_METHODS = ['本息平均攤還', '本金平均攤還', '只繳息'];
 
@@ -51,8 +51,9 @@ export function openCardSettingsForm({ account, card, onDone } = {}) {
     clearErr();
     await withBusy(e.currentTarget, async () => {
       try {
-        await api.call('upsertCardSettings', { card: { accountId: account.id, statementDay: f.statementDay, dueDay: f.dueDay, limit: f.limit, payAccountId: f.payAccountId, note: f.note, limitGroup: f.limitGroup } });
+        const r = await api.call('upsertCardSettings', { card: { accountId: account.id, statementDay: f.statementDay, dueDay: f.dueDay, limit: f.limit, payAccountId: f.payAccountId, note: f.note, limitGroup: f.limitGroup } });
         sheet.close();
+        mergeRow('cardSettings', 'accountId', r.card); refreshInBackground();
         if (onDone) await onDone();
         toast('已儲存信用卡設定');
       } catch (err) {
@@ -98,8 +99,9 @@ export function openLoanSettingsForm({ account, loan, onDone } = {}) {
     }
     await withBusy(e.currentTarget, async () => {
       try {
-        await api.call('upsertLoanSettings', { loan: { accountId: account.id, principal: f.principal, rate: f.rate, terms: f.terms, startDate: f.startDate, payDay: f.payDay, method: f.method, payAccountId: f.payAccountId } });
+        const r = await api.call('upsertLoanSettings', { loan: { accountId: account.id, principal: f.principal, rate: f.rate, terms: f.terms, startDate: f.startDate, payDay: f.payDay, method: f.method, payAccountId: f.payAccountId } });
         sheet.close();
+        mergeRow('loanSettings', 'accountId', r.loan); refreshInBackground();
         if (onDone) await onDone();
         toast('已儲存貸款設定');
       } catch (err) {
@@ -152,10 +154,10 @@ export function openCardStatement(account) {
       h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
       groupBlock,
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
-        h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account, card: s.cardSettings, onDone: refresh }), 0); } }, '設定信用卡')));
+        h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account, card: s.cardSettings }), 0); } }, '設定信用卡')));
   }).catch((e) => { clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e)),
     h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
-      h('button', { class: 'btn btn-sm btn-primary', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account, onDone: refresh }), 0); } }, '設定信用卡'))); });
+      h('button', { class: 'btn btn-sm btn-primary', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account }), 0); } }, '設定信用卡'))); });
 }
 
 // ---------- 貸款排程與還款 ----------
@@ -191,12 +193,12 @@ export function openLoanDetail(account) {
         h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
         h('div', { class: 'row-flex wrap', style: { margin: '16px 0' } },
           !sum.settled ? h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'loan-pay', onclick: (e) => payCurrent(e, r, sum) }, '記一筆還款') : null,
-          h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openLoanSettingsForm({ account, loan: r.loanSettings, onDone: refresh }), 0); } }, '設定貸款')),
+          h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openLoanSettingsForm({ account, loan: r.loanSettings }), 0); } }, '設定貸款')),
         h('div', { class: 'day-head' }, h('span', null, '攤還表')),
         h('ul', { class: 'list' }, r.schedule.map((row) => scheduleRow(row, sum.settled ? null : sum.currentPeriod))));
     }).catch((e) => { clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e)),
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
-        h('button', { class: 'btn btn-sm btn-primary', onclick: () => { sheet.close(); setTimeout(() => openLoanSettingsForm({ account, onDone: refresh }), 0); } }, '設定貸款'))); });
+        h('button', { class: 'btn btn-sm btn-primary', onclick: () => { sheet.close(); setTimeout(() => openLoanSettingsForm({ account }), 0); } }, '設定貸款'))); });
   }
   async function payCurrent(e, r, sum) {
     const fromAccount = r.loanSettings.payAccountId || (cashAccounts(account.id)[0] && cashAccounts(account.id)[0].id);
@@ -206,7 +208,7 @@ export function openLoanDetail(account) {
     await withBusy(e.currentTarget, async () => {
       try {
         await api.call('addLoanPayment', { accountId: account.id, fromAccount, requestId: api.newRequestId() });
-        await refresh();
+        refreshInBackground();
         toast('已記錄還款');
         load();
       } catch (err) { toast(errorText(err), { kind: 'bad' }); }

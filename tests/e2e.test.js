@@ -261,6 +261,63 @@ test('交易清單：篩選、開啟詳情、編輯、作廢、顯示已作廢�
   });
 });
 
+test('樂觀更新：儲存後視窗立刻關閉、淨值立刻更新；後端失敗會自動還原並提示', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page } = a;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    const before = digits(await a.networth());
+    // 讓 addTransaction 這一筆請求回「系統忙碌」（其他請求照常）
+    await page.route('**/api', async (route) => {
+      const body = JSON.parse(route.request().postData() || '{}');
+      if (body.action === 'addTransaction') await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'BUSY', message: '系統忙碌中，請稍後再試' } }) });
+      else await route.continue();
+    });
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '500');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '錢包現金' });
+    await a.pickCategory('飲食', '午餐');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    // 先看到樂觀更新後的淨值，再被還原
+    await page.waitForFunction((b) => Number(document.querySelector('[data-testid=networth]').innerText.replace(/[^\d-]/g, '')) === b, before);
+    await page.waitForSelector('.toast.bad');
+    assert.match(await page.locator('.toast.bad').innerText(), /儲存失敗，已還原/);
+    assert.equal(await page.locator('.toast.bad button').innerText(), '重試');
+    const boot = a.bootstrap();
+    assert.equal(boot.recent.length, (a.s.backend.call('bootstrap').data.recent || []).length);
+    await page.unroute('**/api');
+    // 按「重試」會把剛才的內容帶回表單，再儲存一次就成功
+    await page.click('.toast.bad button');
+    await page.waitForSelector('.sheet');
+    assert.equal(await page.inputValue('input[aria-label="金額"]'), '500');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    await page.waitForFunction((b) => Number(document.querySelector('[data-testid=networth]').innerText.replace(/[^\d-]/g, '')) === b - 500, before);
+  });
+});
+
+test('本機快取秒開：重新整理時先顯示上次的資料，不用等後端；背景更新完成後顯示更新時間', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page } = a;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.waitForFunction(() => /更新於/.test(document.body.innerText));
+    assert.ok(await page.evaluate(() => !!localStorage.getItem('fin.cache')));
+    // 讓 bootstrap 慢 3 秒：畫面仍應立刻出現（用快取），而且顯示「更新中…」
+    await page.route('**/api', async (route) => {
+      const body = JSON.parse(route.request().postData() || '{}');
+      if (body.action === 'bootstrap') await new Promise((r) => setTimeout(r, 3000));
+      await route.continue();
+    });
+    const t0 = Date.now();
+    await page.reload();
+    await page.waitForSelector('[data-testid=networth]');
+    assert.ok(Date.now() - t0 < 2500, '有快取時應該不用等 bootstrap 就顯示畫面');
+    assert.match(await page.locator('body').innerText(), /更新中…/);
+    await page.waitForFunction(() => !/更新中…/.test(document.body.innerText), null, { timeout: 8000 });
+    await page.unroute('**/api');
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

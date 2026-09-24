@@ -3,8 +3,8 @@ import { icon } from '../icons.js';
 import { state, accountById, balanceOf, instrumentBySymbol, brokerSettingsOf, suggestSettleDate } from '../store.js';
 import * as api from '../api.js';
 import { money, decimalsOf, categoryInfo } from '../fmt.js';
-import { openSheet, toast, errorText, withBusy } from '../ui.js';
-import { refresh } from '../data.js';
+import { openSheet, toast } from '../ui.js';
+import { refresh, write, applyTxLocal } from '../data.js';
 
 const last = { type: '支出', acct: '', acct2: '' };
 const PRIMARY = ['支出', '收入', '轉帳', '換匯'];
@@ -50,7 +50,7 @@ function uiField(type, serverField) {
   return map[serverField] || 'form';
 }
 
-export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
+export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serverErrors = null } = {}) {
   const d = state.data;
   const editing = !!tx;
   const today = d.today;
@@ -100,6 +100,7 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
   if (!f.cashAcct) { const a = accounts.find((a2) => a2.id !== f.instAcct && (a2.type === '銀行' || a2.type === '數位錢包')) || accounts.find((a2) => a2.id !== f.instAcct) || accounts[0]; f.cashAcct = a.id; }
   if (!f.instSym && investSymbols.length) f.instSym = investSymbols[0].symbol;
   if (!f.cashSym) f.cashSym = (accountById(f.cashAcct) || {}).defaultSymbol || 'TWD';
+  if (draft) { type = draft.type; Object.assign(f, draft.f); } // 儲存失敗後「重新編輯」：帶回剛才輸入的內容
 
   const bodyBox = h('div');
   const banner = h('div', { class: 'notice bad', role: 'alert', style: { display: 'none', marginBottom: '10px' } });
@@ -411,29 +412,34 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
   const submitBtn = h('button', { class: 'btn btn-primary', type: 'button', 'data-testid': 'tx-save', onclick: submit }, editing ? '儲存修改' : '儲存');
   const cancelBtn = h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消');
 
+  // 樂觀更新：按下儲存就關視窗，先把這筆交易套到本機（首頁最近交易、帳戶餘額、淨值），背景送出；
+  // 後端回覆失敗就還原並提示；驗證不過的話可以按「重新編輯」把剛才的內容帶回表單。
   async function submit() {
     clearErrors();
     const built = buildTx();
     if (built.error) { setError(built.error.field, built.error.message); return; }
-    await withBusy(submitBtn, async () => {
-      try {
-        const res = editing
-          ? await api.call('updateTransaction', { id: tx.id, expectedUpdatedAt: tx.updatedAt, tx: built.tx })
-          : await api.call('addTransaction', { tx: built.tx, requestId });
-        last.type = type; last.acct = f.acct; if (type === '轉帳' || type === '換匯') last.acct2 = f.acct2;
-        sheet.close();
-        try { await (onDone || refresh)(); } catch (e) { /* 資料稍後會自動更新 */ }
-        const saved = res.tx;
-        const msgs = [editing ? '已儲存修改' : '已新增'].concat(res.warnings || []);
-        toast(msgs.join('　'), editing ? {} : { action: { label: '復原', fn: async () => {
-          try { await api.call('voidTransaction', { id: saved.id, expectedUpdatedAt: saved.updatedAt }); await refresh(); toast('已復原'); } catch (e) { toast(errorText(e), { kind: 'bad' }); }
-        } } });
-      } catch (e) {
-        if (e.code === 'VALIDATION' && e.details && e.details.errors && e.details.errors.length) e.details.errors.forEach((er) => setError(uiField(type, er.field), er.message));
-        else if (e.code === 'CONFLICT') { toast(e.message, { kind: 'bad' }); sheet.close(); try { await refresh(); } catch (x) { /* 忽略 */ } }
-        else { banner.style.display = ''; mount(banner, errorText(e)); }
-      }
+    last.type = type; last.acct = f.acct; if (type === '轉帳' || type === '換匯') last.acct2 = f.acct2;
+    const localTx = Object.assign({}, editing ? tx : { status: '有效', createdAt: '', updatedAt: '' }, built.tx, { id: editing ? tx.id : 'tmp-' + Date.now().toString(36) });
+    const params = editing ? { id: tx.id, expectedUpdatedAt: tx.updatedAt, tx: built.tx } : { tx: built.tx, requestId };
+    const action = editing ? 'updateTransaction' : 'addTransaction';
+    const reopen = (errors) => openTxForm({ tx, preset, onDone, draft: { type, f: Object.assign({}, f) }, serverErrors: errors || null });
+    sheet.close();
+    const res = await write(action, params, {
+      optimistic: () => applyTxLocal(localTx, editing ? tx : null),
+      onResult: (r) => { if (r && r.tx) { const i = state.data.recent.findIndex((t) => t.id === localTx.id); if (i >= 0) state.data.recent[i] = r.tx; } },
+      retry: () => reopen(null),
+      onError: (e) => {
+        if (e.code === 'VALIDATION' && e.details && e.details.errors && e.details.errors.length) setTimeout(() => reopen(e.details.errors), 0);
+      },
     });
+    if (!res) return;
+    if (onDone && onDone !== refresh) { try { await onDone(); } catch (e) { /* 資料稍後會自動更新 */ } }
+    const saved = res.tx;
+    const msgs = [editing ? '已儲存修改' : '已新增'].concat(res.warnings || []);
+    toast(msgs.join('　'), editing ? {} : { action: { label: '復原', fn: async () => {
+      const r = await write('voidTransaction', { id: saved.id, expectedUpdatedAt: saved.updatedAt }, { optimistic: () => applyTxLocal(Object.assign({}, saved, { status: '作廢' }), saved), failPrefix: '復原失敗：' });
+      if (r) toast('已復原');
+    } } });
   }
 
   // ---------- 視窗 ----------
@@ -445,6 +451,7 @@ export function openTxForm({ tx = null, preset = {}, onDone } = {}) {
     mount(extraRow, EXTRA.filter((t) => enabled.includes(t)).map((t) => h('button', { type: 'button', 'data-type': t, class: 'chip' + (type === t ? ' on' : '') + (INVEST_TYPES.includes(t) ? ' chip-invest' : ''), onclick: () => { type = t; wantFocus = true; f.settleTouched = false; drawTypes(); draw(); } }, EXTRA_LABEL[t] || t)));
   }
   drawTypes(); draw();
+  if (serverErrors) { banner.style.display = ''; mount(banner, '剛才儲存失敗，請修正後再送出'); serverErrors.forEach((er) => setError(uiField(type, er.field), er.message)); }
 
   const sheet = openSheet({
     title: editing ? `編輯${type}` : '記一筆',

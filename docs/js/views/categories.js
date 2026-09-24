@@ -3,7 +3,7 @@ import { icon, CATEGORY_ICON_CHOICES } from '../icons.js';
 import { state } from '../store.js';
 import * as api from '../api.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
-import { refresh } from '../data.js';
+import { mergeRow, refreshInBackground, patchRow } from '../data.js';
 
 let catType = '支出';
 
@@ -41,17 +41,15 @@ export function openCategoryForm({ category = null, parentId = '', type = '支�
     banner.style.display = 'none';
     await withBusy(e.currentTarget, async () => {
       try {
-        await api.call('upsertCategory', { category: { id: category ? category.id : undefined, type: catT, ...f, name: f.name.trim() }, expectedUpdatedAt: category ? category.updatedAt : undefined });
-        sheet.close(); await refresh(); toast(editing ? '已儲存' : '已新增分類');
+        const r = await api.call('upsertCategory', { category: { id: category ? category.id : undefined, type: catT, ...f, name: f.name.trim() }, expectedUpdatedAt: category ? category.updatedAt : undefined });
+        sheet.close(); mergeRow('categories', 'id', r.category); refreshInBackground(); toast(editing ? '已儲存' : '已新增分類');
       } catch (err) { banner.style.display = ''; mount(banner, errorText(err)); }
     });
   } }, editing ? '儲存' : '新增');
 
-  const toggle = editing ? h('button', { class: 'btn btn-danger', type: 'button', onclick: async (e) => {
-    await withBusy(e.currentTarget, async () => {
-      try { await api.call('setCategoryActive', { id: category.id, active: !category.active }); sheet.close(); await refresh(); toast(category.active ? '已停用（過去的交易不受影響）' : '已啟用'); }
-      catch (err) { banner.style.display = ''; mount(banner, errorText(err)); }
-    });
+  const toggle = editing ? h('button', { class: 'btn btn-danger', type: 'button', onclick: () => {
+    sheet.close(); // 樂觀更新：先在本機切換，背景送出，失敗自動還原
+    patchRow('setCategoryActive', { id: category.id, active: !category.active }, { list: 'categories', idField: 'id', id: category.id, patch: { active: !category.active }, toast: category.active ? '已停用（過去的交易不受影響）' : '已啟用' });
   } }, category.active ? '停用' : '重新啟用') : null;
 
   const iconPicker = h('div', { class: 'icon-pick' }, CATEGORY_ICON_CHOICES.map((key) =>

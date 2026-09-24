@@ -28,7 +28,7 @@ export function renderHome(root) {
       h('div', { class: 'big' }, icon('wallet')),
       h('h2', { style: { marginBottom: '6px' } }, '歡迎使用'),
       h('p', null, '先建立第一個帳戶（例如銀行活存或現金），再按右下角的「＋」記第一筆。'),
-      h('button', { class: 'btn btn-primary', onclick: () => openAccountForm({ onDone: async () => { await refresh(); } }) }, '新增第一個帳戶')));
+      h('button', { class: 'btn btn-primary', onclick: () => openAccountForm({}) }, '新增第一個帳戶')));
   }
 
   children.push(h('div', { class: 'card hero' },

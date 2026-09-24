@@ -1,6 +1,7 @@
 import { h, mount } from '../dom.js';
 import { state } from '../store.js';
 import * as api from '../api.js';
+import { mergeRow, refreshInBackground } from '../data.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
 
 /** 新增／編輯投資標的（股票、ETF、加密貨幣等）。法幣標的（TWD、USD…）在種子資料就有了，這裡不處理法幣。 */
@@ -68,11 +69,12 @@ export function openInstrumentForm({ instrument = null, onDone } = {}) {
     if (!f.name.trim()) { showErr('name', '請輸入標的名稱'); return; }
     await withBusy(e.currentTarget, async () => {
       try {
-        await api.call('upsertInstrument', {
+        const r = await api.call('upsertInstrument', {
           instrument: { symbol: f.symbol.trim(), name: f.name.trim(), type: f.type, quote: f.quote, decimals: Number(f.decimals) || 0, priceSource: f.priceSource, quoteCode: f.quoteCode, note: f.note, isNew: !editing },
           expectedUpdatedAt: editing ? instrument.updatedAt : undefined,
         });
         sheet.close();
+        mergeRow('instruments', 'symbol', r.instrument); refreshInBackground();
         if (onDone) await onDone();
         toast(editing ? '已儲存' : '已新增標的');
       } catch (err) {

@@ -1,11 +1,10 @@
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
 import { state } from '../store.js';
-import * as api from '../api.js';
 import { money } from '../fmt.js';
-import { openSheet, toast, errorText, withBusy } from '../ui.js';
+import { openSheet, toast } from '../ui.js';
 import { openInstrumentForm } from './instrumentform.js';
-import { refresh } from '../data.js';
+import { patchRow } from '../data.js';
 
 let showInactive = false;
 
@@ -31,12 +30,10 @@ function openDetail(i) {
         h('dt', null, '行情代碼'), h('dd', null, i.quoteCode || '（未設定）'),
         i.note ? h('dt', null, '備註') : null, i.note ? h('dd', null, i.note) : null),
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
-        h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openInstrumentForm({ instrument: i, onDone: refresh }), 0); } }, '編輯'),
-        h('button', { class: 'btn btn-sm ' + (i.active ? 'btn-danger' : ''), onclick: async (e) => {
-          await withBusy(e.currentTarget, async () => {
-            try { await api.call('setInstrumentActive', { symbol: i.symbol, active: !i.active }); sheet.close(); await refresh(); toast(i.active ? '已停用' : '已啟用'); }
-            catch (err) { toast(errorText(err), { kind: 'bad' }); }
-          });
+        h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openInstrumentForm({ instrument: i }), 0); } }, '編輯'),
+        h('button', { class: 'btn btn-sm ' + (i.active ? 'btn-danger' : ''), onclick: () => {
+          sheet.close(); // 樂觀更新：先在本機切換，背景送出，失敗自動還原
+          patchRow('setInstrumentActive', { symbol: i.symbol, active: !i.active }, { list: 'instruments', idField: 'symbol', id: i.symbol, patch: { active: !i.active }, toast: i.active ? '已停用' : '已啟用' });
         } }, i.active ? '停用' : '重新啟用'))),
   });
 }
@@ -53,7 +50,7 @@ export function renderInstrumentsBody(root) {
 
   mount(root,
     h('div', { class: 'row-flex between', style: { marginBottom: '12px' } }, h('div', null),
-      h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-instrument', onclick: () => openInstrumentForm({ onDone: refresh }) }, icon('plus'), '新增標的')),
+      h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-instrument', onclick: () => openInstrumentForm({}) }, icon('plus'), '新增標的')),
     body,
     inactiveCount ? h('label', { class: 'check small muted', style: { marginTop: '12px' } }, h('input', { type: 'checkbox', checked: showInactive, onchange: (e) => { showInactive = e.target.checked; renderInstrumentsBody(root); } }), `顯示已停用的標的（${inactiveCount}）`) : null);
 }

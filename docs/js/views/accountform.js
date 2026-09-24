@@ -1,6 +1,7 @@
 import { h } from '../dom.js';
 import { state } from '../store.js';
 import * as api from '../api.js';
+import { mergeRow, refreshInBackground } from '../data.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
 import { mount } from '../dom.js';
 
@@ -39,8 +40,9 @@ export function openAccountForm({ account = null, onDone } = {}) {
     if (!f.name.trim()) { showErr('name', '請輸入帳戶名稱'); return; }
     await withBusy(e.currentTarget, async () => {
       try {
-        await api.call('upsertAccount', { account: { id: account ? account.id : undefined, ...f, name: f.name.trim() }, expectedUpdatedAt: account ? account.updatedAt : undefined });
+        const r = await api.call('upsertAccount', { account: { id: account ? account.id : undefined, ...f, name: f.name.trim() }, expectedUpdatedAt: account ? account.updatedAt : undefined });
         sheet.close();
+        mergeRow('accounts', 'id', r.account); refreshInBackground();
         if (onDone) await onDone();
         toast(editing ? '已儲存' : '已新增帳戶');
       } catch (err) {

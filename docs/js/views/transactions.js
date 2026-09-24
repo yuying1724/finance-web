@@ -3,9 +3,9 @@ import { icon } from '../icons.js';
 import { state, accountById } from '../store.js';
 import * as api from '../api.js';
 import { money, dateLabel, monthLabel, categoryInfo, amountClass } from '../fmt.js';
-import { openSheet, confirmDialog, toast, errorText, withBusy } from '../ui.js';
+import { openSheet, confirmDialog, toast, errorText } from '../ui.js';
 import { openTxForm } from './txform.js';
-import { refresh } from '../data.js';
+import { write, applyTxLocal } from '../data.js';
 
 // ---------- 共用：把一筆交易轉成畫面上的資訊 ----------
 export function describe(t) {
@@ -83,8 +83,8 @@ export function openTxDetail(t) {
   const btn = (label, cls, fn) => h('button', { class: 'btn btn-sm ' + cls, onclick: fn }, label);
   const actions = h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } });
   if (t.status === '有效' || t.status === '待確認') {
-    actions.appendChild(btn('編輯', '', () => { sheet.close(); setTimeout(() => openTxForm({ tx: t, onDone: refresh }), 0); }));
-    if (t.type === '支出') actions.appendChild(btn('退款', '', () => { sheet.close(); setTimeout(() => openTxForm({ preset: { type: '退款', related: t }, onDone: refresh }), 0); }));
+    actions.appendChild(btn('編輯', '', () => { sheet.close(); setTimeout(() => openTxForm({ tx: t }), 0); }));
+    if (t.type === '支出') actions.appendChild(btn('退款', '', () => { sheet.close(); setTimeout(() => openTxForm({ preset: { type: '退款', related: t } }), 0); }));
     actions.appendChild(btn('作廢', 'btn-danger', async (e) => {
       const button = e.currentTarget; // 事件結束後 currentTarget 會變成 null，要先存起來
       if (!(await confirmDialog({ title: '作廢這筆交易？', message: '作廢後不會計入餘額與報表，之後可以在交易清單「顯示已作廢」中還原。', confirmText: '作廢', danger: true }))) return;
@@ -96,22 +96,20 @@ export function openTxDetail(t) {
   sheet.el.appendChild(actions);
 }
 
+// 作廢／還原：關視窗、先在本機把這筆的影響加回或扣掉（樂觀更新），背景送出；失敗自動還原並提示
 async function mutate(button, action, t, sheet, doneText) {
-  await withBusy(button, async () => {
-    try {
-      await api.call(action, { id: t.id, expectedUpdatedAt: t.updatedAt });
-      sheet.close();
-      await refresh();
-      toast(doneText);
-    } catch (e) {
-      toast(errorText(e), { kind: 'bad' });
-      if (e.code === 'CONFLICT') { sheet.close(); await refresh(); }
-    }
+  sheet.close();
+  const next = Object.assign({}, t, { status: action === 'voidTransaction' ? '作廢' : '有效' });
+  const r = await write(action, { id: t.id, expectedUpdatedAt: t.updatedAt }, {
+    optimistic: () => applyTxLocal(next, t),
+    retry: () => mutate(button, action, t, { close() {} }, doneText),
+    failPrefix: '操作失敗，已還原：',
   });
+  if (r) toast(doneText);
 }
 
 // ---------- 交易清單 ----------
-const S = { ym: null, filters: { type: '', accountId: '', categoryId: '', q: '', includeVoid: false }, seq: 0, acctParam: null };
+const S = { ym: null, filters: { type: '', accountId: '', categoryId: '', q: '', includeVoid: false }, seq: 0, acctParam: null, cache: null /* 上一次的查詢結果 { key, list, sum }：重畫時先顯示，避免每次都閃「載入中…」 */ };
 
 export function renderTransactions(root, route) {
   const d = state.data;
@@ -149,16 +147,7 @@ export function renderTransactions(root, route) {
       h('div', { class: 'filters' }, typeSel, acctSel, catSel, search, voidToggle)),
     h('div', { class: 'card', style: { marginTop: '12px' } }, listBox));
 
-  async function load() {
-    const my = ++S.seq;
-    const range = FinDates.monthRange(S.ym);
-    mount(listBox, h('div', { class: 'empty' }, '載入中…'));
-    try {
-      const [list, sum] = await Promise.all([
-        api.call('listTransactions', { filters: { from: range.from, to: range.to, ...S.filters }, limit: 500 }),
-        api.call('monthSummary', { ym: S.ym }),
-      ]);
-      if (my !== S.seq) return;
+  function render(list, sum) {
       const m = (k, v, kind) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (kind === 'pos' ? 'amt-pos' : '') }, v));
       mount(summaryBox, m('收入', money(sum.income, sum.base), 'pos'), m('支出', money(sum.expense, sum.base)), m('結餘', money(sum.net, sum.base, { sign: true }), sum.net > 0 ? 'pos' : ''));
       clear(listBox);
@@ -171,6 +160,23 @@ export function renderTransactions(root, route) {
         listBox.appendChild(h('ul', { class: 'list' }, g.items.map((t) => h('li', null, txRow(t)))));
       }
       if (list.total > list.items.length) listBox.appendChild(h('div', { class: 'muted small center', style: { padding: '10px' } }, `只顯示最新 ${list.items.length} 筆（共 ${list.total} 筆），請縮小篩選範圍`));
+  }
+
+  async function load() {
+    const my = ++S.seq;
+    const range = FinDates.monthRange(S.ym);
+    const key = S.ym + '|' + JSON.stringify(S.filters);
+    // 同一組條件剛查過：先畫上次的結果（畫面不會閃），背景再重查
+    if (S.cache && S.cache.key === key) render(S.cache.list, S.cache.sum);
+    else mount(listBox, h('div', { class: 'empty' }, '載入中…'));
+    try {
+      const [list, sum] = await Promise.all([
+        api.call('listTransactions', { filters: { from: range.from, to: range.to, ...S.filters }, limit: 500 }),
+        api.call('monthSummary', { ym: S.ym }),
+      ]);
+      if (my !== S.seq) return;
+      S.cache = { key, list, sum };
+      render(list, sum);
     } catch (e) {
       if (my !== S.seq) return;
       mount(listBox, h('div', { class: 'notice bad' }, errorText(e)));

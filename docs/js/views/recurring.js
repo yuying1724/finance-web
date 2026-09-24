@@ -4,7 +4,7 @@ import { state, instrumentBySymbol } from '../store.js';
 import * as api from '../api.js';
 import { money, dateLabel, categoryInfo } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
-import { refresh } from '../data.js';
+import { write, mergeRow, refreshInBackground, patchRow } from '../data.js';
 
 const FREQS = ['每週', '每月', '每季', '每年'];
 const HOLIDAYS = ['順延', '提前', '不調整'];
@@ -56,7 +56,7 @@ export function renderRecurring(root) {
   const templates = (d.recurring || []).slice().sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1));
   const tplCard = h('div', { class: 'card' },
     h('div', { class: 'card-title' }, h('h2', null, '定期範本'),
-      h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-recurring', onclick: () => openRecurringForm({ onDone: refresh }) }, icon('plus'), '新增')),
+      h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-recurring', onclick: () => openRecurringForm({}) }, icon('plus'), '新增')),
     templates.length
       ? h('ul', { class: 'list' }, templates.map((t) => h('li', null, templateRow(t))))
       : h('div', { class: 'muted', style: { padding: '8px 0' } }, '還沒有定期範本'));
@@ -106,11 +106,18 @@ function isManualOrder(t) { return t.mode === '手動下單'; }
 async function skipGroup(group) {
   const ok = await confirmDialog({ title: '略過', message: `確定要略過「${group[0].templateName || '這筆定期交易'}」嗎？這期就不會入帳，也不會再重新產生。`, danger: true });
   if (!ok) return;
-  try {
-    await api.call('skipPending', { id: group[0].id });
-    await refresh();
-    toast('已略過');
-  } catch (e) { toast(errorText(e), { kind: 'bad' }); }
+  // 樂觀更新：先從本機的待確認清單拿掉這一組，背景送出，失敗自動還原
+  const r = await write('skipPending', { id: group[0].id }, { optimistic: () => removePendingLocal(group), failPrefix: '略過失敗，已還原：' });
+  if (r) toast('已略過');
+}
+
+/** 把一組待確認交易從本機清單移除，回傳還原函式 */
+function removePendingLocal(group) {
+  const d = state.data;
+  const ids = group.map((t) => t.id);
+  const snap = d.pendingConfirmations.slice();
+  d.pendingConfirmations = d.pendingConfirmations.filter((t) => !ids.includes(t.id));
+  return () => { d.pendingConfirmations = snap; };
 }
 
 function openPostponeDialog(item) {
@@ -118,8 +125,10 @@ function openPostponeDialog(item) {
   const save = h('button', { class: 'btn btn-primary', type: 'button', onclick: async (e) => {
     await withBusy(e.currentTarget, async () => {
       try {
-        await api.call('postponePending', { id: item.id, date: input.value });
-        sheet.close(); await refresh(); toast('已延後');
+        const r = await api.call('postponePending', { id: item.id, date: input.value });
+        sheet.close();
+        if (r && r.tx) Object.assign(item, r.tx); // 先把新日期套到本機，背景再重新整理
+        refreshInBackground(); toast('已延後');
       } catch (err) { toast(errorText(err), { kind: 'bad' }); }
     });
   } }, '儲存');
@@ -162,7 +171,7 @@ function openSimpleConfirm(group) {
         const params = { id: first.id, requestId: api.newRequestId() };
         if (!isGroup) params.trade = { date: f.date, srcQty: f.srcQty === '' ? undefined : f.srcQty, dstQty: f.dstQty === '' ? undefined : f.dstQty };
         await api.call('confirmPending', params);
-        sheet.close(); await refresh(); toast('已確認入帳');
+        sheet.close(); removePendingLocal(group); refreshInBackground(); toast('已確認入帳');
       } catch (err) {
         if (err.code === 'VALIDATION' && err.details && err.details.errors) err.details.errors.forEach((x) => showErr(x.field, x.message));
         else { banner.style.display = ''; mount(banner, errorText(err)); }
@@ -204,7 +213,7 @@ function openTradeConfirm(item) {
         const trade = { date: f.date, qty: f.qty, amount: f.amount, fee: f.fee || 0, tax: f.tax || 0, cashQty: f.cashQty };
         if (f.settleTouched && f.settleDate) trade.settleDate = f.settleDate;
         await api.call('confirmPending', { id: item.id, trade, requestId: api.newRequestId() });
-        sheet.close(); await refresh(); toast('已確認入帳');
+        sheet.close(); removePendingLocal([item]); refreshInBackground(); toast('已確認入帳');
       } catch (err) {
         if (err.code === 'VALIDATION' && err.details && err.details.errors) err.details.errors.forEach((x) => showErr(x.field, x.message));
         else { banner.style.display = ''; mount(banner, errorText(err)); }
@@ -222,12 +231,10 @@ function templateRow(t) {
       h('div', { class: 't' }, t.name, t.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')),
       h('div', { class: 's' }, `${t.freq}・${t.days}號　${t.type}／${t.mode}`)),
     h('div', { class: 'row-flex', style: { gap: '6px' } },
-      h('button', { class: 'btn btn-sm', onclick: () => openRecurringForm({ recurring: t, onDone: refresh }) }, '編輯'),
-      h('button', { class: 'btn btn-sm ' + (t.active ? 'btn-danger' : ''), onclick: async (e) => {
-        await withBusy(e.currentTarget, async () => {
-          try { await api.call('setRecurringActive', { id: t.id, active: !t.active }); await refresh(); toast(t.active ? '已停用' : '已啟用'); }
-          catch (err) { toast(errorText(err), { kind: 'bad' }); }
-        });
+      h('button', { class: 'btn btn-sm', onclick: () => openRecurringForm({ recurring: t }) }, '編輯'),
+      h('button', { class: 'btn btn-sm ' + (t.active ? 'btn-danger' : ''), onclick: () => {
+        // 樂觀更新：先在本機切換，背景送出，失敗自動還原
+        patchRow('setRecurringActive', { id: t.id, active: !t.active }, { list: 'recurring', idField: 'id', id: t.id, patch: { active: !t.active }, toast: t.active ? '已停用' : '已啟用' });
       } }, t.active ? '停用' : '啟用')));
 }
 
@@ -322,8 +329,9 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
       try {
         const payload = { ...f, days: f.days.split(',').map((s) => s.trim()).filter(Boolean).map(Number) };
         if (recurring) payload.id = recurring.id;
-        await api.call('upsertRecurring', { recurring: payload, expectedUpdatedAt: recurring ? recurring.updatedAt : undefined });
+        const r = await api.call('upsertRecurring', { recurring: payload, expectedUpdatedAt: recurring ? recurring.updatedAt : undefined });
         sheet.close();
+        mergeRow('recurring', 'id', r.recurring); refreshInBackground();
         if (onDone) await onDone();
         toast(editing ? '已儲存修改' : '已新增定期範本');
       } catch (err) {

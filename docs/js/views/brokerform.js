@@ -1,6 +1,7 @@
 import { h, mount } from '../dom.js';
 import { state } from '../store.js';
 import * as api from '../api.js';
+import { mergeRow, refreshInBackground } from '../data.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
 
 /** 證券帳戶設定：手續費率、證交稅率、交割天數與日曆等，帳戶專屬，不寫死在程式裡。 */
@@ -69,8 +70,9 @@ export function openBrokerForm({ account, broker = null, onDone } = {}) {
     if (!f.market) { showErr('market', '請選擇市場'); return; }
     await withBusy(e.currentTarget, async () => {
       try {
-        await api.call('upsertBrokerSettings', { broker: { accountId: account.id, ...f } });
+        const r = await api.call('upsertBrokerSettings', { broker: { accountId: account.id, ...f } });
         sheet.close();
+        mergeRow('brokerSettings', 'accountId', r.broker); refreshInBackground();
         if (onDone) await onDone();
         toast('已儲存證券帳戶設定');
       } catch (err) {

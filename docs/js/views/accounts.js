@@ -1,14 +1,13 @@
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
 import { state } from '../store.js';
-import * as api from '../api.js';
 import { money, ACCOUNT_ICON } from '../fmt.js';
-import { openSheet, toast, errorText, withBusy } from '../ui.js';
+import { openSheet, toast } from '../ui.js';
 import { openAccountForm } from './accountform.js';
 import { openTxForm } from './txform.js';
 import { openCardStatement, openLoanDetail } from './liability.js';
 import { renderCategories } from './categories.js';
-import { refresh } from '../data.js';
+import { write } from '../data.js';
 
 const LIABILITY = ['信用卡', '貸款', '應付'];
 let showInactive = false;
@@ -36,7 +35,7 @@ export function renderAccounts(root, route) {
   if (!list.length) body.push(h('div', { class: 'card empty' }, h('div', { class: 'big' }, icon('wallet')), '還沒有帳戶。按右上角「＋」新增。'));
 
   mount(root,
-    h('div', { class: 'page-head' }, h('h1', null, '帳戶'), h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-account', onclick: () => openAccountForm({ onDone: refresh }) }, icon('plus'), '新增')),
+    h('div', { class: 'page-head' }, h('h1', null, '帳戶'), h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-account', onclick: () => openAccountForm({}) }, icon('plus'), '新增')),
     subtabs('accounts'),
     h('div', { class: 'stack' }, body),
     inactiveCount ? h('label', { class: 'check small muted', style: { marginTop: '12px' } }, h('input', { type: 'checkbox', checked: showInactive, onchange: (e) => { showInactive = e.target.checked; renderAccounts(root, route); } }), `顯示已停用的帳戶（${inactiveCount}）`) : null);
@@ -73,16 +72,15 @@ function openAccountDetail(a) {
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
         ...liabilityBtns,
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); location.hash = '#/tx?acct=' + a.id; } }, '看交易'),
-        h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openTxForm({ preset: { type: '調整', acct: a.id }, onDone: refresh }), 0); } }, '對帳（輸入實際餘額）'),
-        h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openAccountForm({ account: a, onDone: refresh }), 0); } }, '編輯'),
-        h('button', { class: 'btn btn-sm ' + (a.active ? 'btn-danger' : ''), onclick: async (e) => {
-          await withBusy(e.currentTarget, async () => {
-            try {
-              const r = await api.call('setAccountActive', { id: a.id, active: !a.active });
-              sheet.close(); await refresh();
-              toast(a.active ? '已停用' + (r.warnings && r.warnings.length ? '。' + r.warnings[0] : '') : '已啟用');
-            } catch (err) { toast(errorText(err), { kind: 'bad' }); }
+        h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openTxForm({ preset: { type: '調整', acct: a.id } }), 0); } }, '對帳（輸入實際餘額）'),
+        h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openAccountForm({ account: a }), 0); } }, '編輯'),
+        h('button', { class: 'btn btn-sm ' + (a.active ? 'btn-danger' : ''), onclick: async () => {
+          sheet.close(); // 樂觀更新：先在本機切換，背景送出，失敗自動還原
+          const r = await write('setAccountActive', { id: a.id, active: !a.active }, {
+            optimistic: () => { const prev = a.active; a.active = !a.active; return () => { a.active = prev; }; },
+            failPrefix: '操作失敗，已還原：',
           });
+          if (r) toast(a.active ? '已停用' + (r.warnings && r.warnings.length ? '。' + r.warnings[0] : '') : '已啟用');
         } }, a.active ? '停用' : '重新啟用'))),
   });
 }
