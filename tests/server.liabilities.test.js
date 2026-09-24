@@ -278,3 +278,83 @@ test('信用卡總覽：同群組只出現一筆（合併帳單）、單卡各�
   assert.ok(b.call('setAccountActive', { id: noSet, active: false }).ok);
   assert.equal(b.boot().cardOverview.items.length, 3);
 });
+
+test('合併帳單繳款 addCardPayment：依各卡欠款分攤成多筆同群組轉帳，各卡餘額各自歸零；溢繳放第一張卡；requestId 防重送', () => {
+  const b = fresh();
+  const bank = b.acct('銀行', '銀行');
+  const fA = b.acct('富邦-J卡', '信用卡'), fB = b.acct('富邦-數位生活卡', '信用卡'), fC = b.acct('富邦-Costco卡', '信用卡');
+  [fA, fB, fC].forEach((id) => b.card({ accountId: id, statementDay: 12, dueDay: 28, limit: 320000, limitGroup: '富邦' }));
+  const food = cat(b, '飲食');
+  assert.ok(b.add({ type: '調整', date: '2026-02-01', dstAccount: bank, dstSymbol: 'TWD', dstQty: 100000 }).ok);
+  assert.ok(b.add({ type: '支出', date: '2026-02-20', srcAccount: fA, srcSymbol: 'TWD', srcQty: 50000, categoryId: food }).ok);
+  assert.ok(b.add({ type: '支出', date: '2026-03-01', srcAccount: fB, srcSymbol: 'TWD', srcQty: 30000, categoryId: food }).ok);
+  const bal = (id) => { const d = b.boot(); const x = d.balances.find((x) => x.accountId === id && x.symbol === 'TWD'); return x ? x.qty : 0; };
+  // 繳 80,000：A 分到 50,000、B 分到 30,000、C 沒欠不分
+  const r = b.call('addCardPayment', { accountIds: [fA, fB, fC], fromAccount: bank, amount: 80000, date: '2026-03-08', requestId: 'pay-1' });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(r.data.txs.length, 2);
+  assert.deepEqual(r.data.txs.map((t) => [t.dstAccount, t.srcQty]).sort(), [[fA, 50000], [fB, 30000]].sort());
+  assert.equal(r.data.txs[0].groupId, r.data.txs[0].id);
+  assert.equal(r.data.txs[1].groupId, r.data.txs[0].id);
+  assert.equal(bal(fA), 0); assert.equal(bal(fB), 0); assert.equal(bal(fC), 0); assert.equal(bal(bank), 20000);
+  // 重送同一個 requestId 不會重複扣款
+  const r2 = b.call('addCardPayment', { accountIds: [fA, fB, fC], fromAccount: bank, amount: 80000, date: '2026-03-08', requestId: 'pay-1' });
+  assert.ok(r2.ok); assert.equal(bal(bank), 20000);
+  // 溢繳：再刷 1,000 在 B，繳 5,000 → B 分 1,000，多的 4,000 放第一張卡（A）
+  assert.ok(b.add({ type: '支出', date: '2026-03-09', srcAccount: fB, srcSymbol: 'TWD', srcQty: 1000, categoryId: food }).ok);
+  const r3 = b.call('addCardPayment', { accountIds: [fA, fB, fC], fromAccount: bank, amount: 5000, date: '2026-03-10' });
+  assert.ok(r3.ok, JSON.stringify(r3));
+  assert.deepEqual(r3.data.txs.map((t) => [t.dstAccount, t.srcQty]).sort(), [[fA, 4000], [fB, 1000]].sort());
+  assert.equal(bal(fA), 4000); assert.equal(bal(fB), 0);
+  // 總覽：整組已繳清
+  const ov = b.call('getCardOverview', { asOf: '2026-03-25' }).data.items.find((x) => x.name === '富邦');
+  assert.equal(ov.statementAmountDue, 0);
+  // 非信用卡帳戶會被擋
+  assert.equal(b.call('addCardPayment', { accountIds: [bank], fromAccount: bank, amount: 1 }).error.code, 'NOT_FOUND');
+});
+
+test('轉帳／換匯的手續費：另外產生同群組的「手續費」支出，從轉出帳戶扣', () => {
+  const b = fresh();
+  const bank = b.acct('銀行', '銀行'), bank2 = b.acct('另一家銀行', '銀行');
+  assert.ok(b.add({ type: '調整', date: '2026-03-01', dstAccount: bank, dstSymbol: 'TWD', dstQty: 10000 }).ok);
+  const r = b.add({ type: '轉帳', date: '2026-03-05', srcAccount: bank, srcSymbol: 'TWD', srcQty: 5000, dstAccount: bank2, dstSymbol: 'TWD', dstQty: 5000, feeAmount: 15, tags: '跨行' });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.ok(r.data.fee);
+  assert.equal(r.data.fee.type, '支出'); assert.equal(r.data.fee.srcQty, 15); assert.equal(r.data.fee.srcAccount, bank);
+  assert.equal(r.data.fee.groupId, r.data.tx.id); assert.equal(r.data.tx.groupId, r.data.tx.id);
+  assert.equal(r.data.fee.tags, '跨行');
+  const d = b.boot();
+  const feeCat = d.categories.find((c) => c.id === r.data.fee.categoryId);
+  assert.equal(feeCat.name, '手續費');
+  assert.equal(d.balances.find((x) => x.accountId === bank).qty, 10000 - 5000 - 15);
+  assert.equal(d.balances.find((x) => x.accountId === bank2).qty, 5000);
+  // 搜尋商家／標籤；原幣金額欄位
+  const r2 = b.add({ type: '支出', date: '2026-03-06', srcAccount: bank, srcSymbol: 'TWD', srcQty: 2500, categoryId: cat(b, '飲食'), merchant: '一蘭拉麵', tags: '日本旅遊, 美食,日本旅遊', fxSymbol: 'JPY', fxQty: 11800 });
+  assert.ok(r2.ok, JSON.stringify(r2));
+  assert.equal(r2.data.tx.tags, '日本旅遊,美食', '標籤去重、去空白');
+  assert.equal(r2.data.tx.fxSymbol, 'JPY'); assert.equal(r2.data.tx.fxQty, 11800);
+  const q1 = b.call('listTransactions', { filters: { q: '一蘭' } }).data;
+  assert.equal(q1.total, 1, JSON.stringify(q1.items.map((t) => [t.id, t.type, t.merchant, t.note, t.tags])));
+  assert.equal(b.call('listTransactions', { filters: { tag: '美食' } }).data.total, 1);
+  assert.equal(b.call('listTransactions', { filters: { tag: '跨行' } }).data.total, 2, '轉帳與它的手續費都帶同一個標籤');
+  assert.equal(b.call('listTransactions', { filters: { merchant: '一蘭拉麵' } }).data.total, 1);
+  const boot = b.boot();
+  assert.deepEqual(boot.merchants, ['一蘭拉麵']);
+  assert.deepEqual(boot.tagList.sort(), ['日本旅遊', '美食', '跨行'].sort());
+  // 原幣只填一半會被擋
+  assert.equal(b.add({ type: '支出', date: '2026-03-06', srcAccount: bank, srcSymbol: 'TWD', srcQty: 100, categoryId: cat(b, '飲食'), fxQty: 5 }).error.code, 'VALIDATION');
+  assert.equal(b.add({ type: '支出', date: '2026-03-06', srcAccount: bank, srcSymbol: 'TWD', srcQty: 100, categoryId: cat(b, '飲食'), fxSymbol: '0050', fxQty: 5 }).error.code, 'VALIDATION');
+});
+
+test('免息期推薦：今天刷哪張卡最晚付款（結帳日剛過的卡最久）', () => {
+  const b = fresh();
+  const a = b.acct('A卡', '信用卡'), c2 = b.acct('B卡', '信用卡');
+  // 今天 2026-03-10：A 卡結帳日 9 號（剛結完，今天刷落到 4/9 結帳、5/1 繳）；B 卡結帳日 12 號（3/12 結帳、4/1 繳）
+  b.card({ accountId: a, statementDay: 9, dueDay: 1, limit: 100000 });
+  b.card({ accountId: c2, statementDay: 12, dueDay: 1, limit: 100000 });
+  const ov = b.call('getCardOverview', { asOf: '2026-03-10' }).data;
+  const A = ov.items.find((x) => x.name === 'A卡'), B = ov.items.find((x) => x.name === 'B卡');
+  assert.equal(A.chargeTodayDueDate, '2026-05-01'); assert.equal(A.graceDays, 52);
+  assert.equal(B.chargeTodayDueDate, '2026-04-01'); assert.equal(B.graceDays, 22);
+  assert.equal(ov.bestToday.name, 'A卡');
+});

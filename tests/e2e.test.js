@@ -385,6 +385,72 @@ test('信用卡總覽：帳戶頁依類型分區可收合；同銀行合併帳�
   });
 });
 
+test('A 組：商家／標籤／外幣欄位、轉帳手續費、跨月搜尋、首頁待辦卡', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    const before = digits(await a.networth());
+    // 支出：商家＋標籤＋外幣金額
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '2500');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '錢包現金' });
+    await a.pickCategory('飲食', '午餐');
+    await page.fill('input[aria-label="商家"]', '一蘭拉麵');
+    await page.click('[data-testid=tx-more]');
+    await page.fill('input[aria-label="標籤"]', '日本旅遊, 美食');
+    await page.fill('input[aria-label="原幣金額"]', '11800');
+    await page.selectOption('select[aria-label="原幣"]', 'JPY');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    await page.waitForFunction((b) => Number(document.querySelector('[data-testid=networth]').innerText.replace(/[^\d-]/g, '')) === b - 2500, before);
+    await page.waitForFunction(() => /一蘭拉麵/.test(document.body.innerText));
+    const tx = be.call('listTransactions', { filters: { q: '一蘭' } }).data.items[0];
+    assert.equal(tx.merchant, '一蘭拉麵'); assert.equal(tx.tags, '日本旅遊,美食'); assert.equal(tx.fxSymbol, 'JPY'); assert.equal(tx.fxQty, 11800);
+    // 詳情顯示商家／原幣／標籤
+    await page.locator('.list').getByText('一蘭拉麵').first().click();
+    await page.waitForSelector('.sheet');
+    const detail = await page.locator('.sheet').innerText();
+    assert.match(detail, /商家/); assert.match(detail, /¥11,800|JPY/); assert.match(detail, /日本旅遊/);
+    await page.click('.sheet [aria-label="關閉"]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+
+    // 轉帳＋手續費 → 兩筆同群組
+    await a.fab();
+    await page.click('.sheet button[data-type="轉帳"]');
+    await page.fill('input[aria-label="金額"]', '3000');
+    await page.selectOption('select[aria-label="轉出帳戶"]', { label: '玉山活存' });
+    await page.selectOption('select[aria-label="轉入帳戶"]', { label: '錢包現金' });
+    await page.fill('input[aria-label="手續費"]', '15');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    await page.waitForFunction((b) => Number(document.querySelector('[data-testid=networth]').innerText.replace(/[^\d-]/g, '')) === b - 2500 - 15, before);
+    const fee = be.call('listTransactions', { filters: { q: '手續費' } }).data.items[0];
+    assert.equal(fee.srcQty, 15); assert.ok(fee.groupId);
+
+    // 跨月搜尋：把一筆交易改到上個月，關鍵字仍找得到
+    const boot = be.call('bootstrap').data;
+    const old = boot.recent.find((t) => t.merchant === '一蘭拉麵');
+    const lastMonth = be.ctx.FinDates.addDays(boot.today, -40);
+    assert.ok(be.call('updateTransaction', { id: old.id, expectedUpdatedAt: old.updatedAt, tx: { ...old, date: lastMonth } }).ok);
+    await a.tab('tx');
+    await page.fill('input[aria-label="搜尋"]', '一蘭');
+    await page.waitForSelector('[data-testid=search-scope]');
+    assert.match(await page.locator('[data-testid=search-scope]').innerText(), /全部期間共 1 筆/);
+    assert.ok(await page.locator('.list').getByText('一蘭拉麵').count() > 0, '上個月的交易也搜得到');
+
+    // 首頁待辦卡：加一個下週到期的定期範本後出現在「未來 30 天」
+    const inDays = (n) => be.ctx.FinDates.addDays(boot.today, n);
+    const bank = boot.accounts.find((x) => x.name === '玉山活存').id;
+    const cat = boot.categories.find((c) => c.name === '房租房貸' && c.type === '支出').id;
+    assert.ok(be.call('upsertRecurring', { recurring: { name: '房租', freq: '每月', days: [Number(inDays(7).slice(8, 10))], holiday: '不調整', startDate: inDays(7), type: '支出', srcAccount: bank, srcSymbol: 'TWD', srcQty: 20000, categoryId: cat, mode: '自動入帳' } }).ok);
+    await a.tab('home');
+    await page.reload(); await page.waitForSelector('[data-testid=todo-card]');
+    const todo = await page.locator('[data-testid=todo-card]').innerText();
+    assert.match(todo, /待辦與未來 30 天/); assert.match(todo, /房租/); assert.match(todo, /預計支出/);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

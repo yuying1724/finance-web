@@ -19,6 +19,9 @@ var FinSetup = (function () {
     var missing = headers.filter(function (h) { return existing.indexOf(h) < 0; });
     if (missing.length) {
       var startCol = existing.filter(function (h) { return h !== ''; }).length ? lastCol + 1 : 1;
+      // 欄位超過工作表現有欄數（新分頁預設 26 欄）時先擴充，否則 getRange 會直接丟例外
+      var needCols = startCol + missing.length - 1, maxCols = sheet.getMaxColumns();
+      if (needCols > maxCols) sheet.insertColumnsAfter(maxCols, needCols - maxCols);
       sheet.getRange(1, startCol, 1, missing.length).setValues([missing]).setFontWeight('bold').setBackground(HEADER_BG);
       if (!created) report.repaired.push(name + '（補上欄位：' + missing.join('、') + '）');
     }

@@ -1,7 +1,7 @@
 /* Service Worker：讓網站可安裝成 App，並在離線時至少能開啟外殼。
  * 策略：同網域的檔案「網路優先、失敗才用快取」，這樣更新程式後不會被舊快取卡住。
  * 呼叫後端 API 的請求（跨網域 POST）完全不經過快取。 */
-const VERSION = 'fin-v0.7.0';
+const VERSION = 'fin-v0.8.0';
 const SHELL = [
   './', 'index.html', 'config.js', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg',
   'js/app.js', 'js/api.js', 'js/store.js', 'js/data.js', 'js/dom.js', 'js/icons.js', 'js/fmt.js', 'js/ui.js',

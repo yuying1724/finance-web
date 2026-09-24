@@ -70,6 +70,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     acct: '', sym: '', amount: '', acct2: '', sym2: '', amount2: '', side: 'dst', actual: '', related: preset.related || null,
     instAcct: '', instSym: '', instQty: '', cashAcct: '', cashSym: '', cashQty: '', gross: '', fee: '', tax: '',
     settleDate: '', settleTouched: false, relatedSymbol: '', adjSide: 'dst',
+    merchant: editing ? (tx.merchant || '') : '', tags: editing ? (tx.tags || '') : '', fxSymbol: editing ? (tx.fxSymbol || '') : '', fxQty: editing && tx.fxQty ? String(tx.fxQty) : '',
+    feeAmount: '', more: false,
   };
 
   const fmtNum = (n) => String(n);
@@ -177,6 +179,31 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     return field('date', '日期', input, quick);
   }
   const noteField = () => field('note', '備註（選填）', h('input', { type: 'text', maxlength: 500, value: f.note, placeholder: '例如：和同事聚餐', oninput: (e) => { f.note = e.target.value; } }));
+  // 商家（自動完成用最近常用的商家）
+  const merchantListId = 'merchant-list-' + requestId.slice(0, 8);
+  const merchantField = () => field('merchant', '商家（選填）',
+    h('input', { type: 'text', maxlength: 40, value: f.merchant, list: merchantListId, placeholder: '例如：全聯、Uber Eats', 'aria-label': '商家', oninput: (e) => { f.merchant = e.target.value; } }),
+    h('datalist', { id: merchantListId }, (d.merchants || []).map((m) => h('option', { value: m }))));
+  // 「更多」：標籤、原幣金額（台幣帳戶刷外幣時保留原幣）
+  const tagListId = 'tag-list-' + requestId.slice(0, 8);
+  function moreFields(withFx) {
+    const box = h('div', { style: { display: f.more ? '' : 'none' } });
+    const toggle = h('button', { type: 'button', class: 'chip', 'data-testid': 'tx-more', onclick: () => { f.more = !f.more; box.style.display = f.more ? '' : 'none'; toggle.textContent = f.more ? '收起' : '更多（標籤' + (withFx ? '、外幣金額' : '') + '）'; } }, f.more ? '收起' : '更多（標籤' + (withFx ? '、外幣金額' : '') + '）');
+    const tagInput = h('input', { type: 'text', maxlength: 160, value: f.tags, list: tagListId, placeholder: '用逗號分隔，例如：日本旅遊,公司報帳', 'aria-label': '標籤', oninput: (e) => { f.tags = e.target.value; } });
+    box.appendChild(field('tags', '標籤（選填）', tagInput, h('datalist', { id: tagListId }, (d.tagList || []).map((m) => h('option', { value: m })))));
+    if (withFx) {
+      const fxSel = h('select', { 'aria-label': '原幣', onchange: (e) => { f.fxSymbol = e.target.value; } },
+        h('option', { value: '', selected: !f.fxSymbol }, '（不填）'),
+        currencies.map((c) => h('option', { value: c.symbol, selected: c.symbol === f.fxSymbol }, `${c.symbol} ${c.name}`)));
+      const fxInput = h('input', { type: 'text', inputmode: 'decimal', value: f.fxQty, placeholder: '例如 12000', 'aria-label': '原幣金額', oninput: (e) => { f.fxQty = e.target.value; } });
+      box.appendChild(field('fxQty', '原幣金額（選填，刷外幣時記錄原幣）', h('div', { class: 'two' }, fxInput, fxSel),
+        h('div', { class: 'muted small', style: { marginTop: '3px' } }, '上面的「金額」仍填帳戶幣別的實際扣款金額；這裡只是保留當時的外幣金額供查閱')));
+    }
+    return h('div', { style: { margin: '4px 0 12px' } }, toggle, box);
+  }
+  // 手續費（轉帳／換匯）：另外產生一筆同群組的「支出」（分類：手續費），從轉出帳戶扣
+  const feeField = () => field('feeAmount', '手續費（選填）',
+    h('input', { type: 'text', inputmode: 'decimal', value: f.feeAmount, placeholder: '例如 15，會另外記成一筆「手續費」支出', 'aria-label': '手續費', oninput: (e) => { f.feeAmount = e.target.value; } }));
 
   /** 交割日：依證券帳戶設定與休市日自動帶出，除非使用者手動改過就不再自動覆蓋 */
   const settleHint = h('div', { class: 'muted small', style: { marginTop: '3px' } });
@@ -241,17 +268,18 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     for (const k of Object.keys(fieldEls)) delete fieldEls[k];
     const parts = [];
     if (type === '支出') {
-      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '付款帳戶', 'acct', 'sym'), categoryField('支出'), dateField(), noteField());
+      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '付款帳戶', 'acct', 'sym'), categoryField('支出'), merchantField(), dateField(), noteField(), moreFields(true));
     } else if (type === '收入') {
-      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '入帳帳戶', 'acct', 'sym'), categoryField('收入'), dateField(), noteField());
+      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '入帳帳戶', 'acct', 'sym'), categoryField('收入'), merchantField(), dateField(), noteField(), moreFields(true));
     } else if (type === '退款') {
       parts.push(f.related ? h('div', { class: 'notice', style: { marginBottom: '12px' } }, `退款給：${categoryInfo(f.related.categoryId).name} ${money(f.related.srcQty, f.related.srcSymbol, { noMask: true })}（${f.related.date}）`) : null,
-        amountField('amount', '退款金額', 'amount', 'sym', null, true), accountSelect('acct', '退回到哪個帳戶', 'acct', 'sym'), categoryField('支出'), dateField(), noteField());
+        amountField('amount', '退款金額', 'amount', 'sym', null, true), accountSelect('acct', '退回到哪個帳戶', 'acct', 'sym'), categoryField('支出'), merchantField(), dateField(), noteField(), moreFields(true));
     } else if (type === '轉帳') {
-      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '轉出帳戶', 'acct', 'sym'), accountSelect('acct2', '轉入帳戶', 'acct2', 'sym', false), dateField(), noteField());
+      parts.push(!editing && preset.cardPay && preset.cardPay.accountIds.length > 1 ? h('div', { class: 'notice', style: { marginBottom: '12px' } }, `繳「${preset.cardPay.name}」合併帳單：會依各卡目前欠款自動分攤成多筆轉帳，各卡餘額各自歸零`) : null,
+        amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '轉出帳戶', 'acct', 'sym'), accountSelect('acct2', '轉入帳戶', 'acct2', 'sym', false), editing ? null : feeField(), dateField(), noteField(), moreFields(false));
     } else if (type === '換匯') {
       parts.push(amountField('amount', '賣出（付出）', 'amount', 'sym', currencies, true), accountSelect('acct', '付款帳戶', 'acct', 'sym'),
-        amountField('amount2', '買入（收到）', 'amount2', 'sym2', currencies), accountSelect('acct2', '入帳帳戶', 'acct2', 'sym2'), rateBox, dateField(), noteField());
+        amountField('amount2', '買入（收到）', 'amount2', 'sym2', currencies), accountSelect('acct2', '入帳帳戶', 'acct2', 'sym2'), rateBox, editing ? null : feeField(), dateField(), noteField(), moreFields(false));
     } else if (type === '調整') {
       if (editing) {
         parts.push(field('side', '方向', h('div', { class: 'seg' }, [['dst', '調多（增加）'], ['src', '調少（減少）']].map(([v, t]) =>
@@ -325,7 +353,18 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
 
   // ---------- 送出 ----------
   function buildTx() {
-    const base = { type, date: f.date, note: f.note.trim() };
+    const base = { type, date: f.date, note: f.note.trim(), merchant: f.merchant.trim(), tags: f.tags.trim() };
+    if (f.fxSymbol || String(f.fxQty).trim() !== '') {
+      const a = parseAmount(f.fxQty);
+      if (!f.fxSymbol) return { error: { field: 'fxQty', message: '請選擇原幣幣別' } };
+      if (a.empty || a.bad || !(a.n > 0)) return { error: { field: 'fxQty', message: '原幣金額必須是大於 0 的數字' } };
+      base.fxSymbol = f.fxSymbol; base.fxQty = a.n;
+    }
+    if (!editing && (type === '轉帳' || type === '換匯') && String(f.feeAmount).trim() !== '') {
+      const fa = parseAmount(f.feeAmount);
+      if (fa.bad || !(fa.n >= 0)) return { error: { field: 'feeAmount', message: '手續費不是有效的數字' } };
+      if (fa.n > 0) base.feeAmount = fa.n;
+    }
     const amt = (key, label) => {
       const a = parseAmount(f[key]);
       if (a.empty) return { error: { field: key, message: `請輸入${label}` } };
@@ -422,8 +461,12 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     if (built.error) { setError(built.error.field, built.error.message); return; }
     last.type = type; last.acct = f.acct; if (type === '轉帳' || type === '換匯') last.acct2 = f.acct2;
     const localTx = Object.assign({}, editing ? tx : { status: '有效', createdAt: '', updatedAt: '' }, built.tx, { id: editing ? tx.id : 'tmp-' + Date.now().toString(36) });
-    const params = editing ? { id: tx.id, expectedUpdatedAt: tx.updatedAt, tx: built.tx } : { tx: built.tx, requestId };
-    const action = editing ? 'updateTransaction' : 'addTransaction';
+    // 合併帳單繳款：後端依各卡欠款分攤成多筆轉帳（畫面上先當一筆轉帳套用，背景更新後會是正式的多筆）
+    const cardPay = !editing && type === '轉帳' && preset.cardPay && preset.cardPay.accountIds && preset.cardPay.accountIds.includes(built.tx.dstAccount) ? preset.cardPay : null;
+    const params = editing ? { id: tx.id, expectedUpdatedAt: tx.updatedAt, tx: built.tx }
+      : cardPay ? { accountIds: cardPay.accountIds, fromAccount: built.tx.srcAccount, amount: built.tx.srcQty, date: built.tx.date, note: built.tx.note, tags: built.tx.tags, requestId }
+        : { tx: built.tx, requestId };
+    const action = editing ? 'updateTransaction' : cardPay ? 'addCardPayment' : 'addTransaction';
     const reopen = (errors) => openTxForm({ tx, preset, onDone, draft: { type, f: Object.assign({}, f) }, serverErrors: errors || null });
     sheet.close();
     const res = await write(action, params, {
@@ -436,6 +479,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     });
     if (!res) return;
     if (onDone && onDone !== refresh) { try { await onDone(); } catch (e) { /* 資料稍後會自動更新 */ } }
+    if (cardPay) { toast(`已記錄繳款${res.txs && res.txs.length > 1 ? `（分攤到 ${res.txs.length} 張卡）` : ''}`); return; }
     const saved = res.tx;
     const msgs = [editing ? '已儲存修改' : '已新增'].concat(res.warnings || []);
     toast(msgs.join('　'), editing ? {} : { action: { label: '復原', fn: async () => {

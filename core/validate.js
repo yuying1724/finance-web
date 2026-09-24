@@ -37,6 +37,8 @@ var FinValidate = (function () {
       amount: numOrNull(input.amount), fee: numOrNull(input.fee), tax: numOrNull(input.tax),
       relatedSymbol: str(input.relatedSymbol), groupId: str(input.groupId), relatedTxId: str(input.relatedTxId),
       recurringId: str(input.recurringId), note: safeText(str(input.note)),
+      merchant: safeText(str(input.merchant)).slice(0, 40), tags: normalizeTags(input.tags),
+      fxSymbol: str(input.fxSymbol), fxQty: numOrNull(input.fxQty),
       status: existing ? existing.status : '有效',
     };
 
@@ -53,6 +55,12 @@ var FinValidate = (function () {
     }
     if (t.settleDate && !FinDates.isValid(t.settleDate)) err('settleDate', '交割日格式不正確');
     if (t.note.length > MAX_NOTE) err('note', '備註過長（上限 ' + MAX_NOTE + ' 字）');
+    // ---- 原幣金額（選填）：台幣帳戶刷外幣時保留原幣，兩個欄位要一起填 ----
+    if (t.fxSymbol || t.fxQty !== null) {
+      if (!t.fxSymbol) err('fxSymbol', '請選擇原幣幣別');
+      else if (!ctx.instruments || !ctx.instruments[t.fxSymbol] || ctx.instruments[t.fxSymbol].type !== '法幣') err('fxSymbol', '原幣必須是幣別（法幣）');
+      if (t.fxQty === null || isNaN(t.fxQty) || t.fxQty <= 0) err('fxQty', '原幣金額必須大於 0');
+    }
 
     // ---- 每一端 ----
     function checkLeg(prefix, label, required, instKind) {
@@ -212,11 +220,19 @@ var FinValidate = (function () {
     }
 
     // 未使用的欄位保持空白，避免髒資料
-    ['srcQty', 'dstQty', 'amount', 'fee', 'tax'].forEach(function (k) { if (t[k] !== null && isNaN(t[k])) t[k] = null; });
+    ['srcQty', 'dstQty', 'amount', 'fee', 'tax', 'fxQty'].forEach(function (k) { if (t[k] !== null && isNaN(t[k])) t[k] = null; });
     return { ok: errors.length === 0, errors: errors, warnings: warnings, tx: t };
   }
 
-  return { validateTransaction: validateTransaction, safeText: safeText };
+  /** 標籤：逗號／頓號分隔，去空白、去重、最多 8 個、每個最多 20 字，存成「a,b,c」 */
+  function normalizeTags(v) {
+    var list = Array.isArray(v) ? v : String(v === null || v === undefined ? '' : v).split(/[,，、]/);
+    var out = [], seen = {};
+    list.forEach(function (x) { var s = safeText(String(x)).trim().slice(0, 20); if (s && !seen[s]) { seen[s] = true; out.push(s); } });
+    return out.slice(0, 8).join(',');
+  }
+
+  return { validateTransaction: validateTransaction, safeText: safeText, normalizeTags: normalizeTags };
 })();
 //#ifnode
 module.exports = FinValidate;

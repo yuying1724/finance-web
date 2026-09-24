@@ -40,7 +40,7 @@ function meter(item) {
 /** 「繳款」：開記一筆（轉帳），目的帳戶預設為這張合併帳單的第一張卡，金額預設待繳金額，來源預設卡片設定的繳款帳戶 */
 export function openPayForm(item) {
   const srcAcct = item.payAccountId && accountById(item.payAccountId) ? item.payAccountId : '';
-  openTxForm({ preset: { type: '轉帳', acct: srcAcct, acct2: item.accountIds[0], amount: item.statementAmountDue > 0 ? item.statementAmountDue : '' } });
+  openTxForm({ preset: { type: '轉帳', acct: srcAcct, acct2: item.accountIds[0], amount: item.statementAmountDue > 0 ? item.statementAmountDue : '', cardPay: { accountIds: item.accountIds, name: item.name } } });
 }
 
 /** 群組／單卡詳情：成員清單（可點進各卡）、明細、繳款、設定 */
@@ -81,7 +81,8 @@ export function cardRow(item, compact) {
   const sub = h('div', { class: 's' }, dueBadge(item), ' ',
     !item.hasSettings ? '請先設定結帳日與繳款日'
       : item.statementAmountDue > 0 ? `繳款日 ${mmdd(item.dueDate)}`
-        : `可用 ${item.availableCredit === null ? '未設定額度' : money(item.availableCredit, item.symbol)}`);
+        : `可用 ${item.availableCredit === null ? '未設定額度' : money(item.availableCredit, item.symbol)}`,
+    !compact && item.hasSettings && item.graceDays !== null && item.graceDays !== undefined ? `　今天刷 → ${mmdd(item.chargeTodayDueDate)} 付` : '');
   return h('button', { class: 'item', 'data-card-group': item.name, onclick: () => openCardGroupSheet(item) },
     h('div', { class: 'ico' }, icon('card')),
     h('div', { class: 'grow' },
@@ -100,27 +101,54 @@ export function renderCards(root, { subtabs }) {
     h('div', { class: 'label' }, '信用卡待繳合計'),
     h('div', { class: 'big', 'data-testid': 'card-total-due' }, money(ov.totalDue, d.base)),
     h('div', { class: 'muted small' }, ov.nearest ? `最近繳款日 ${mmdd(ov.nearest.dueDate)}（${ov.nearest.name}）${ov.nearest.dueInDays < 0 ? '，已逾期' : ov.nearest.dueInDays === 0 ? '，今天' : `，${ov.nearest.dueInDays} 天後`}` : '目前沒有待繳的帳單'));
+  const best = ov.bestToday ? h('div', { class: 'notice', 'data-testid': 'best-card' }, icon('stars'), h('div', null,
+    `今天刷「${ov.bestToday.name}」最划算`,
+    h('div', { class: 'small muted' }, `會落在本期帳單，最晚 ${mmdd(ov.bestToday.chargeTodayDueDate)} 才要付（${ov.bestToday.graceDays} 天免息）`))) : null;
   const list = items.length
     ? h('div', { class: 'card' }, h('ul', { class: 'list' }, items.map((it) => h('li', null, cardRow(it, false)))))
     : h('div', { class: 'card empty' }, h('div', { class: 'big' }, icon('card')), '還沒有信用卡帳戶。到「帳戶」新增類型為「信用卡」的帳戶，再設定結帳日與繳款日。');
   mount(root,
     h('div', { class: 'page-head' }, h('h1', null, '信用卡')),
     subtabs('cards'),
-    h('div', { class: 'stack' }, head, list,
+    h('div', { class: 'stack' }, head, best, list,
       h('p', { class: 'muted small' }, '同一家銀行合併寄帳單的卡片（同「額度群組」）只顯示一筆，金額是整組加總；點進去可以看各卡明細與記繳款。')));
 }
 
-/** 首頁提醒卡（有待繳才顯示） */
-export function cardDueNotice() {
-  const ov = state.data.cardOverview;
-  if (!ov || !ov.nearest || ov.totalDue <= 0) return null;
-  const n = ov.nearest;
-  const urgent = n.dueInDays <= DUE_SOON_DAYS;
-  const when = n.dueInDays < 0 ? `已逾期 ${-n.dueInDays} 天` : n.dueInDays === 0 ? '今天到期' : `${n.dueInDays} 天後到期`;
-  return h('div', { class: 'notice' + (urgent ? ' bad' : ''), 'data-testid': 'card-due-notice' }, icon('card'), h('div', null,
-    `信用卡待繳 ${money(ov.totalDue, state.data.base)}`,
-    h('div', { class: 'small muted' }, `最近一筆：${n.name} ${money(n.amount, n.symbol)}，${mmdd(n.dueDate)} ${when}`),
-    h('div', null, h('a', { href: '#/accounts/cards' }, '看信用卡總覽'))));
+/** 首頁「待辦與未來 30 天」卡：待確認、信用卡待繳（最近一筆）、定期扣款／貸款還款依日期列出；沒有任何項目就不顯示 */
+export function todoCard() {
+  const d = state.data;
+  const ov = d.cardOverview, up = d.upcoming;
+  const pending = (d.pendingConfirmations || []).length;
+  const rows = [];
+  if (pending) {
+    rows.push(h('li', null, h('a', { class: 'item', href: '#/recurring', 'data-testid': 'pending-notice' },
+      h('div', { class: 'ico' }, icon('refresh')),
+      h('div', { class: 'grow' }, h('div', { class: 't' }, `${pending} 筆待確認`), h('div', { class: 's' }, '定期交易到期了，請確認金額後入帳')),
+      h('div', { class: 'amt muted' }, icon('right')))));
+  }
+  if (ov && ov.nearest && ov.totalDue > 0) {
+    const n = ov.nearest;
+    const urgent = n.dueInDays <= DUE_SOON_DAYS;
+    const when = n.dueInDays < 0 ? `已逾期 ${-n.dueInDays} 天` : n.dueInDays === 0 ? '今天到期' : `${n.dueInDays} 天後到期`;
+    rows.push(h('li', null, h('a', { class: 'item', href: '#/accounts/cards', 'data-testid': 'card-due-notice' },
+      h('div', { class: 'ico' }, icon('card')),
+      h('div', { class: 'grow' }, h('div', { class: 't' }, `信用卡待繳 ${money(ov.totalDue, d.base)}`, ' ', h('span', { class: 'badge' + (urgent ? ' bad' : '') }, when)),
+        h('div', { class: 's' }, `最近一筆：${n.name} ${money(n.amount, n.symbol)}，${mmdd(n.dueDate)}`)),
+      h('div', { class: 'amt muted' }, icon('right')))));
+  }
+  const upItems = up ? up.items.filter((x) => x.kind !== '信用卡') : [];
+  const shown = upItems.slice(0, 6);
+  shown.forEach((x) => {
+    rows.push(h('li', null, h('a', { class: 'item', href: x.kind === '定期' ? '#/recurring' : '#/accounts', 'data-testid': 'upcoming-item' },
+      h('div', { class: 'ico' }, icon(x.kind === '貸款' ? 'percent' : 'refresh')),
+      h('div', { class: 'grow' }, h('div', { class: 't' }, x.name), h('div', { class: 's' }, `${mmdd(x.date)}　${x.kind}${x.mode ? '・' + x.mode : ''}`)),
+      h('div', { class: 'amt' + (x.direction === 'in' ? ' amt-pos' : '') }, x.amount === null || x.amount === undefined ? '' : (x.direction === 'in' ? '+' : '-') + money(x.amount, x.symbol)))));
+  });
+  if (!rows.length) return null;
+  const head = h('div', { class: 'card-title' }, h('h2', null, '待辦與未來 30 天'),
+    up ? h('span', { class: 'muted small' }, `預計支出 ${money(up.totalOut, d.base)}${up.totalIn ? `　收入 ${money(up.totalIn, d.base)}` : ''}${up.hasForeign ? '（外幣未計）' : ''}`) : null);
+  return h('div', { class: 'card', 'data-testid': 'todo-card' }, head, h('ul', { class: 'list' }, rows),
+    upItems.length > shown.length ? h('div', { class: 'small', style: { padding: '6px 2px 0' } }, h('a', { href: '#/recurring' }, `還有 ${upItems.length - shown.length} 筆，到「定期」查看`)) : null);
 }
 
 // 記住帳戶頁各分區的收合狀態（純本機偏好）

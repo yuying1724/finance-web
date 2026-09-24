@@ -275,3 +275,37 @@ test('建議金額出現在手動下單模式的待確認清單裡（有部位�
   assert.ok(pend.suggested, JSON.stringify(pend));
   assert.equal(pend.suggested.amount, 24000);
 });
+
+test('未來 30 天預覽（bootstrap.upcoming）：定期到期、信用卡繳款、貸款本期都列出，已產生的定期不重複，只加總基準幣別', () => {
+  const b = loadBackend().setup();
+  const acct = (name, type, sym = 'TWD') => b.call('upsertAccount', { account: { name, type, defaultSymbol: sym, institution: name } }).data.account.id;
+  const bank = acct('銀行', '銀行'), card = acct('富邦-J卡', '信用卡'), loan = acct('房貸', '貸款'), usd = acct('美元帳戶', '銀行', 'USD');
+  const boot0 = b.call('bootstrap').data;
+  const cat = (n) => boot0.categories.find((c) => c.name === n && c.type === '支出').id;
+  // 今天 2026-03-10。定期：每月 15 號房租 20,000（自動入帳）；每月 20 號美元訂閱 10 USD
+  assert.ok(b.call('upsertRecurring', { recurring: { name: '房租', freq: '每月', days: [15], holiday: '不調整', startDate: '2026-01-15', type: '支出', srcAccount: bank, srcSymbol: 'TWD', srcQty: 20000, categoryId: cat('房租房貸'), mode: '自動入帳' } }).ok);
+  assert.ok(b.call('upsertRecurring', { recurring: { name: '美元訂閱', freq: '每月', days: [20], holiday: '不調整', startDate: '2026-01-20', type: '支出', srcAccount: usd, srcSymbol: 'USD', srcQty: 10, categoryId: cat('房租房貸'), mode: '自動入帳' } }).ok);
+  // 信用卡：每月 12 號結帳、28 號繳；上期（1/13～2/12）刷了 5,000 → 2/28 到期，今天 3/10 已逾期，也要列出來
+  assert.ok(b.call('upsertCardSettings', { card: { accountId: card, statementDay: 12, dueDay: 28, limit: 100000 } }).ok);
+  assert.ok(b.call('addTransaction', { tx: { type: '支出', date: '2026-02-05', srcAccount: card, srcSymbol: 'TWD', srcQty: 5000, categoryId: cat('房租房貸') } }).ok);
+  // 貸款：每月 25 號還款
+  assert.ok(b.call('upsertLoanSettings', { loan: { accountId: loan, principal: 1200000, rate: 2.0, terms: 240, startDate: '2026-01-25', payDay: 25, method: '本息平均攤還' } }).ok);
+  const up = b.call('bootstrap').data.upcoming;
+  assert.equal(up.from, '2026-03-10'); assert.equal(up.to, '2026-04-09');
+  const names = up.items.map((x) => x.kind + ':' + x.name + '@' + x.date);
+  assert.ok(names.includes('定期:房租@2026-03-15'), names.join(' | '));
+  assert.ok(names.includes('定期:美元訂閱@2026-03-20'));
+  assert.ok(names.some((n) => n.startsWith('信用卡:富邦-J卡@2026-02-28')), names.join(' | '));
+  assert.equal(up.items.find((x) => x.kind === '信用卡').overdue, true);
+  assert.ok(names.some((n) => n.startsWith('貸款:房貸 第') && n.endsWith('@2026-03-25')));
+  assert.ok(!names.includes('定期:房租@2026-04-15'), '4/15 超過 30 天');
+  assert.equal(up.items[0].date <= up.items[1].date, true, '依日期排序');
+  const loanItem = up.items.find((x) => x.kind === '貸款');
+  assert.equal(up.totalOut, 20000 + 5000 + loanItem.amount, '美元的不加總');
+  assert.equal(up.hasForeign, true);
+  // 排程跑過（3/15 已產生房租）之後，房租那筆不再出現在預覽
+  b.mock.state.clock.now = new Date('2026-03-16T09:00:00+08:00').getTime(); b.login();
+  assert.ok(b.call('runRecurringScheduler', {}).ok);
+  const up2 = b.call('bootstrap').data.upcoming;
+  assert.ok(!up2.items.some((x) => x.name === '房租' && x.date === '2026-03-15'));
+});

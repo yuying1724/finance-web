@@ -11,7 +11,8 @@ import { write, applyTxLocal } from '../data.js';
 export function describe(t) {
   const src = accountById(t.srcAccount), dst = accountById(t.dstAccount);
   const an = (a, id) => (a ? a.name : id || '');
-  const note = t.note ? ' · ' + t.note : '';
+  const fx = t.fxSymbol && t.fxQty ? ' · ' + money(t.fxQty, t.fxSymbol, { noMask: true }) : '';
+  const note = (t.merchant ? ' · ' + t.merchant : '') + fx + (t.note ? ' · ' + t.note : '');
   switch (t.type) {
     case '支出': {
       const c = categoryInfo(t.categoryId);
@@ -75,6 +76,9 @@ export function openTxDetail(t) {
   if (t.srcAccount) rows.push([t.type === '調整' ? '調少' : '轉出／付款', `${src ? src.name : t.srcAccount}　${money(t.srcQty, t.srcSymbol, { noMask: true })}`]);
   if (t.dstAccount) rows.push([t.type === '調整' ? '調多' : '轉入／入帳', `${dst ? dst.name : t.dstAccount}　${money(t.dstQty, t.dstSymbol, { noMask: true })}`]);
   if (t.categoryId && t.type !== '調整') rows.push(['分類', categoryInfo(t.categoryId).name]);
+  if (t.merchant) rows.push(['商家', t.merchant]);
+  if (t.fxSymbol && t.fxQty) rows.push(['原幣金額', money(t.fxQty, t.fxSymbol, { noMask: true })]);
+  if (t.tags) rows.push(['標籤', h('span', null, String(t.tags).split(',').map((x) => h('span', { class: 'badge', style: { marginRight: '4px' } }, x)))]);
   if (t.note) rows.push(['備註', t.note]);
   rows.push(['編號', t.id], ['更新時間', t.updatedAt]);
   const dl = h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)]));
@@ -151,6 +155,7 @@ export function renderTransactions(root, route) {
       const m = (k, v, kind) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (kind === 'pos' ? 'amt-pos' : '') }, v));
       mount(summaryBox, m('收入', money(sum.income, sum.base), 'pos'), m('支出', money(sum.expense, sum.base)), m('結餘', money(sum.net, sum.base, { sign: true }), sum.net > 0 ? 'pos' : ''));
       clear(listBox);
+      if (S.filters.q.trim()) listBox.appendChild(h('div', { class: 'muted small', style: { padding: '8px 2px 2px' }, 'data-testid': 'search-scope' }, `搜尋「${S.filters.q.trim()}」：全部期間共 ${list.total} 筆`));
       if (!list.items.length) {
         listBox.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, icon('list')), S.filters.q || S.filters.type || S.filters.accountId || S.filters.categoryId ? '沒有符合條件的交易' : '這個月還沒有交易'));
         return;
@@ -170,8 +175,10 @@ export function renderTransactions(root, route) {
     if (S.cache && S.cache.key === key) render(S.cache.list, S.cache.sum);
     else mount(listBox, h('div', { class: 'empty' }, '載入中…'));
     try {
+      // 有關鍵字時搜尋全部期間（不限當月），像其他記帳軟體的全域搜尋；沒有關鍵字才照月份列
+      const allTime = !!S.filters.q.trim();
       const [list, sum] = await Promise.all([
-        api.call('listTransactions', { filters: { from: range.from, to: range.to, ...S.filters }, limit: 500 }),
+        api.call('listTransactions', { filters: { ...(allTime ? {} : { from: range.from, to: range.to }), ...S.filters }, limit: 500 }),
         api.call('monthSummary', { ym: S.ym }),
       ]);
       if (my !== S.seq) return;

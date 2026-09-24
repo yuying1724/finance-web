@@ -179,6 +179,9 @@ var FinApi = (function () {
         item.currentPeriod = s.currentPeriod; item.lastClosedPeriod = s.lastClosedPeriod;
         item.statementDay = g.settings.statementDay; item.dueDay = g.settings.dueDay; item.payAccountId = g.settings.payAccountId || '';
         item.dueInDays = s.dueDate ? daysBetween(asOf, s.dueDate) : null;
+        // 免息期：今天刷這張卡，會落在本期帳單，最晚繳款日＝本期結帳日對應的繳款日（MOZE 的「免息期推薦」）
+        item.chargeTodayDueDate = FinCreditCard.dueDateFor(g.settings.dueDay, s.currentPeriod.end);
+        item.graceDays = daysBetween(asOf, item.chargeTodayDueDate);
         // 上期帳單已經繳掉（結帳後有還款把待繳扣到 0）
         item.paid = s.statementAmountDue <= 0 && FinCreditCard.balanceUnitsAsOf(c.txRows, ids, symbol, decimals, s.lastClosedPeriod.end) < 0;
         if (ids.length > 1) {
@@ -204,7 +207,72 @@ var FinApi = (function () {
         if (!nearest || x.dueDate < nearest.dueDate) nearest = { name: x.name, dueDate: x.dueDate, dueInDays: x.dueInDays, amount: x.statementAmountDue, symbol: x.symbol };
       }
     });
-    return { items: out, totalDue: FinMoney.round(totalDue, 0), nearest: nearest, asOf: asOf };
+    var best = null;
+    out.forEach(function (x) { if (x.hasSettings && (!best || x.graceDays > best.graceDays || (x.graceDays === best.graceDays && (x.availableCredit || 0) > (best.availableCredit || 0)))) best = x; });
+    return { items: out, totalDue: FinMoney.round(totalDue, 0), nearest: nearest, asOf: asOf,
+      bestToday: best ? { key: best.key, name: best.name, chargeTodayDueDate: best.chargeTodayDueDate, graceDays: best.graceDays } : null };
+  }
+
+  /**
+   * 未來 N 天預計扣款／入帳（像 MOZE 通知中心的「即將到來」）：
+   * 啟用中的定期範本到期日（跳過已產生過的）、信用卡繳款日（有待繳的）、貸款本期應繳日（沒有用定期範本管理的貸款）。
+   * 依日期排序；total 只加總基準幣別的「支出」方向金額（外幣列出但不加總）。
+   */
+  function upcoming(c, days, cardOv) {
+    var from = c.today, to = FinDates.addDays(c.today, days || 30);
+    var items = [];
+    var loanHandledByRecurring = {};
+    c.recurringRows.filter(function (t) { return t.active; }).forEach(function (tpl) {
+      var dayList = String(tpl.days || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean).map(Number);
+      var markets = tpl.type === '貸款還款' ? ['台灣'] : marketsForAccount(c, tpl.dstAccount || tpl.srcAccount);
+      var occ = FinRecurring.occurrences({ freq: tpl.freq, days: dayList, holiday: tpl.holiday, startDate: tpl.startDate, endDate: tpl.endDate },
+        FinDates.addDays(from, -1), to, markets, holidaySetOf(c));
+      if (tpl.type === '貸款還款') loanHandledByRecurring[tpl.dstAccount || tpl.srcAccount] = true;
+      occ.forEach(function (o) {
+        var generated = c.txRows.some(function (t) { return t.recurringId === tpl.id && t.plannedDate === o.planned; });
+        if (generated) return;
+        var isIncome = tpl.type === '收入';
+        var amount = tpl.type === '貸款還款' ? null : (isIncome ? tpl.dstQty : tpl.srcQty);
+        var symbol = isIncome ? tpl.dstSymbol : tpl.srcSymbol;
+        if (tpl.type === '貸款還款') {
+          var la = c.accounts[tpl.dstAccount || tpl.srcAccount], ls = la && c.loanByAccount[la.id];
+          if (la && ls) { var li = c.instruments[la.defaultSymbol]; var sc = FinLoan.schedule(ls, li ? li.decimals : 0); var per = FinLoan.findPeriod(sc, o.due); if (per) { amount = per.payment; symbol = la.defaultSymbol; } }
+        }
+        items.push({ date: o.due, kind: '定期', name: tpl.name, type: tpl.type, mode: tpl.mode, amount: amount, symbol: symbol || c.base, direction: isIncome ? 'in' : 'out', recurringId: tpl.id, accountId: tpl.srcAccount || tpl.dstAccount });
+      });
+    });
+    (cardOv ? cardOv.items : []).forEach(function (x) {
+      if (!x.hasSettings || !(x.statementAmountDue > 0) || !x.dueDate || x.dueDate > to) return;
+      items.push({ date: x.dueDate, kind: '信用卡', name: x.name + (x.isGroup ? '（合併帳單）' : ''), amount: x.statementAmountDue, symbol: x.symbol, direction: 'out', overdue: x.overdue, cardKey: x.key, accountId: x.accountIds[0] });
+    });
+    c.loanRows.forEach(function (ls) {
+      if (loanHandledByRecurring[ls.accountId]) return;
+      var acct = c.accounts[ls.accountId];
+      if (!acct || acct.type !== '貸款' || !acct.active) return;
+      var inst = c.instruments[acct.defaultSymbol];
+      var sched = FinLoan.schedule(ls, inst ? inst.decimals : 0);
+      var cur = FinLoan.findPeriod(sched, from);
+      if (!cur || cur.date > to) return;
+      // 這期已經記過還款（同期別的轉帳進貸款帳戶）就不列
+      var paid = c.txRows.some(function (t) { return t.status === '有效' && t.type === '轉帳' && t.dstAccount === acct.id && t.date >= FinDates.addDays(cur.date, -31) && t.date <= to; });
+      if (paid) return;
+      items.push({ date: cur.date, kind: '貸款', name: acct.name + ' 第 ' + cur.period + ' 期', amount: cur.payment, symbol: acct.defaultSymbol, direction: 'out', accountId: acct.id });
+    });
+    items.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.kind < b.kind ? -1 : 1); });
+    var totalOut = 0, totalIn = 0, foreign = false;
+    items.forEach(function (x) {
+      if (x.amount === null || x.amount === undefined) return;
+      if (x.symbol !== c.base) { foreign = true; return; }
+      if (x.direction === 'in') totalIn += x.amount; else totalOut += x.amount;
+    });
+    return { from: from, to: to, days: days || 30, items: items, totalOut: FinMoney.round(totalOut, 0), totalIn: FinMoney.round(totalIn, 0), hasForeign: foreign };
+  }
+
+  /** 出現次數最多的前 n 個非空字串（商家／標籤的自動完成清單） */
+  function topValues(list, n) {
+    var count = {};
+    list.forEach(function (v) { v = v === null || v === undefined ? '' : String(v).trim(); if (v) count[v] = (count[v] || 0) + 1; });
+    return Object.keys(count).sort(function (a, b) { return count[b] - count[a] || (a < b ? -1 : 1); }).slice(0, n);
   }
 
   var cacheGet = function (k) { return CacheService.getScriptCache().get(k); };
@@ -229,6 +297,7 @@ var FinApi = (function () {
     fn: function (p, env) {
       var c = loadContext(env.now);
       var calc = computeAll(c);
+      var cardOv = cardOverview(c, c.today);
       var month = FinReport.monthSummary(c.txRows, { instruments: c.instruments, prices: c.prices, base: c.base, categories: c.categories }, FinDates.ymOf(c.today));
       var recent = FinLedger.filterTransactions(c.txRows, {}, { accounts: c.accounts, categories: c.categories }).slice(0, 8).map(pub);
       var nw = calc.netWorth;
@@ -238,7 +307,7 @@ var FinApi = (function () {
         accounts: c.accountRows.map(pub), categories: c.categoryRows.map(pub),
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
         brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
-        cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub), cardOverview: cardOverview(c, c.today),
+        cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub), cardOverview: cardOv, upcoming: upcoming(c, 30, cardOv),
         recurring: c.recurringRows.map(pub), pendingConfirmations: pendingConfirmations(c),
         prices: c.priceInfo,
         balances: calc.balances.map(function (b) { return { accountId: b.accountId, symbol: b.symbol, qty: b.qty }; }),
@@ -247,6 +316,8 @@ var FinApi = (function () {
         month: month, recent: recent,
         issues: { count: c.bad.length + calc.ledgerIssues.length, items: c.bad.slice(0, 20), ledger: calc.ledgerIssues.slice(0, 20) },
         enabledTxTypes: FinSchema.ENABLED_TX_TYPES,
+        merchants: topValues(c.txRows.map(function (t) { return t.merchant; }), 60),
+        tagList: topValues([].concat.apply([], c.txRows.map(function (t) { return t.tags ? String(t.tags).split(',') : []; })), 60),
       };
     },
   };
@@ -258,6 +329,7 @@ var FinApi = (function () {
       var filters = {
         from: FinDates.isValid(f.from) ? f.from : '', to: FinDates.isValid(f.to) ? f.to : '', type: str(f.type), accountId: str(f.accountId),
         categoryId: str(f.categoryId), q: str(f.q).slice(0, 60), status: str(f.status), includeVoid: !!f.includeVoid,
+        tag: str(f.tag).slice(0, 20), merchant: str(f.merchant).slice(0, 40),
       };
       var all = FinLedger.filterTransactions(c.txRows, filters, { accounts: c.accounts, categories: c.categories });
       var limit = Math.min(MAX_PAGE, Math.max(1, Number(p.limit) || 50));
@@ -288,11 +360,24 @@ var FinApi = (function () {
         var res = FinValidate.validateTransaction(p.tx, validationCtx(c, null));
         if (!res.ok) throw failValidation(res);
         var t = res.tx;
-        t.id = FinRepo.nextIds('transactions', 1)[0];
+        // 轉帳／換匯的手續費：另外產生一筆同群組的「支出」（分類：手續費），從轉出帳戶扣，跟主交易一起寫入
+        var feeAmount = Number(p.tx.feeAmount) || 0;
+        var feeTx = null;
+        if (feeAmount > 0 && (t.type === '轉帳' || t.type === '換匯')) {
+          var feeCat = c.categoryRows.filter(function (x) { return x.type === '支出' && x.name === '手續費' && x.active !== false; })[0]
+            || c.categoryRows.filter(function (x) { return x.type === '支出' && x.name === '金融費用'; })[0];
+          if (!feeCat) throw FinFail('VALIDATION', '找不到「手續費」支出分類，請先到分類新增', { errors: [{ field: 'feeAmount', message: '找不到「手續費」分類' }], warnings: [] });
+          var feeRes = FinValidate.validateTransaction({ type: '支出', date: t.date, srcAccount: t.srcAccount, srcSymbol: t.srcSymbol, srcQty: feeAmount, categoryId: feeCat.id, note: '手續費', tags: t.tags }, validationCtx(c, null));
+          if (!feeRes.ok) throw FinFail('VALIDATION', '手續費：' + (feeRes.errors[0] || {}).message, { errors: feeRes.errors.map(function (e) { return { field: 'feeAmount', message: e.message }; }), warnings: [] });
+          feeTx = feeRes.tx;
+        }
+        var ids = FinRepo.nextIds('transactions', feeTx ? 2 : 1);
+        t.id = ids[0];
         t.createdAt = ts(env.now); t.updatedAt = t.createdAt;
-        FinRepo.append('transactions', [t]);
-        FinRepo.audit('新增', 'transactions', t.id, summarizeTx(t), env.device);
-        var out = { tx: pub(t), warnings: res.warnings };
+        if (feeTx) { t.groupId = t.id; feeTx.id = ids[1]; feeTx.groupId = t.id; feeTx.relatedTxId = t.id; feeTx.createdAt = t.createdAt; feeTx.updatedAt = t.createdAt; }
+        FinRepo.append('transactions', feeTx ? [t, feeTx] : [t]);
+        FinRepo.audit('新增', 'transactions', t.id, summarizeTx(t) + (feeTx ? '（含手續費 ' + feeAmount + '）' : ''), env.device);
+        var out = { tx: pub(t), fee: feeTx ? pub(feeTx) : null, warnings: res.warnings };
         if (requestId) cachePut('req:' + requestId, JSON.stringify(out), 600);
         return out;
       });
@@ -670,6 +755,54 @@ var FinApi = (function () {
         if (existing) { FinRepo.updateRow('cardSettings', existing._row, v); out = v; } else { FinRepo.append('cardSettings', [v]); out = v; }
         FinRepo.audit(existing ? '修改' : '新增', 'cardSettings', v.accountId, (c.accounts[v.accountId] || {}).name || v.accountId, env.device);
         return { card: out };
+      });
+    },
+  };
+
+  /**
+   * 信用卡繳款（合併帳單）：一筆繳款依各卡目前欠款分攤成多筆同群組的「轉帳」，讓每張卡的餘額各自歸零
+   * （MOZE 繳到主帳戶時也是自動分配到各子卡）。欠多的先分，繳超過總欠款的部分放在第一張卡。
+   */
+  H.addCardPayment = {
+    fn: function (p, env) {
+      var requestId = str(p.requestId).slice(0, 64);
+      return FinRepo.withLock(function () {
+        if (requestId) { var prev = cacheGet('req:' + requestId); if (prev) return JSON.parse(prev); }
+        var c = loadContext(env.now);
+        var ids = Array.isArray(p.accountIds) ? p.accountIds.map(str).filter(Boolean) : [];
+        if (!ids.length) throw FinFail('BAD_REQUEST', '缺少信用卡帳戶');
+        ids.forEach(function (id) { var a = c.accounts[id]; if (!a || a.type !== '信用卡') throw FinFail('NOT_FOUND', '找不到信用卡帳戶 ' + id); });
+        var from = c.accounts[str(p.fromAccount)];
+        if (!from) throw FinFail('VALIDATION', '請選擇繳款來源帳戶', { errors: [{ field: 'acct', message: '請選擇繳款來源帳戶' }], warnings: [] });
+        var amount = Number(p.amount);
+        if (!(amount > 0)) throw FinFail('VALIDATION', '繳款金額必須大於 0', { errors: [{ field: 'amount', message: '繳款金額必須大於 0' }], warnings: [] });
+        var date = FinDates.isValid(str(p.date)) ? str(p.date) : c.today;
+        var symbol = c.accounts[ids[0]].defaultSymbol;
+        var inst = c.instruments[symbol];
+        var decimals = inst ? inst.decimals : 0;
+        // 各卡目前欠款（截至繳款日），欠多的排前面
+        var owed = ids.map(function (id) {
+          var u = FinCreditCard.balanceUnitsAsOf(c.txRows, [id], symbol, decimals, date);
+          return { id: id, owed: u < 0 ? FinMoney.fromUnits(-u, decimals) : 0 };
+        }).sort(function (a, b) { return b.owed - a.owed; });
+        var remaining = amount, parts = [];
+        owed.forEach(function (o) { if (remaining <= 0 || o.owed <= 0) return; var take = Math.min(remaining, o.owed); take = FinMoney.round(take, decimals); parts.push({ id: o.id, amount: take }); remaining = FinMoney.round(remaining - take, decimals); });
+        if (remaining > 0) { var first = parts.filter(function (x) { return x.id === ids[0]; })[0]; if (first) first.amount = FinMoney.round(first.amount + remaining, decimals); else parts.unshift({ id: ids[0], amount: remaining }); }
+        var warnings = [];
+        var txs = parts.map(function (x) {
+          var r = FinValidate.validateTransaction({ type: '轉帳', date: date, srcAccount: from.id, srcSymbol: symbol, srcQty: x.amount, dstAccount: x.id, dstSymbol: symbol, dstQty: x.amount, note: str(p.note) || '信用卡繳款', tags: str(p.tags) }, validationCtx(c, null));
+          if (!r.ok) throw failValidation(r);
+          warnings = warnings.concat(r.warnings || []);
+          return r.tx;
+        });
+        var newIds = FinRepo.nextIds('transactions', txs.length);
+        var now = ts(env.now);
+        txs.forEach(function (t, i) { t.id = newIds[i]; t.groupId = txs.length > 1 ? newIds[0] : ''; t.createdAt = now; t.updatedAt = now; });
+        FinRepo.append('transactions', txs);
+        FinRepo.audit('新增', 'transactions', newIds[0], '信用卡繳款 ' + amount + ' ' + symbol + '（' + txs.length + ' 張卡）', env.device);
+        var out = { txs: txs.map(pub), warnings: warnings };
+        if (requestId) cachePut('req:' + requestId, JSON.stringify(out), 600);
+        return out;
       });
     },
   };

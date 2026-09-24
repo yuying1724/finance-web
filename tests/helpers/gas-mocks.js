@@ -105,6 +105,7 @@ class MockSheet {
     return last;
   }
   getRange(r, c, nr = 1, nc = 1) { return new MockRange(this, r, c, nr, nc); }
+  insertColumnsAfter(after, n) { this.maxCols += n; }
   insertRowsAfter(after, n) {
     this.maxRows += n; // 新增的列沒有任何格式（比真實更嚴格：不繼承上一列）
     this.ss.insertedRows += n;

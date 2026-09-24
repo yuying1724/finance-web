@@ -70,7 +70,9 @@ var FinSchema = (function () {
         c('categoryId', '分類ID'), c('amount', '成交金額', 'num'), c('fee', '手續費', 'num'), c('tax', '稅款', 'num'),
         c('relatedSymbol', '關聯標的'), c('groupId', '群組ID'), c('relatedTxId', '關聯交易ID'), c('recurringId', '定期ID'),
         c('note', '備註'), c('status', '狀態'), c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts'),
-        c('plannedDate', '計畫日期', 'date')],
+        c('plannedDate', '計畫日期', 'date'),
+        // 2026-09-24 A 組新增（加在最後，部署後要跑「初始化／修復資料表」補欄位）
+        c('merchant', '商家'), c('tags', '標籤'), c('fxSymbol', '原幣'), c('fxQty', '原幣金額', 'num')],
     },
     txTags: { sheet: '交易標籤', idKey: null, cols: [c('txId', '交易ID'), c('tag', '標籤')] },
     recurring: {
@@ -125,7 +127,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.7.0',
+    APP_VERSION: '0.8.0',
   };
   return api;
 })();

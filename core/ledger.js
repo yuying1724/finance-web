@@ -70,13 +70,15 @@ var FinLedger = (function () {
       if (f.from && t.date < f.from) return false;
       if (f.to && t.date > f.to) return false;
       if (f.type && t.type !== f.type) return false;
+      if (f.tag && (',' + (t.tags || '') + ',').indexOf(',' + f.tag + ',') < 0) return false;
+      if (f.merchant && t.merchant !== f.merchant) return false;
       if (f.accountId && t.srcAccount !== f.accountId && t.dstAccount !== f.accountId) return false;
       if (f.categoryId) {
         var cat = categories[t.categoryId];
         if (t.categoryId !== f.categoryId && !(cat && cat.parentId === f.categoryId)) return false;
       }
       if (q) {
-        var hay = [t.note, t.id, (categories[t.categoryId] || {}).name,
+        var hay = [t.note, t.id, t.merchant, t.tags, (categories[t.categoryId] || {}).name,
           (accounts[t.srcAccount] || {}).name, (accounts[t.dstAccount] || {}).name].join(' ').toLowerCase();
         if (hay.indexOf(q) < 0) return false;
       }
