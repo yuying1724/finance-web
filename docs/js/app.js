@@ -1,7 +1,7 @@
 import { h, mount } from './dom.js';
 import { icon } from './icons.js';
 import { prefs, state, subscribe, applyTheme } from './store.js';
-import { refresh } from './data.js';
+import { refresh, loadCache } from './data.js';
 import * as api from './api.js';
 import { closeAllSheets } from './ui.js';
 import { renderLogin } from './views/login.js';
@@ -87,6 +87,18 @@ export function lock(message) {
 async function start() {
   applyTheme();
   if (!api.hasValidSession()) { renderLogin(app, { onSuccess: start }); return; }
+  // 有上次的快取就先畫出來（秒開），背景再抓最新資料；背景更新失敗就維持舊資料並提示，不擋畫面
+  const cached = loadCache();
+  if (cached) {
+    state.data = cached.data;
+    state.loadedAt = cached.loadedAt;
+    showShell();
+    refresh().catch((e) => {
+      if (e.code === 'AUTH_REQUIRED') return; // 已由 authLost 處理
+      console.error(e);
+    });
+    return;
+  }
   mount(app, h('div', { class: 'boot' }, '載入中…'));
   try {
     await refresh();

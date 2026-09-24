@@ -17,6 +17,11 @@ export function renderHome(root) {
   const reload = h('button', { class: 'icon-btn', 'aria-label': '重新整理', onclick: async () => { try { await refresh(); toast('已更新'); } catch (e) { toast(errorText(e), { kind: 'bad' }); } } }, icon('refresh'));
 
   children.push(h('div', { class: 'page-head' }, h('h1', null, '首頁'), reload, eye));
+  if (state.loadedAt || state.refreshing) {
+    children.push(h('p', { class: 'muted small', style: { marginTop: '-6px' } },
+      (state.loadedAt ? '更新於 ' + state.loadedAt.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }) : '') +
+      (state.refreshing ? '　·　更新中…' : '')));
+  }
 
   if (!d.accounts.length) {
     children.push(h('div', { class: 'card empty' },

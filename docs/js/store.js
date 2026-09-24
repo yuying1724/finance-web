@@ -25,7 +25,7 @@ export function applyTheme() {
 }
 
 // 全域狀態（首頁資料 = bootstrap 的回應）
-export const state = { data: null, listeners: new Set() };
+export const state = { data: null, loadedAt: null, refreshing: false, listeners: new Set() };
 export function subscribe(fn) { state.listeners.add(fn); return () => state.listeners.delete(fn); }
 export function notify() { state.listeners.forEach((fn) => fn()); }
 
