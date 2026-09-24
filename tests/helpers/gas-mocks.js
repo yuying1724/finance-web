@@ -14,6 +14,7 @@ const TZ_MS = 8 * 3600 * 1000;
 class MockRange {
   constructor(sheet, r, c, nr, nc) { Object.assign(this, { sheet, r, c, nr, nc }); sheet._check(r, c, nr, nc); }
   getValues() {
+    this.sheet.ss.reads += 1;
     const out = [];
     for (let i = 0; i < this.nr; i++) {
       const row = [];
@@ -115,7 +116,7 @@ class MockSheet {
 }
 
 class MockSpreadsheet {
-  constructor(id) { this.id = id; this.sheets = [new MockSheet(this, '工作表1')]; this.writes = 0; this.insertedRows = 0; }
+  constructor(id) { this.id = id; this.sheets = [new MockSheet(this, '工作表1')]; this.writes = 0; this.reads = 0; this.insertedRows = 0; }
   getId() { return this.id; }
   getUrl() { return `https://docs.google.com/spreadsheets/d/${this.id}/edit`; }
   getSheets() { return this.sheets.slice(); }
@@ -155,6 +156,8 @@ function createMocks() {
   const state = {
     clock: { now: Date.UTC(2026, 2, 10, 4, 0, 0) }, // 台灣時間 2026-03-10 12:00
     spreadsheets: {}, props: {}, cache: {}, triggers: [], sleptMs: 0, lockHeld: false, lockCalls: 0, logs: [], ui: new MockUi(), mail: [],
+    sheetsApiCalls: 0, sheetsApiFail: false, // Sheets 進階服務（Values.batchGet）的呼叫次數／是否模擬失敗
+    urlFetch: { calls: [], handler: null }, // UrlFetchApp：沒設 handler 時模擬「尚未授權 external_request」直接丟例外
   };
   let active = null;
   const newSheet = (id) => { const ss = new MockSpreadsheet(id || 'sheet-' + Object.keys(state.spreadsheets).length); state.spreadsheets[ss.id] = ss; return ss; };
@@ -207,10 +210,64 @@ function createMocks() {
       return b;
     },
   };
+  // Sheets 進階服務（只模擬 Spreadsheets.Values.batchGet）。模擬真實 API 的幾個行為：
+  //  - 每列省略列尾的空格（回傳不整齊的陣列），整列空白回傳 []
+  //  - dateTimeRenderOption=FORMATTED_STRING：日期格輸出台灣地區格式的字串（'2026/3/10'、'2026/3/10 下午 12:00:00'）
+  //  - 分頁不存在會整個呼叫失敗（跟真實 API 一樣，不會只略過那一張）
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const apiDateString = (d) => {
+    const t = new Date(d.getTime() + TZ_MS);
+    const ymd = `${t.getUTCFullYear()}/${t.getUTCMonth() + 1}/${t.getUTCDate()}`;
+    const h = t.getUTCHours(), mi = t.getUTCMinutes(), se = t.getUTCSeconds();
+    if (h === 0 && mi === 0 && se === 0) return ymd;
+    return `${ymd} ${h < 12 ? '上午' : '下午'} ${h % 12 === 0 ? 12 : h % 12}:${pad2(mi)}:${pad2(se)}`;
+  };
+  const Sheets = {
+    Spreadsheets: {
+      Values: {
+        batchGet: (id, opts = {}) => {
+          state.sheetsApiCalls += 1;
+          if (state.sheetsApiFail) throw new Error('模擬 Sheets API 失敗');
+          const ss = state.spreadsheets[id];
+          if (!ss) throw new Error('Requested entity was not found.');
+          if (opts.valueRenderOption !== 'UNFORMATTED_VALUE' || opts.dateTimeRenderOption !== 'FORMATTED_STRING') throw new Error('測試只模擬 UNFORMATTED_VALUE + FORMATTED_STRING');
+          const valueRanges = (opts.ranges || []).map((range) => {
+            const name = String(range).replace(/^'|'$/g, '').replace(/''/g, "'");
+            const sheet = ss.getSheetByName(name);
+            if (!sheet) throw new Error('Unable to parse range: ' + range);
+            const lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+            const values = [];
+            for (let r = 1; r <= lastRow; r++) {
+              const row = [];
+              let lastNonEmpty = 0;
+              for (let c = 1; c <= lastCol; c++) {
+                let v = sheet._read(r, c);
+                if (v instanceof Date) v = apiDateString(v);
+                if (v === null || v === undefined) v = '';
+                if (v !== '') lastNonEmpty = c;
+                row.push(v);
+              }
+              values.push(row.slice(0, lastNonEmpty));
+            }
+            return { range: `'${name}'!A1:Z${Math.max(1, lastRow)}`, majorDimension: 'ROWS', values };
+          });
+          return { spreadsheetId: id, valueRanges };
+        },
+      },
+    },
+  };
+  const UrlFetchApp = {
+    fetch: (url, opts) => {
+      state.urlFetch.calls.push({ url, opts });
+      if (!state.urlFetch.handler) throw new Error('You do not have permission to call UrlFetchApp.fetch. Required permissions: https://www.googleapis.com/auth/script.external_request');
+      const r = state.urlFetch.handler(url, opts);
+      return { getResponseCode: () => (r.code === undefined ? 200 : r.code), getContentText: () => (typeof r.body === 'string' ? r.body : JSON.stringify(r.body)) };
+    },
+  };
   const Logger = { log: (m) => state.logs.push(String(m)) };
   const MailApp = { sendEmail: (to, subject, body) => { state.mail.push({ to, subject, body }); } };
   const Session = { getEffectiveUser: () => ({ getEmail: () => 'owner@example.com' }), getActiveUser: () => ({ getEmail: () => 'owner@example.com' }) };
-  return { state, newSheet, setActive: (ss) => { active = ss; }, globals: { SpreadsheetApp, PropertiesService, CacheService, LockService, Utilities, ContentService, ScriptApp, Logger, MailApp, Session } };
+  return { state, newSheet, setActive: (ss) => { active = ss; }, globals: { SpreadsheetApp, PropertiesService, CacheService, LockService, Utilities, ContentService, ScriptApp, Logger, MailApp, Session, Sheets, UrlFetchApp } };
 }
 
 module.exports = { createMocks, MockSheet, MockSpreadsheet };

@@ -141,3 +141,35 @@ test('大量資料效能：2000 筆交易一次載入與計算在合理時間內
   assert.equal(d.netWorth.total, 3000 + 2000);
   assert.ok(ms < 1500, `bootstrap 花了 ${ms}ms`);
 });
+
+test('價格：GOOGLEFINANCE 抓不到時，改用櫃買中心 OpenAPI 的收盤價；沒授權或抓不到才沿用舊值', () => {
+  const b = fresh();
+  const sh = b.ss.sheet('價格');
+  const header = sh.dump()[0];
+  const col = (name) => header.indexOf(name) + 1;
+  // 加兩檔上櫃股票：一檔 API 查得到、一檔查不到
+  const inst = (o) => { const r = b.call('upsertInstrument', { instrument: o }); assert.ok(r.ok, JSON.stringify(r)); };
+  inst({ symbol: '4126', name: '太醫', type: '台股', quote: 'TWD', decimals: 2, priceSource: 'GOOGLEFINANCE', quoteCode: 'TPE:4126' });
+  inst({ symbol: '9999', name: '查不到', type: '台股', quote: 'TWD', decimals: 2, priceSource: 'GOOGLEFINANCE', quoteCode: 'TPE:9999' });
+  const rows = sh.dump();
+  const rowOf = (sym) => rows.findIndex((r) => r[col('標的代號') - 1] === sym) + 1;
+  sh.poke(rowOf('4126'), col('現價'), '#N/A'); sh.poke(rowOf('4126'), col('上次有效價'), 75.1);
+  sh.poke(rowOf('9999'), col('現價'), '#N/A'); sh.poke(rowOf('9999'), col('上次有效價'), 10);
+
+  // 1. 尚未授權 external_request：UrlFetchApp 丟例外 → 靜默退回沿用舊值，其他標的照常更新
+  b.ctx.FinJobs.refreshPrices();
+  assert.equal(b.state.urlFetch.calls.length, 1, '整個 refreshPrices 只該呼叫一次 TPEx API');
+  let d = b.boot();
+  assert.equal(d.prices['4126'].status, '沿用舊值');
+  assert.equal(d.prices['4126'].price, 75.1);
+  assert.ok(b.state.logs.some((l) => /TPEx 收盤價抓取失敗/.test(l)));
+
+  // 2. 授權後：API 查得到的用收盤價當「正常」，查不到的仍沿用舊值
+  b.state.urlFetch.handler = (url) => { assert.match(url, /tpex\.org\.tw/); return { body: [{ SecuritiesCompanyCode: '4126', Close: '78.30' }, { SecuritiesCompanyCode: '6763', Close: '60' }] }; };
+  b.ctx.FinJobs.refreshPrices();
+  d = b.boot();
+  assert.equal(d.prices['4126'].status, '正常');
+  assert.equal(d.prices['4126'].price, 78.3);
+  assert.equal(d.prices['9999'].status, '沿用舊值');
+  assert.equal(d.prices['9999'].price, 10);
+});

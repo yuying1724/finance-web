@@ -26,6 +26,7 @@ var FinApi = (function () {
 
   // ---------- 載入主檔與交易 ----------
   function loadContext(now) {
+    FinRepo.preload(); // 一趟把常用分頁都讀回來（沒有 Sheets 服務時自動逐張讀）
     var settings = FinRepo.getSettings();
     var instrumentRows = FinRepo.goodRows('instruments');
     var instruments = mapBy(instrumentRows, 'symbol');
@@ -37,7 +38,9 @@ var FinApi = (function () {
     FinRepo.goodRows('prices').forEach(function (r) {
       var p = r.price > 0 ? r.price : (r.lastValid > 0 ? r.lastValid : null);
       if (p !== null) prices[r.symbol] = p;
-      priceInfo[r.symbol] = { price: p, status: r.price > 0 ? '正常' : (r.lastValid > 0 ? '沿用舊值' : '缺價格'), updatedAt: r.updatedAt };
+      // 狀態：現價公式有值 → 正常；沒有但排程用櫃買中心收盤價更新過（狀態欄是「正常」）→ 也算正常；其餘沿用舊值／缺價格
+      var status = r.price > 0 ? '正常' : (r.lastValid > 0 ? (r.status === '正常' ? '正常' : '沿用舊值') : '缺價格');
+      priceInfo[r.symbol] = { price: p, status: status, updatedAt: r.updatedAt };
     });
     var base = settings['基準幣別'] || 'TWD';
     var brokerRows = FinRepo.goodRows('brokerSettings');

@@ -60,7 +60,8 @@ var FinDates = (function () {
     }
     var s = String(v).trim();
     if (isValid(s)) return s;
-    var m = /^(\d{4})[\/.](\d{1,2})[\/.](\d{1,2})$/.exec(s);
+    // 也接受 '2026/3/4'、'2026.3.4'、'2026-3-4'，以及後面帶時間的寫法（例如 Sheets API 把日期時間格輸出成 '2026/3/4 上午 12:00:00'）
+    var m = /^(\d{4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})(?:[ T].*)?$/.exec(s);
     if (m) { var f = format(+m[1], +m[2], +m[3]); return isValid(f) ? f : null; }
     return null;
   }
