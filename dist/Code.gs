@@ -263,7 +263,8 @@ var FinDates = (function () {
     }
     var s = String(v).trim();
     if (isValid(s)) return s;
-    var m = /^(\d{4})[\/.](\d{1,2})[\/.](\d{1,2})$/.exec(s);
+    // 也接受 '2026/3/4'、'2026.3.4'、'2026-3-4'，以及後面帶時間的寫法（例如 Sheets API 把日期時間格輸出成 '2026/3/4 上午 12:00:00'）
+    var m = /^(\d{4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})(?:[ T].*)?$/.exec(s);
     if (m) { var f = format(+m[1], +m[2], +m[3]); return isValid(f) ? f : null; }
     return null;
   }
@@ -1544,11 +1545,13 @@ function FinFail(code, message, extra) {
 var FinRepo = (function () {
   var cache = {};
   var ssCache = null;
+  // 一次預載的分頁內容 { 分頁名稱: values[][] }，只活在同一次執行裡（見下方 preload）
+  var preloaded = null;
 
   function props() { return PropertiesService.getScriptProperties(); }
 
-  function reset() { cache = {}; ssCache = null; }
-  function invalidate() { cache = {}; }
+  function reset() { cache = {}; ssCache = null; preloaded = null; }
+  function invalidate() { cache = {}; preloaded = null; }
 
   function spreadsheet() {
     if (ssCache) return ssCache;
@@ -1620,14 +1623,68 @@ var FinRepo = (function () {
     return { idx: idx, missing: missing, width: header.length };
   }
 
+  // ---------- 一次預載所有常用分頁（Sheets 進階服務 Values.batchGet） ----------
+  // 2026-09-24 效能調整：SpreadsheetApp 每張分頁 getSheetByName + getRange().getValues() 都是各自一趟服務呼叫，
+  // loadContext 一次要讀 10 幾張分頁，光讀表就好幾秒。改用 Sheets API 的 Values.batchGet 一趟把所有分頁的值拿回來
+  // （只拿值不拿格式，回應小、快），同一次執行內 readTable / readOptions 直接用這份，不再逐張呼叫 SpreadsheetApp。
+  // 需要在 Apps Script 專案的「服務」加入 Google Sheets API（識別碼 Sheets；appsscript.json 的 enabledAdvancedServices）。
+  // 沒加、或 API 呼叫失敗（例如分頁改名），都自動退回原本逐張讀取，功能一樣只是慢。
+  // 之後新增「每次請求都會讀」的分頁要記得加進 PRELOAD_TABLES；不加也能用，只是那幾張會逐張讀。
+  var PRELOAD_TABLES = ['settings', 'accounts', 'categories', 'instruments', 'transactions', 'prices', 'brokerSettings',
+    'holidays', 'cardSettings', 'loanSettings', 'recurring'];
+
+  function padRows(rows) {
+    // getValues() 回的是整齊的矩形（空格為 ''），API 會省略列尾的空格與最後的空白列，這裡補齊
+    var width = 0;
+    rows.forEach(function (r) { if (r.length > width) width = r.length; });
+    return rows.map(function (r) {
+      var out = r.map(function (v) { return v === null || v === undefined ? '' : v; });
+      while (out.length < width) out.push('');
+      return out;
+    });
+  }
+
+  /** 一次讀完 PRELOAD_TABLES 與「選項」分頁；成功回傳 true，沒有 Sheets 服務或失敗回傳 false（之後逐張讀） */
+  function preload() {
+    if (preloaded) return true;
+    if (typeof Sheets === 'undefined' || !Sheets || !Sheets.Spreadsheets || !Sheets.Spreadsheets.Values) return false;
+    var id = props().getProperty('SHEET_ID');
+    if (!id) return false;
+    var names = PRELOAD_TABLES.map(function (k) { return FinSchema.TABLES[k].sheet; }).concat([FinSchema.OPTIONS_SHEET]);
+    try {
+      var res = Sheets.Spreadsheets.Values.batchGet(id, {
+        ranges: names.map(function (n) { return "'" + String(n).replace(/'/g, "''") + "'"; }),
+        valueRenderOption: 'UNFORMATTED_VALUE',   // 數字就是數字、布林就是布林；公式格拿到算出來的值（#N/A 會是字串）
+        dateTimeRenderOption: 'FORMATTED_STRING', // 日期格依儲存格格式輸出成字串，parseCell 的 FinDates.fromCell 會統一成 yyyy-MM-dd
+      });
+      var ranges = (res && res.valueRanges) || [];
+      if (ranges.length !== names.length) throw new Error('回傳的範圍數量不符：' + ranges.length + ' / ' + names.length);
+      var out = {};
+      ranges.forEach(function (vr, i) { out[names[i]] = padRows(vr.values || []); });
+      preloaded = out;
+      return true;
+    } catch (e) {
+      try { Logger.log('預載分頁失敗，改為逐張讀取：' + (e && e.message ? e.message : e)); } catch (x) { /* ignore */ }
+      preloaded = null;
+      return false;
+    }
+  }
+  function preloadedValues(sheetName) {
+    return preloaded && Object.prototype.hasOwnProperty.call(preloaded, sheetName) ? preloaded[sheetName] : null;
+  }
+
   // ---------- 讀取 ----------
   function readTable(tableKey) {
     if (cache[tableKey]) return cache[tableKey];
     var def = FinSchema.TABLES[tableKey];
-    var sheet = sheetOf(tableKey);
-    var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
-    if (lastRow < 1 || lastCol < 1) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」沒有表頭，請重新執行初始化');
-    var values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+    var values = preloadedValues(def.sheet);
+    if (!values) {
+      var sheet = sheetOf(tableKey);
+      var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+      if (lastRow < 1 || lastCol < 1) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」沒有表頭，請重新執行初始化');
+      values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+    }
+    if (!values.length || !values[0].length) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」沒有表頭，請重新執行初始化');
     var h = headerIndex(tableKey, values[0]);
     if (h.missing.length) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」缺少欄位：' + h.missing.join('、') + '。請執行「初始化／修復資料表」');
     var rows = [], bad = [], seen = {};
@@ -1687,10 +1744,13 @@ var FinRepo = (function () {
   // ---------- 選項、設定 ----------
   function readOptions() {
     var out = {};
-    var sheet = spreadsheet().getSheetByName(FinSchema.OPTIONS_SHEET);
     var cols = {};
-    if (sheet && sheet.getLastRow() >= 1 && sheet.getLastColumn() >= 1) {
-      var values = sheet.getRange(1, 1, sheet.getLastRow(), sheet.getLastColumn()).getValues();
+    var values = preloadedValues(FinSchema.OPTIONS_SHEET);
+    if (!values) {
+      var sheet = spreadsheet().getSheetByName(FinSchema.OPTIONS_SHEET);
+      if (sheet && sheet.getLastRow() >= 1 && sheet.getLastColumn() >= 1) values = sheet.getRange(1, 1, sheet.getLastRow(), sheet.getLastColumn()).getValues();
+    }
+    if (values && values.length && values[0].length) {
       for (var c = 0; c < values[0].length; c++) {
         var name = String(values[0][c] || '').trim();
         if (!name) continue;
@@ -1822,7 +1882,7 @@ var FinRepo = (function () {
   function sheetUrl() { try { return spreadsheet().getUrl(); } catch (e) { return ''; } }
 
   return {
-    reset: reset, invalidate: invalidate, spreadsheet: spreadsheet, sheetOf: sheetOf, readTable: readTable, goodRows: goodRows,
+    reset: reset, invalidate: invalidate, preload: preload, PRELOAD_TABLES: PRELOAD_TABLES, spreadsheet: spreadsheet, sheetOf: sheetOf, readTable: readTable, goodRows: goodRows,
     findById: findById, allIds: allIds, nextIds: nextIds, readOptions: readOptions, getSettings: getSettings, append: append,
     updateRow: updateRow, setCells: setCells, withLock: withLock, audit: audit, headerIndex: headerIndex,
     applyTextFormats: applyTextFormats, sheetUrl: sheetUrl, encodeCell: encodeCell, parseCell: parseCell,
@@ -2127,6 +2187,7 @@ var FinApi = (function () {
 
   // ---------- 載入主檔與交易 ----------
   function loadContext(now) {
+    FinRepo.preload(); // 一趟把常用分頁都讀回來（沒有 Sheets 服務時自動逐張讀）
     var settings = FinRepo.getSettings();
     var instrumentRows = FinRepo.goodRows('instruments');
     var instruments = mapBy(instrumentRows, 'symbol');
@@ -2138,7 +2199,9 @@ var FinApi = (function () {
     FinRepo.goodRows('prices').forEach(function (r) {
       var p = r.price > 0 ? r.price : (r.lastValid > 0 ? r.lastValid : null);
       if (p !== null) prices[r.symbol] = p;
-      priceInfo[r.symbol] = { price: p, status: r.price > 0 ? '正常' : (r.lastValid > 0 ? '沿用舊值' : '缺價格'), updatedAt: r.updatedAt };
+      // 狀態：現價公式有值 → 正常；沒有但排程用櫃買中心收盤價更新過（狀態欄是「正常」）→ 也算正常；其餘沿用舊值／缺價格
+      var status = r.price > 0 ? '正常' : (r.lastValid > 0 ? (r.status === '正常' ? '正常' : '沿用舊值') : '缺價格');
+      priceInfo[r.symbol] = { price: p, status: status, updatedAt: r.updatedAt };
     });
     var base = settings['基準幣別'] || 'TWD';
     var brokerRows = FinRepo.goodRows('brokerSettings');
@@ -3527,15 +3590,44 @@ var FinSetup = (function () {
 
 /** 排程工作 */
 var FinJobs = (function () {
-  /** 把「現價」公式算出來的有效數字存進「上次有效價」；公式出錯就沿用舊值並標記狀態 */
+  // 上櫃／興櫃股票 GOOGLEFINANCE 常常抓不到（例如太醫、綠界科技、元太），改用櫃買中心 OpenAPI 的每日收盤價當備援。
+  // 免費、不用金鑰；只有「現價」抓不到值時才會呼叫，而且每次 refreshPrices() 最多呼叫一次。
+  // 需要 appsscript.json 的 script.external_request 權限；沒授權或抓取失敗都靜默回傳空物件，退回原本「沿用舊值」的邏輯。
+  var TPEX_URL = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes';
+  function fetchTpexCloseMap_() {
+    var map = {};
+    try {
+      var res = UrlFetchApp.fetch(TPEX_URL, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) return map;
+      var list = JSON.parse(res.getContentText());
+      (list || []).forEach(function (it) {
+        var code = String(it.SecuritiesCompanyCode || '').trim();
+        var close = Number(String(it.Close === undefined || it.Close === null ? '' : it.Close).replace(/,/g, ''));
+        if (code && isFinite(close) && close > 0) map[code] = close;
+      });
+    } catch (e) {
+      try { Logger.log('TPEx 收盤價抓取失敗（沿用舊值）：' + (e && e.message ? e.message : e)); } catch (x) { /* ignore */ }
+    }
+    return map;
+  }
+
+  /** 把「現價」公式算出來的有效數字存進「上次有效價」；公式出錯就先查櫃買中心收盤價，再不行就沿用舊值並標記狀態 */
   function refreshPrices() {
     FinRepo.reset();
     var now = FinDates.timestamp(FinClock.now());
     var changed = 0;
+    var tpexMap = null; // 第一次需要時才抓，整個執行只抓一次
     FinRepo.readTable('prices').rows.forEach(function (r) {
       if (r._bad) return;
       if (r.price > 0) {
         FinRepo.setCells('prices', r._row, { lastValid: r.price, updatedAt: now, status: '正常' });
+        changed++;
+        return;
+      }
+      if (tpexMap === null) tpexMap = fetchTpexCloseMap_();
+      var close = tpexMap[String(r.symbol)];
+      if (close > 0) {
+        FinRepo.setCells('prices', r._row, { lastValid: close, updatedAt: now, status: '正常' });
         changed++;
       } else if (r.lastValid > 0) {
         FinRepo.setCells('prices', r._row, { status: '沿用舊值' });
@@ -3545,7 +3637,7 @@ var FinJobs = (function () {
     });
     return changed;
   }
-  return { refreshPrices: refreshPrices };
+  return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_ };
 })();
 
 // ==================== server/main.js ====================
