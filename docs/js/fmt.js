@@ -36,7 +36,19 @@ export function categoryInfo(id) {
   const c = categoryById(id);
   if (!c) return { icon: 'dots', name: '未分類', short: '未分類', color: '' };
   const parent = c.parentId ? categoryById(c.parentId) : null;
-  return { icon: c.icon || (parent && parent.icon) || 'dots', name: parent ? `${parent.name} › ${c.name}` : c.name, short: c.name, color: c.color };
+  return { icon: c.icon || (parent && parent.icon) || 'dots', name: parent ? `${parent.name} › ${c.name}` : c.name, short: c.name, color: c.color || (parent && parent.color) || '' };
+}
+
+/** 分類圖示的顏色樣式（跟「分類」頁一致）：淡底＋分類色；沒有顏色就用預設 */
+export function catIconStyle(color) {
+  const c = /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : '#b3a58c';
+  return { background: 'color-mix(in srgb, ' + c + ' 22%, var(--card))', color: c };
+}
+
+/** 分類排序：依原本排序，但名稱以「其他」開頭的一律排最後（通常是不知道選什麼才選它） */
+export function sortCategories(list) {
+  const isOther = (c) => /^其他/.test(String(c.name || ''));
+  return list.map((c, i) => ({ c, i })).sort((a, b) => (isOther(a.c) - isOther(b.c)) || (a.i - b.i)).map((x) => x.c);
 }
 
 export function amountClass(kind) { return kind === 'pos' ? 'amt amt-pos' : kind === 'neg' ? 'amt amt-neg' : kind === 'mute' ? 'amt amt-mute' : 'amt'; }

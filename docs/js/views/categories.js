@@ -1,6 +1,7 @@
 import { h, mount } from '../dom.js';
 import { icon, CATEGORY_ICON_CHOICES } from '../icons.js';
 import { state } from '../store.js';
+import { sortCategories } from '../fmt.js';
 import * as api from '../api.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
 import { mergeRow, refreshInBackground, patchRow } from '../data.js';
@@ -9,7 +10,7 @@ let catType = '支出';
 
 export function renderCategories(root, { subtabs }) {
   const d = state.data;
-  const parents = d.categories.filter((c) => !c.parentId && c.type === catType);
+  const parents = sortCategories(d.categories.filter((c) => !c.parentId && c.type === catType));
   const card = h('div', { class: 'card' });
   for (const p of parents) {
     card.appendChild(h('div', { class: 'item', style: { borderTop: '1px solid var(--line)' } },
@@ -17,7 +18,7 @@ export function renderCategories(root, { subtabs }) {
       h('div', { class: 'grow' }, h('div', { class: 't' }, p.name, p.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用'))),
       h('button', { class: 'icon-btn', 'aria-label': `編輯 ${p.name}`, onclick: () => openCategoryForm({ category: p }) }, icon('edit')),
       h('button', { class: 'icon-btn', 'aria-label': `在 ${p.name} 底下新增子分類`, onclick: () => openCategoryForm({ parentId: p.id, type: catType }) }, icon('plus'))));
-    const kids = d.categories.filter((c) => c.parentId === p.id);
+    const kids = sortCategories(d.categories.filter((c) => c.parentId === p.id));
     if (kids.length) card.appendChild(h('div', { class: 'chips', style: { padding: '0 0 10px 50px' } }, kids.map((k) =>
       h('button', { class: 'chip' + (k.active ? '' : ' voided'), onclick: () => openCategoryForm({ category: k }) }, k.name))));
   }

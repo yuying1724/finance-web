@@ -2,7 +2,7 @@ import { h, mount, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { state, accountById } from '../store.js';
 import * as api from '../api.js';
-import { money, dateLabel, monthLabel, categoryInfo, amountClass } from '../fmt.js';
+import { money, dateLabel, monthLabel, categoryInfo, amountClass, catIconStyle } from '../fmt.js';
 import { openSheet, confirmDialog, toast, errorText } from '../ui.js';
 import { openTxForm } from './txform.js';
 import { write, applyTxLocal } from '../data.js';
@@ -16,15 +16,15 @@ export function describe(t) {
   switch (t.type) {
     case '支出': {
       const c = categoryInfo(t.categoryId);
-      return { icon: c.icon, title: c.name, sub: an(src, t.srcAccount) + note, text: '-' + money(t.srcQty, t.srcSymbol, { plain: false }), kind: '' };
+      return { icon: c.icon, color: c.color, title: c.name, sub: an(src, t.srcAccount) + note, text: '-' + money(t.srcQty, t.srcSymbol, { plain: false }), kind: '' };
     }
     case '收入': {
       const c = categoryInfo(t.categoryId);
-      return { icon: c.icon, title: c.name, sub: an(dst, t.dstAccount) + note, text: '+' + money(t.dstQty, t.dstSymbol), kind: 'pos' };
+      return { icon: c.icon, color: c.color, title: c.name, sub: an(dst, t.dstAccount) + note, text: '+' + money(t.dstQty, t.dstSymbol), kind: 'pos' };
     }
     case '退款': {
       const c = categoryInfo(t.categoryId);
-      return { icon: 'undo', title: '退款 · ' + c.short, sub: an(dst, t.dstAccount) + note, text: '+' + money(t.dstQty, t.dstSymbol), kind: '' };
+      return { icon: 'undo', color: c.color, title: '退款 · ' + c.short, sub: an(dst, t.dstAccount) + note, text: '+' + money(t.dstQty, t.dstSymbol), kind: '' };
     }
     case '轉帳':
       return { icon: 'transfer', title: '轉帳', sub: `${an(src, t.srcAccount)} → ${an(dst, t.dstAccount)}` + note, text: money(t.srcQty, t.srcSymbol), kind: 'mute' };
@@ -53,7 +53,7 @@ function rateText(t) {
 export function txRow(t) {
   const d = describe(t);
   return h('button', { class: 'item' + (t.status === '作廢' ? ' voided' : ''), onclick: () => openTxDetail(t) },
-    h('div', { class: 'ico' }, icon(d.icon)),
+    h('div', { class: 'ico', style: d.color ? catIconStyle(d.color) : null }, icon(d.icon)),
     h('div', { class: 'grow' }, h('div', { class: 't' }, d.title, t.status !== '有效' ? h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, t.status) : null), h('div', { class: 's' }, d.sub)),
     h('div', { class: amountClass(d.kind) }, d.text));
 }

@@ -2,7 +2,7 @@ import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
 import { state, instrumentBySymbol } from '../store.js';
 import * as api from '../api.js';
-import { money, dateLabel, categoryInfo } from '../fmt.js';
+import { money, dateLabel, categoryInfo, sortCategories } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
 import { write, mergeRow, refreshInBackground, patchRow } from '../data.js';
 
@@ -270,7 +270,9 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
   }
   function categorySel() {
     const wantType = f.type === '收入' ? '收入' : '支出';
-    const cats = d.categories.filter((c) => c.type === wantType);
+    // 父分類在前、子分類跟在自己的父分類後面，「其他」一律最後
+    const parents = sortCategories(d.categories.filter((c) => c.type === wantType && !c.parentId));
+    const cats = [].concat(...parents.map((p) => [p].concat(sortCategories(d.categories.filter((c) => c.parentId === p.id)))));
     return h('select', { onchange: (e) => { f.categoryId = e.target.value; } },
       [h('option', { value: '' }, '請選擇')].concat(cats.map((c) => h('option', { value: c.id, selected: c.id === f.categoryId }, categoryInfo(c.id).name))));
   }
