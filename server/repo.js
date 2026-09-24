@@ -348,7 +348,10 @@ var FinRepo = (function () {
     }
   }
 
-  function sheetUrl() { try { return spreadsheet().getUrl(); } catch (e) { return ''; } }
+  /** 試算表網址：直接由 SHEET_ID 組出來，不用 openById 多跑一趟（bootstrap 每次都會回傳這個） */
+  function sheetUrl() {
+    try { var id = props().getProperty('SHEET_ID'); return id ? 'https://docs.google.com/spreadsheets/d/' + id + '/edit' : ''; } catch (e) { return ''; }
+  }
 
   return {
     reset: reset, invalidate: invalidate, preload: preload, PRELOAD_TABLES: PRELOAD_TABLES, spreadsheet: spreadsheet, sheetOf: sheetOf, readTable: readTable, goodRows: goodRows,

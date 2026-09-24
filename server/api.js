@@ -107,7 +107,9 @@ var FinApi = (function () {
 
   /** 建議金額用的基準價：有部位就用平均成本，沒有就用近 20 個交易日均價；都沒有回傳 null（畫面上就不顯示建議） */
   function referencePriceFor(c, accountId, symbol) {
-    var h = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: c.today, prices: c.prices });
+    // 同一次請求內只算一次持倉（待確認清單裡每一筆手動下單都會來查）
+    if (!c.__holdings) c.__holdings = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: c.today, prices: c.prices });
+    var h = c.__holdings;
     var pos = h.positions.filter(function (p) { return p.accountId === accountId && p.symbol === symbol; })[0];
     if (pos && pos.qty > 0 && pos.costNative) return pos.costNative / pos.qty;
     var rows = FinRepo.goodRows('priceHistory').filter(function (r) { return r.symbol === symbol; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });

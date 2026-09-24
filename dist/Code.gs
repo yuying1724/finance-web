@@ -131,7 +131,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.5.0',
+    APP_VERSION: '0.6.0',
   };
   return api;
 })();
@@ -1879,7 +1879,10 @@ var FinRepo = (function () {
     }
   }
 
-  function sheetUrl() { try { return spreadsheet().getUrl(); } catch (e) { return ''; } }
+  /** 試算表網址：直接由 SHEET_ID 組出來，不用 openById 多跑一趟（bootstrap 每次都會回傳這個） */
+  function sheetUrl() {
+    try { var id = props().getProperty('SHEET_ID'); return id ? 'https://docs.google.com/spreadsheets/d/' + id + '/edit' : ''; } catch (e) { return ''; }
+  }
 
   return {
     reset: reset, invalidate: invalidate, preload: preload, PRELOAD_TABLES: PRELOAD_TABLES, spreadsheet: spreadsheet, sheetOf: sheetOf, readTable: readTable, goodRows: goodRows,
@@ -2268,7 +2271,9 @@ var FinApi = (function () {
 
   /** 建議金額用的基準價：有部位就用平均成本，沒有就用近 20 個交易日均價；都沒有回傳 null（畫面上就不顯示建議） */
   function referencePriceFor(c, accountId, symbol) {
-    var h = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: c.today, prices: c.prices });
+    // 同一次請求內只算一次持倉（待確認清單裡每一筆手動下單都會來查）
+    if (!c.__holdings) c.__holdings = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: c.today, prices: c.prices });
+    var h = c.__holdings;
     var pos = h.positions.filter(function (p) { return p.accountId === accountId && p.symbol === symbol; })[0];
     if (pos && pos.qty > 0 && pos.costNative) return pos.costNative / pos.qty;
     var rows = FinRepo.goodRows('priceHistory').filter(function (r) { return r.symbol === symbol; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
