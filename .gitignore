@@ -8,3 +8,6 @@ Thumbs.db
 
 # 方便妳雙擊執行 git push 的小工具，不需要進版控
 push.bat
+
+# Claude 桌面版把傳到對話裡的檔案（截圖等）存在這裡，不進版控
+Claude outputs/
