@@ -5,6 +5,7 @@ import { money, monthLabel, ACCOUNT_ICON, amountClass } from '../fmt.js';
 import { txRow, groupRows } from './transactions.js';
 import { openAccountForm } from './accountform.js';
 import { refresh } from '../data.js';
+import { cardDueNotice } from './cards.js';
 import { toast, errorText } from '../ui.js';
 
 export function renderHome(root) {
@@ -47,6 +48,8 @@ export function renderHome(root) {
       h('div', null, h('a', { href: '#/settings' }, '到設定查看細節')))));
   }
 
+  const cardNotice = cardDueNotice();
+  if (cardNotice) children.push(cardNotice);
   if (d.pendingConfirmations && d.pendingConfirmations.length) {
     children.push(h('div', { class: 'notice', 'data-testid': 'pending-notice' }, icon('refresh'), h('div', null,
       `${d.pendingConfirmations.length} 筆待確認`,

@@ -131,7 +131,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.6.0',
+    APP_VERSION: '0.7.0',
   };
   return api;
 })();
@@ -2296,6 +2296,81 @@ var FinApi = (function () {
     }
   }
 
+  function daysBetween(a, b) {
+    var pa = FinDates.parse(a), pb = FinDates.parse(b);
+    if (!pa || !pb) return null;
+    return Math.round((Date.UTC(pb.y, pb.m - 1, pb.d) - Date.UTC(pa.y, pa.m - 1, pa.d)) / 86400000);
+  }
+
+  /**
+   * 信用卡總覽：像 MOZE 的「主帳戶／合併帳單」與麻布記帳的「依銀行看帳單」——同一「額度群組」的卡片只出現一筆
+   * （銀行本來就是合併成一張帳單寄出），其餘單卡各自一筆；每筆帶待繳金額、繳款日、剩餘天數、本期消費、目前欠款、可用額度。
+   * 依「逾期 → 繳款日近 → 其他 → 尚未設定」排序，前端直接照這個順序顯示。
+   */
+  function cardOverview(c, asOf) {
+    var cards = c.accountRows.filter(function (a) { return a.type === '信用卡' && a.active; });
+    var groups = {}, order = [];
+    cards.forEach(function (a) {
+      var cs = c.cardByAccount[a.id];
+      var key = cs && cs.limitGroup ? 'g:' + cs.limitGroup : 'a:' + a.id;
+      if (!groups[key]) { groups[key] = { key: key, members: [], settings: null, groupName: cs && cs.limitGroup ? cs.limitGroup : '' }; order.push(key); }
+      groups[key].members.push(a);
+      if (cs && !groups[key].settings) groups[key].settings = cs;
+    });
+    var out = [];
+    order.forEach(function (key) {
+      var g = groups[key];
+      var first = g.members[0];
+      var symbol = first.defaultSymbol;
+      var inst = c.instruments[symbol];
+      var decimals = inst ? inst.decimals : 0;
+      var ids = g.members.map(function (a) { return a.id; });
+      var item = {
+        key: key, isGroup: g.members.length > 1, name: g.members.length > 1 ? g.groupName : first.name,
+        institution: first.institution || '', symbol: symbol, accountIds: ids,
+        members: g.members.map(function (a) {
+          var mcs = c.cardByAccount[a.id];
+          var spend = g.settings ? FinCreditCard.periodSpend(c.txRows, a.id, a.defaultSymbol, decimals, FinCreditCard.periodContaining(g.settings.statementDay, asOf)) : null;
+          return { accountId: a.id, name: a.name, hasSettings: !!mcs, currentSpend: spend };
+        }),
+        hasSettings: !!g.settings,
+      };
+      if (g.settings) {
+        var s = FinCreditCard.summary(c.txRows, first.id, symbol, decimals, g.settings, asOf, ids.length > 1 ? ids : null);
+        item.statementAmountDue = s.statementAmountDue; item.dueDate = s.dueDate; item.overdue = s.overdue;
+        item.currentSpend = s.currentSpend; item.currentlyOwed = s.currentlyOwed;
+        item.limit = s.limit; item.availableCredit = s.availableCredit;
+        item.currentPeriod = s.currentPeriod; item.lastClosedPeriod = s.lastClosedPeriod;
+        item.statementDay = g.settings.statementDay; item.dueDay = g.settings.dueDay; item.payAccountId = g.settings.payAccountId || '';
+        item.dueInDays = s.dueDate ? daysBetween(asOf, s.dueDate) : null;
+        // 上期帳單已經繳掉（結帳後有還款把待繳扣到 0）
+        item.paid = s.statementAmountDue <= 0 && FinCreditCard.balanceUnitsAsOf(c.txRows, ids, symbol, decimals, s.lastClosedPeriod.end) < 0;
+        if (ids.length > 1) {
+          var limits = {}, sd = {}, dd = {};
+          g.members.forEach(function (a) { var r = c.cardByAccount[a.id]; if (!r) return; limits[Number(r.limit) || 0] = true; sd[String(r.statementDay)] = true; dd[String(r.dueDay)] = true; });
+          item.groupLimitMismatch = Object.keys(limits).length > 1;
+          item.groupDateMismatch = Object.keys(sd).length > 1 || Object.keys(dd).length > 1;
+        }
+      }
+      out.push(item);
+    });
+    var rank = function (x) { return !x.hasSettings ? 3 : x.overdue ? 0 : (x.statementAmountDue > 0 ? 1 : 2); };
+    out.sort(function (a, b) {
+      var ra = rank(a), rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      if (a.dueDate && b.dueDate && a.dueDate !== b.dueDate) return a.dueDate < b.dueDate ? -1 : 1;
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    });
+    var totalDue = 0, nearest = null;
+    out.forEach(function (x) {
+      if (x.hasSettings && x.statementAmountDue > 0) {
+        totalDue += x.statementAmountDue;
+        if (!nearest || x.dueDate < nearest.dueDate) nearest = { name: x.name, dueDate: x.dueDate, dueInDays: x.dueInDays, amount: x.statementAmountDue, symbol: x.symbol };
+      }
+    });
+    return { items: out, totalDue: FinMoney.round(totalDue, 0), nearest: nearest, asOf: asOf };
+  }
+
   var cacheGet = function (k) { return CacheService.getScriptCache().get(k); };
   var cachePut = function (k, v, sec) { CacheService.getScriptCache().put(k, v, sec); };
 
@@ -2327,7 +2402,7 @@ var FinApi = (function () {
         accounts: c.accountRows.map(pub), categories: c.categoryRows.map(pub),
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
         brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
-        cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub),
+        cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub), cardOverview: cardOverview(c, c.today),
         recurring: c.recurringRows.map(pub), pendingConfirmations: pendingConfirmations(c),
         prices: c.priceInfo,
         balances: calc.balances.map(function (b) { return { accountId: b.accountId, symbol: b.symbol, qty: b.qty }; }),
@@ -2760,6 +2835,14 @@ var FinApi = (function () {
         FinRepo.audit(existing ? '修改' : '新增', 'cardSettings', v.accountId, (c.accounts[v.accountId] || {}).name || v.accountId, env.device);
         return { card: out };
       });
+    },
+  };
+
+  H.getCardOverview = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
+      return cardOverview(c, asOf);
     },
   };
 

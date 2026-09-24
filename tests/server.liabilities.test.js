@@ -211,3 +211,70 @@ test('只繳息貸款：addLoanPayment 在中間期只產生利息（支出）�
   assert.equal(r.data.transactions.length, 1, '只繳息第一期只有利息，沒有本金轉帳');
   assert.equal(r.data.transactions[0].type, '支出');
 });
+
+test('信用卡總覽：同群組只出現一筆（合併帳單）、單卡各一筆；逾期／待繳／已繳清／未設定排序；bootstrap 直接帶總覽與待繳合計', () => {
+  const b = fresh();
+  const bank = b.acct('銀行', '銀行');
+  const fA = b.acct('富邦-J卡', '信用卡');
+  const fB = b.acct('富邦-數位生活卡', '信用卡');
+  const tsA = b.acct('台新-Richart卡', '信用卡');
+  const tsB = b.acct('台新-街口商務卡', '信用卡');
+  const solo = b.acct('玉山-Ubear卡', '信用卡');
+  const noSet = b.acct('中國信託-foodpanda卡', '信用卡'); // 還沒設定結帳日
+  b.card({ accountId: fA, statementDay: 12, dueDay: 28, limit: 320000, limitGroup: '富邦' });
+  b.card({ accountId: fB, statementDay: 12, dueDay: 28, limit: 320000, limitGroup: '富邦' });
+  b.card({ accountId: tsA, statementDay: 12, dueDay: 27, limit: 230000, limitGroup: '台新' });
+  b.card({ accountId: tsB, statementDay: 12, dueDay: 27, limit: 230000, limitGroup: '台新' });
+  b.card({ accountId: solo, statementDay: 21, dueDay: 1, limit: 200000 });
+  const food = cat(b, '飲食');
+  // 2 月帳單（2/13～3/12 結帳）：富邦刷 50,000＋30,000、台新刷 12,000、玉山 2/22～3/21 期間刷 8,000
+  assert.ok(b.add({ type: '支出', date: '2026-02-20', srcAccount: fA, srcSymbol: 'TWD', srcQty: 50000, categoryId: food }).ok);
+  assert.ok(b.add({ type: '支出', date: '2026-03-01', srcAccount: fB, srcSymbol: 'TWD', srcQty: 30000, categoryId: food }).ok);
+  assert.ok(b.add({ type: '支出', date: '2026-03-05', srcAccount: tsA, srcSymbol: 'TWD', srcQty: 12000, categoryId: food }).ok);
+  assert.ok(b.add({ type: '支出', date: '2026-03-01', srcAccount: solo, srcSymbol: 'TWD', srcQty: 8000, categoryId: food }).ok);
+  // 台新已經繳掉（3/15 轉帳進群組內任一張卡）
+  assert.ok(b.add({ type: '轉帳', date: '2026-03-15', srcAccount: bank, srcSymbol: 'TWD', srcQty: 12000, dstAccount: tsB, dstSymbol: 'TWD', dstQty: 12000 }).ok);
+  // 本期又刷了一筆（3/20，屬於 3/13～4/12 這期）
+  assert.ok(b.add({ type: '支出', date: '2026-03-20', srcAccount: fA, srcSymbol: 'TWD', srcQty: 1000, categoryId: food }).ok);
+
+  const r = b.call('getCardOverview', { asOf: '2026-03-30' });
+  assert.ok(r.ok, JSON.stringify(r));
+  const o = r.data;
+  assert.deepEqual(o.items.map((x) => x.name), ['富邦', '玉山-Ubear卡', '台新', '中國信託-foodpanda卡'], '逾期 → 待繳 → 已繳清 → 未設定');
+  const fubon = o.items[0];
+  assert.equal(fubon.isGroup, true);
+  assert.deepEqual(fubon.accountIds, [fA, fB]);
+  assert.equal(fubon.statementAmountDue, 80000);
+  assert.equal(fubon.dueDate, '2026-03-28');
+  assert.equal(fubon.overdue, true);
+  assert.equal(fubon.dueInDays, -2);
+  assert.equal(fubon.currentSpend, 1000, '本期（3/13 起）只刷了 1,000');
+  assert.equal(fubon.currentlyOwed, 81000);
+  assert.equal(fubon.availableCredit, 320000 - 81000);
+  assert.equal(fubon.members.length, 2);
+  assert.equal(fubon.members.find((m) => m.accountId === fA).currentSpend, 1000);
+  const yushan = o.items[1];
+  assert.equal(yushan.isGroup, false);
+  assert.equal(yushan.statementAmountDue, 8000);
+  assert.equal(yushan.dueDate, '2026-04-01');
+  assert.equal(yushan.dueInDays, 2);
+  assert.equal(yushan.overdue, false);
+  const taishin = o.items[2];
+  assert.equal(taishin.statementAmountDue, 0);
+  assert.equal(taishin.paid, true, '結帳後已經還款，標成已繳清');
+  const cti = o.items[3];
+  assert.equal(cti.hasSettings, false);
+  assert.equal(cti.statementAmountDue, undefined);
+  assert.equal(o.totalDue, 88000);
+  assert.equal(o.nearest.name, '富邦');
+  assert.equal(o.nearest.dueDate, '2026-03-28');
+
+  // bootstrap 直接帶總覽（以今天 2026-03-10 計算）
+  const d = b.boot();
+  assert.ok(d.cardOverview && Array.isArray(d.cardOverview.items));
+  assert.equal(d.cardOverview.items.length, 4);
+  assert.equal(typeof d.cardOverview.totalDue, 'number');
+  // 停用的卡不出現在總覽
+  assert.ok(b.call('setAccountActive', { id: noSet, active: false }).ok);
+  assert.equal(b.boot().cardOverview.items.length, 3);
+});

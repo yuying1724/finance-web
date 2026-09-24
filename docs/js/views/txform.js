@@ -88,6 +88,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     Object.assign(f, { acct: r.srcAccount, sym: r.srcSymbol, amount: fmtNum(r.srcQty), categoryId: r.categoryId });
   }
   if (!editing && preset.acct && accounts.some((a) => a.id === preset.acct)) { f.acct = preset.acct; f.sym = accountById(preset.acct).defaultSymbol; }
+  if (!editing && preset.acct2 && accounts.some((a) => a.id === preset.acct2)) { f.acct2 = preset.acct2; f.sym2 = accountById(preset.acct2).defaultSymbol; }
+  if (!editing && preset.amount !== undefined && preset.amount !== '') { f.amount = String(preset.amount); f.amount2 = String(preset.amount); }
   if (!f.acct) {
     const remembered = accounts.find((a) => a.id === last.acct);
     const a = remembered || accounts[0];

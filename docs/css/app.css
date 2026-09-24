@@ -227,3 +227,18 @@ details.adv summary { cursor: pointer; padding: 6px 0; }
 .kv dt { color: var(--sub); }
 .kv dd { margin: 0; word-break: break-word; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+
+/* 帳戶頁分區（可收合）與信用卡總覽 */
+.sec-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 0; background: none; border: 0; text-align: left; color: var(--text); cursor: pointer; }
+.sec-head h2 { margin: 0; flex: 1; font-size: 15px; }
+.sec-head .amt { font-variant-numeric: tabular-nums; }
+.sec-chevron { display: inline-flex; color: var(--sub); transition: transform .15s; }
+.sec-chevron.closed { transform: rotate(-90deg); }
+.sec-chevron svg { transform: rotate(90deg); }
+.sec-body { margin-top: 4px; }
+.badge.bad { background: color-mix(in srgb, var(--bad) 22%, var(--card)); color: var(--text); }
+.badge.good { background: color-mix(in srgb, var(--good) 25%, var(--card)); color: var(--text); }
+.meter { height: 5px; border-radius: 999px; background: var(--line); margin-top: 6px; max-width: 220px; overflow: hidden; }
+.meter-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+.meter-fill.hot { background: var(--bad); }
+.amt-due { color: var(--bad); }

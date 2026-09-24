@@ -318,6 +318,73 @@ test('本機快取秒開：重新整理時先顯示上次的資料，不用等�
   });
 });
 
+test('信用卡總覽：帳戶頁依類型分區可收合；同銀行合併帳單只顯示一列；總覽頁看待繳與繳款日；一鍵記繳款', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const acct = (name, inst) => be.call('upsertAccount', { account: { name, type: '信用卡', defaultSymbol: 'TWD', institution: inst } }).data.account.id;
+    const fA = acct('富邦-J卡', '富邦'), fB = acct('富邦-數位生活卡', '富邦');
+    const today = be.ctx.FinDates.today(Date.now());
+    const day = (n) => be.ctx.FinDates.addDays(today, n);
+    const dom = (d) => Number(d.slice(8, 10));
+    // 結帳日＝5 天前的那個日子、繳款日＝7 天後的那個日子：上期帳單已結、還沒到繳款日
+    const statementDay = dom(day(-5)), dueDay = dom(day(7));
+    for (const id of [fA, fB]) assert.ok(be.call('upsertCardSettings', { card: { accountId: id, statementDay, dueDay, limit: 320000, limitGroup: '富邦' } }).ok);
+    const cats = be.call('bootstrap').data.categories;
+    const food = cats.find((c) => c.name === '午餐' && c.type === '支出').id;
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: day(-20), srcAccount: fA, srcSymbol: 'TWD', srcQty: 4000, categoryId: food } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: day(-15), srcAccount: fB, srcSymbol: 'TWD', srcQty: 6000, categoryId: food } }).ok);
+    const ov = be.call('getCardOverview', {}).data;
+    const fubon = ov.items.find((x) => x.name === '富邦');
+    assert.equal(fubon.statementAmountDue, 10000);
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    const before = digits(await a.networth());
+    // 首頁提醒卡
+    await page.waitForSelector('[data-testid=card-due-notice]');
+    assert.match(await page.locator('[data-testid=card-due-notice]').innerText(), /信用卡待繳/);
+
+    // 帳戶頁：分區＋信用卡區只有「富邦」一列（2 張卡）與未設定的國泰卡一列
+    await a.tab('accounts');
+    await page.waitForSelector('[data-section=cards]');
+    const cardRows = page.locator('[data-card-group]');
+    assert.equal(await cardRows.count(), 2);
+    assert.match(await page.locator('[data-card-group="富邦"]').innerText(), /2 張卡/);
+    assert.equal(await page.locator('[data-account="富邦-J卡"]').count(), 0, '個別卡片不再各自攤在清單裡');
+    // 收合「現金與銀行」並重新整理後仍保持收合
+    await page.click('[data-section=cash]');
+    assert.equal(await page.locator('[data-section=cash]').getAttribute('aria-expanded'), 'false');
+    await page.reload(); await page.waitForSelector('[data-section=cash]');
+    assert.equal(await page.locator('[data-section=cash]').getAttribute('aria-expanded'), 'false');
+    await page.click('[data-section=cash]');
+
+    // 信用卡總覽子分頁
+    await page.click('[data-testid=subtab-cards]');
+    await page.waitForSelector('[data-testid=card-total-due]');
+    assert.equal(digits(await page.locator('[data-testid=card-total-due]').innerText()), 10000);
+    await page.click('[data-card-group="富邦"]');
+    await page.waitForSelector('.sheet');
+    const sheetText = await page.locator('.sheet').innerText();
+    assert.match(sheetText, /合併帳單（2 張卡）/);
+    assert.match(sheetText, /富邦-J卡/); assert.match(sheetText, /富邦-數位生活卡/);
+    // 一鍵記繳款：轉帳表單預帶目的帳戶與金額
+    await page.click('[data-testid=card-pay]');
+    await page.waitForSelector('[data-testid=tx-save]');
+    assert.equal(await page.inputValue('input[aria-label="金額"]'), '10000');
+    assert.equal(await page.locator('select[aria-label="轉入帳戶"] option:checked').innerText(), '富邦-J卡', '轉入帳戶預帶合併帳單的第一張卡');
+    await page.selectOption('select[aria-label="轉出帳戶"]', { label: '玉山活存' });
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    await page.waitForFunction(() => Number(document.querySelector('[data-testid=card-total-due]').innerText.replace(/[^\d-]/g, '')) === 0, null, { timeout: 15000 });
+    const ov2 = be.call('getCardOverview', {}).data;
+    assert.equal(ov2.items.find((x) => x.name === '富邦').statementAmountDue, 0);
+    assert.equal(ov2.items.find((x) => x.name === '富邦').paid, true);
+    await a.tab('home'); await page.waitForSelector('[data-testid=networth]');
+    assert.equal(digits(await a.networth()), before, '轉帳繳卡費不影響淨值');
+    assert.equal(await page.locator('[data-testid=card-due-notice]').count(), 0, '繳清後首頁不再提醒');
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;
