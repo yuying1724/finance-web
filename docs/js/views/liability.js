@@ -4,6 +4,7 @@ import * as api from '../api.js';
 import { money } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
 import { mergeRow, refreshInBackground } from '../data.js';
+import { installmentListBlock } from './installments.js';
 
 const LOAN_METHODS = ['本息平均攤還', '本金平均攤還', '只繳息'];
 
@@ -143,6 +144,7 @@ export function openCardStatement(account) {
       ['繳款截止日', s.dueDate || '—'],
       [`可用額度${suffix}`, s.availableCredit === null ? '未設定額度' : money(s.availableCredit, s.symbol)],
     ];
+    if (s.installmentRemaining > 0) rows.push(['分期未出帳', `${money(s.installmentRemaining, s.symbol)}（之後各期，已含在總欠款）`]);
     const groupBlock = s.sharedLimit ? h('div', { class: 'notice', style: { marginTop: '12px' } },
       h('div', { class: 't', style: { marginBottom: '6px' } }, `額度群組「${s.cardSettings.limitGroup}」共 ${s.groupMembers.length} 張卡合併帳單，共用總額度 ${money(s.limit, s.symbol)}`),
       s.groupLimitMismatch ? h('div', { class: 'muted small', style: { marginBottom: '6px', color: 'var(--bad)' } }, '這個群組裡的卡片，額度欄位填的數字不一致，目前是用這張卡自己填的數字去算，建議把群組內每張卡的額度都改成同一個總額度') : null,
@@ -153,6 +155,7 @@ export function openCardStatement(account) {
       s.overdue ? h('div', { class: 'notice bad', style: { marginBottom: '12px' } }, '這期帳單已逾期，請盡快繳款') : null,
       h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
       groupBlock,
+      installmentListBlock(s.installments),
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account, card: s.cardSettings }), 0); } }, '設定信用卡')));
   }).catch((e) => { clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e)),

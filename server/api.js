@@ -57,7 +57,63 @@ var FinApi = (function () {
         txAll.bad, FinRepo.readTable('prices').bad, FinRepo.readTable('brokerSettings').bad, FinRepo.readTable('holidays').bad,
         FinRepo.readTable('cardSettings').bad, FinRepo.readTable('loanSettings').bad, FinRepo.readTable('recurring').bad),
       recurringRows: FinRepo.goodRows('recurring'),
+      installmentRows: safeRows('installments'),
     };
+  }
+
+  /** 新增的資料表在「初始化／修復資料表」之前還不存在：讀不到就當作沒有資料，不讓整個系統壞掉 */
+  function safeRows(tableKey) {
+    try { return FinRepo.goodRows(tableKey); } catch (e) { if (e && e.finCode === 'SCHEMA') return []; throw e; }
+  }
+
+  /** 所有分期展開成每期（依各卡自己的結帳日）；同一次請求只算一次 */
+  function installmentSchedules(c) {
+    if (c.__instSched) return c.__instSched;
+    var out = [];
+    (c.installmentRows || []).forEach(function (r) {
+      var t = c.txById[r.txId];
+      if (!t) return;
+      var cs = c.cardByAccount[t.srcAccount];
+      var acct = c.accounts[t.srcAccount];
+      if (!cs || !acct || acct.type !== '信用卡') return;
+      var inst = c.instruments[t.srcSymbol];
+      var s = FinCreditCard.expandInstallment(r, t, cs.statementDay, inst ? inst.decimals : 0);
+      if (s) { s.row = r; s.tx = t; out.push(s); }
+    });
+    c.__instSched = out;
+    return out;
+  }
+
+  /** 某張卡在某個結帳週期的消費：一般消費（排除分期原始交易）＋輪到這期的分期金額 */
+  function memberSpend(c, accountId, symbol, decimals, period) {
+    var sched = installmentSchedules(c).filter(function (s) { return s.accountId === accountId && s.symbol === symbol; });
+    var excl = {}; sched.forEach(function (s) { excl[s.txId] = true; });
+    var units = FinMoney.toUnits(FinCreditCard.periodSpend(c.txRows, accountId, symbol, decimals, period, excl), decimals);
+    sched.forEach(function (s) { s.periods.forEach(function (p) { if (p.closeDate === period.end) units += p.units; }); });
+    return FinMoney.fromUnits(units, decimals);
+  }
+
+  /** 分期清單（給畫面用）：每筆的期數進度、這期是第幾期、之後還有多少沒出帳 */
+  function installmentList(c, asOf) {
+    return installmentSchedules(c).map(function (s) {
+      var cs = c.cardByAccount[s.accountId];
+      var curEnd = FinCreditCard.periodContaining(cs.statementDay, asOf || c.today).end;
+      var cur = s.periods.filter(function (p) { return p.closeDate === curEnd; });
+      var billed = s.periods.filter(function (p) { return p.closeDate < curEnd; }).length;
+      var remaining = 0; s.periods.forEach(function (p) { if (p.closeDate > curEnd) remaining += p.units; });
+      var inst = c.instruments[s.symbol];
+      var t = s.tx, cat = c.categories[t.categoryId];
+      var done = billed >= s.terms;
+      return {
+        id: s.id, txId: s.txId, accountId: s.accountId, symbol: s.symbol, date: t.date,
+        name: t.merchant || t.note || (cat ? cat.name : '分期消費'), total: s.total, terms: s.terms,
+        perAmount: s.periods.length > 1 ? s.periods[1].amount : s.periods[0].amount, firstAmount: s.periods[0].amount,
+        currentPeriods: cur.map(function (p) { return p.n; }), currentAmount: FinMoney.fromUnits(cur.reduce(function (a, p) { return a + p.units; }, 0), inst ? inst.decimals : 0),
+        billedCount: billed, remaining: FinMoney.fromUnits(remaining, inst ? inst.decimals : 0),
+        lastCloseDate: s.periods[s.periods.length - 1].closeDate, payoffDate: s.row.payoffDate || '', remainderOn: s.row.remainderOn || '首期',
+        status: s.row.payoffDate ? (done ? '已提前清償' : '提前清償中') : (done ? '已完成' : '進行中'), updatedAt: s.row.updatedAt,
+      };
+    });
   }
 
   function validationCtx(c, existing) {
@@ -166,13 +222,15 @@ var FinApi = (function () {
         institution: first.institution || '', symbol: symbol, accountIds: ids,
         members: g.members.map(function (a) {
           var mcs = c.cardByAccount[a.id];
-          var spend = g.settings ? FinCreditCard.periodSpend(c.txRows, a.id, a.defaultSymbol, decimals, FinCreditCard.periodContaining(g.settings.statementDay, asOf)) : null;
+          var spend = g.settings ? memberSpend(c, a.id, a.defaultSymbol, decimals, FinCreditCard.periodContaining(g.settings.statementDay, asOf)) : null;
           return { accountId: a.id, name: a.name, hasSettings: !!mcs, currentSpend: spend };
         }),
         hasSettings: !!g.settings,
       };
       if (g.settings) {
-        var s = FinCreditCard.summary(c.txRows, first.id, symbol, decimals, g.settings, asOf, ids.length > 1 ? ids : null);
+        var sched = installmentSchedules(c);
+        var s = FinCreditCard.summary(c.txRows, first.id, symbol, decimals, g.settings, asOf, ids.length > 1 ? ids : null, sched);
+        item.installmentRemaining = s.installmentRemaining; item.installmentCount = s.installmentCount;
         item.statementAmountDue = s.statementAmountDue; item.dueDate = s.dueDate; item.overdue = s.overdue;
         item.currentSpend = s.currentSpend; item.currentlyOwed = s.currentlyOwed;
         item.limit = s.limit; item.availableCredit = s.availableCredit;
@@ -183,7 +241,8 @@ var FinApi = (function () {
         item.chargeTodayDueDate = FinCreditCard.dueDateFor(g.settings.dueDay, s.currentPeriod.end);
         item.graceDays = daysBetween(asOf, item.chargeTodayDueDate);
         // 上期帳單已經繳掉（結帳後有還款把待繳扣到 0）
-        item.paid = s.statementAmountDue <= 0 && FinCreditCard.balanceUnitsAsOf(c.txRows, ids, symbol, decimals, s.lastClosedPeriod.end) < 0;
+        var idSetG = {}; ids.forEach(function (id) { idSetG[id] = true; });
+        item.paid = s.statementAmountDue <= 0 && (FinCreditCard.balanceUnitsAsOf(c.txRows, ids, symbol, decimals, s.lastClosedPeriod.end) + FinCreditCard.unbilledUnitsAt(sched, idSetG, symbol, s.lastClosedPeriod.end)) < 0;
         if (ids.length > 1) {
           var limits = {}, sd = {}, dd = {};
           g.members.forEach(function (a) { var r = c.cardByAccount[a.id]; if (!r) return; limits[Number(r.limit) || 0] = true; sd[String(r.statementDay)] = true; dd[String(r.dueDay)] = true; });
@@ -308,6 +367,7 @@ var FinApi = (function () {
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
         brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
         cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub), cardOverview: cardOv, upcoming: upcoming(c, 30, cardOv),
+        installments: installmentList(c),
         recurring: c.recurringRows.map(pub), pendingConfirmations: pendingConfirmations(c),
         prices: c.priceInfo,
         balances: calc.balances.map(function (b) { return { accountId: b.accountId, symbol: b.symbol, qty: b.qty }; }),
@@ -807,6 +867,70 @@ var FinApi = (function () {
     },
   };
 
+  /**
+   * 信用卡分期（零利率）：購買當下以一筆「支出」記全額，另外記一筆分期（期數、零頭放首期或末期）。
+   * 可以帶 tx（新增一筆消費並設為分期）或 txId（把已經記過的信用卡消費設為分期）。
+   */
+  H.addInstallment = {
+    fn: function (p, env) {
+      var requestId = str(p.requestId).slice(0, 64);
+      var terms = Number(p.terms);
+      var remainderOn = str(p.remainderOn) || '首期';
+      var bad = function (field, msg) { return FinFail('VALIDATION', msg, { errors: [{ field: field, message: msg }], warnings: [] }); };
+      if (!(terms >= 2 && terms <= 60 && Math.floor(terms) === terms)) throw bad('terms', '分期期數請填 2～60 的整數');
+      if (remainderOn !== '首期' && remainderOn !== '末期') throw bad('remainderOn', '零頭只能放首期或末期');
+      return FinRepo.withLock(function () {
+        if (requestId) { var prev = cacheGet('req:' + requestId); if (prev) return JSON.parse(prev); }
+        var c = loadContext(env.now);
+        var now = ts(env.now), t = null, created = false, warnings = [];
+        if (p.txId) {
+          t = c.txById[str(p.txId)];
+          if (!t) throw FinFail('NOT_FOUND', '找不到交易 ' + str(p.txId));
+        } else {
+          if (!p.tx || typeof p.tx !== 'object') throw FinFail('BAD_REQUEST', '缺少交易資料');
+          var res = FinValidate.validateTransaction(p.tx, validationCtx(c, null));
+          if (!res.ok) throw failValidation(res);
+          t = res.tx; warnings = res.warnings || []; created = true;
+        }
+        var acct = c.accounts[t.srcAccount];
+        if (t.type !== '支出' || !acct || acct.type !== '信用卡') throw bad('acct', '只有「信用卡」付款的支出可以分期');
+        if (t.status !== '有效') throw bad('acct', '這筆交易不是有效狀態，不能設為分期');
+        if (!c.cardByAccount[t.srcAccount]) throw bad('acct', '這張信用卡還沒設定結帳日／繳款日，請先到「信用卡設定」設定');
+        if (!created && (c.installmentRows || []).some(function (r) { return r.txId === t.id; })) throw bad('terms', '這筆消費已經是分期了');
+        if (created) {
+          t.id = FinRepo.nextIds('transactions', 1)[0];
+          t.createdAt = now; t.updatedAt = now;
+          FinRepo.append('transactions', [t]);
+        }
+        var row = { id: FinRepo.nextIds('installments', 1)[0], txId: t.id, terms: terms, remainderOn: remainderOn, payoffDate: '', createdAt: now, updatedAt: now };
+        FinRepo.append('installments', [row]);
+        FinRepo.audit('新增', 'installments', row.id, '分期 ' + terms + ' 期：' + summarizeTx(t), env.device);
+        var out = { tx: pub(t), installment: pub(row), created: created, warnings: warnings };
+        if (requestId) cachePut('req:' + requestId, JSON.stringify(out), 600);
+        return out;
+      });
+    },
+  };
+
+  /** 提前清償：date 之後的各期全部改到 date 所在的那期帳單；date 空白＝取消提前清償 */
+  H.setInstallmentPayoff = {
+    fn: function (p, env) {
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var row = FinRepo.findById('installments', str(p.id));
+        if (!row) throw FinFail('NOT_FOUND', '找不到分期 ' + str(p.id));
+        var t = c.txById[row.txId];
+        if (!t) throw FinFail('NOT_FOUND', '找不到分期對應的交易');
+        var date = str(p.date);
+        if (date && !FinDates.isValid(date)) throw FinFail('VALIDATION', '日期格式不正確', { errors: [{ field: 'date', message: '日期格式不正確' }], warnings: [] });
+        if (date && date < t.date) date = t.date;
+        FinRepo.updateRow('installments', row._row, { payoffDate: date, updatedAt: ts(env.now) });
+        FinRepo.audit('修改', 'installments', row.id, date ? '提前清償：' + date : '取消提前清償', env.device);
+        return { installment: pub(FinRepo.findById('installments', row.id)) };
+      });
+    },
+  };
+
   H.getCardOverview = {
     fn: function (p, env) {
       var c = loadContext(env.now);
@@ -849,14 +973,16 @@ var FinApi = (function () {
             var mAcct = c.accounts[r.accountId];
             var mSymbol = mAcct ? mAcct.defaultSymbol : symbol;
             var mInst = c.instruments[mSymbol] || inst;
-            var mSpend = FinCreditCard.periodSpend(c.txRows, r.accountId, mSymbol, mInst.decimals, FinCreditCard.periodContaining(cs.statementDay, asOf));
+            var mSpend = memberSpend(c, r.accountId, mSymbol, mInst.decimals, FinCreditCard.periodContaining(cs.statementDay, asOf));
             return { accountId: r.accountId, name: mAcct ? mAcct.name : r.accountId, currentSpend: mSpend, symbol: mSymbol };
           });
         }
       }
 
-      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf, groupIds);
+      var s = FinCreditCard.summary(c.txRows, accountId, symbol, inst.decimals, cs, asOf, groupIds, installmentSchedules(c));
       var out = { accountId: accountId, symbol: symbol, cardSettings: pub(cs) };
+      var gSet = {}; (groupIds || [accountId]).forEach(function (id) { gSet[id] = true; });
+      out.installments = installmentList(c, asOf).filter(function (x) { return gSet[x.accountId] && x.status !== '已完成' && x.status !== '已提前清償'; });
       Object.keys(s).forEach(function (k) { out[k] = s[k]; });
       if (groupIds) { out.groupMembers = groupMembers; out.groupLimitMismatch = groupLimitMismatch; out.groupDateMismatch = groupDateMismatch; }
       return out;
@@ -1275,5 +1401,5 @@ var FinApi = (function () {
     }
   }
 
-  return { handle: handle, actions: Object.keys(H), loadContext: loadContext, computeAll: computeAll };
+  return { handle: handle, actions: Object.keys(H), loadContext: loadContext, computeAll: computeAll, installmentSchedules: installmentSchedules };
 })();

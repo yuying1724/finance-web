@@ -225,7 +225,7 @@ var FinRecurringJob = (function () {
         seenGroups[cs.limitGroup] = true;
       }
       var inst = c.instruments[acct.defaultSymbol];
-      var s = FinCreditCard.summary(c.txRows, cs.accountId, acct.defaultSymbol, inst ? inst.decimals : 0, cs, c.today, ids);
+      var s = FinCreditCard.summary(c.txRows, cs.accountId, acct.defaultSymbol, inst ? inst.decimals : 0, cs, c.today, ids, FinApi.installmentSchedules(c));
       if (!s.dueDate || s.statementAmountDue <= 0) return;
       if (daysBetween(c.today, s.dueDate) === CARD_REMIND_DAYS) {
         var name = ids ? siblings.map(function (r) { return (c.accounts[r.accountId] || {}).name || r.accountId; }).join('、') : acct.name;

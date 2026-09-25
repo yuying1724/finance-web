@@ -16,11 +16,11 @@ test('打包後的 Code.gs 可以載入，且不含 Node 專用語法', () => {
   assert.ok(!/\.(replaceAll|flat|flatMap|fromEntries|at)\(/.test(code), '避免 Apps Script 可能不支援的新語法');
 });
 
-test('初始化：建立 16 張資料表、表頭正確、寫入預設資料、刪除空白預設分頁', () => {
+test('初始化：建立 17 張資料表、表頭正確、寫入預設資料、刪除空白預設分頁', () => {
   const b = loadBackend();
   const report = b.ctx.FinSetup.initialize(b.ss);
   const names = b.ss.getSheets().map((s) => s.getName());
-  assert.equal(names.length, 16);
+  assert.equal(names.length, 17);
   assert.ok(!names.includes('工作表1'));
   Schema.SHEET_ORDER.forEach((k) => {
     const name = k === 'options' ? '選項' : Schema.TABLES[k].sheet;
@@ -30,7 +30,7 @@ test('初始化：建立 16 張資料表、表頭正確、寫入預設資料、�
       assert.deepEqual(header, Schema.headers(k));
     }
   });
-  assert.equal(report.created.length, 16);
+  assert.equal(report.created.length, 17);
   assert.ok(b.ss.sheet('分類').getLastRow() > 50);
   assert.equal(b.ss.sheet('標的').getLastRow(), 10);
   assert.equal(b.ss.sheet('價格').getLastRow(), 9);

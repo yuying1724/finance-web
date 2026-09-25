@@ -117,3 +117,55 @@ test('summary：group 內欠款加總超過總額度時，可用額度夾在 0�
   const s = FinCreditCard.summary(txs, 'CARD_A', 'TWD', 0, cardSettings, '2026-03-20', ['CARD_A', 'CARD_B']);
   assert.equal(s.availableCredit, 0);
 });
+
+// ---------- 分期（零利率） ----------
+test('expandInstallment：3 萬分 6 期、第 1 期落在刷卡當期、之後每個結帳日一期；零頭放首期／末期', () => {
+  const buy = tx({ id: 'T1', date: '2026-03-10', type: '支出', srcAccount: 'C1', srcSymbol: 'TWD', srcQty: 30001 });
+  const s = FinCreditCard.expandInstallment({ id: 'I1', txId: 'T1', terms: 6, remainderOn: '首期' }, buy, 12, 0);
+  assert.deepEqual(s.periods.map((p) => p.amount), [5001, 5000, 5000, 5000, 5000, 5000]);
+  assert.deepEqual(s.periods.map((p) => p.closeDate), ['2026-03-12', '2026-04-12', '2026-05-12', '2026-06-12', '2026-07-12', '2026-08-12']);
+  const s2 = FinCreditCard.expandInstallment({ id: 'I1', txId: 'T1', terms: 6, remainderOn: '末期' }, buy, 12, 0);
+  assert.deepEqual(s2.periods.map((p) => p.amount), [5000, 5000, 5000, 5000, 5000, 5001]);
+  // 結帳日當天刷：算當期；結帳日隔天刷：算下期
+  const onClose = FinCreditCard.expandInstallment({ terms: 3 }, tx({ id: 'T2', date: '2026-03-12', type: '支出', srcAccount: 'C1', srcSymbol: 'TWD', srcQty: 3000 }), 12, 0);
+  assert.equal(onClose.periods[0].closeDate, '2026-03-12');
+  const afterClose = FinCreditCard.expandInstallment({ terms: 3 }, tx({ id: 'T3', date: '2026-03-13', type: '支出', srcAccount: 'C1', srcSymbol: 'TWD', srcQty: 3000 }), 12, 0);
+  assert.equal(afterClose.periods[0].closeDate, '2026-04-12');
+  // 結帳日 31 號遇到小月：夾到月底
+  const eom = FinCreditCard.expandInstallment({ terms: 2 }, tx({ id: 'T4', date: '2026-01-31', type: '支出', srcAccount: 'C1', srcSymbol: 'TWD', srcQty: 2000 }), 31, 0);
+  assert.deepEqual(eom.periods.map((p) => p.closeDate), ['2026-01-31', '2026-02-28']);
+  // 提前清償：清償日所在週期之後的各期全部改到那一期
+  const po = FinCreditCard.expandInstallment({ terms: 6, payoffDate: '2026-04-20' }, buy, 12, 0);
+  assert.deepEqual(po.periods.map((p) => p.closeDate), ['2026-03-12', '2026-04-12', '2026-05-12', '2026-05-12', '2026-05-12', '2026-05-12']);
+  // 作廢／不是支出：不成立
+  assert.equal(FinCreditCard.expandInstallment({ terms: 6 }, Object.assign({}, buy, { status: '作廢' }), 12, 0), null);
+});
+
+test('summary 含分期：待繳只算已輪到的各期、本期消費只算當期一份、可用額度扣全額', () => {
+  const cs = { statementDay: 12, dueDay: 28, limit: 100000 };
+  const txs = [
+    tx({ id: 'T1', date: '2026-02-20', type: '支出', srcAccount: 'C1', srcSymbol: 'TWD', srcQty: 30000 }), // 分 6 期：3/12 起每期 5,000
+    tx({ id: 'T2', date: '2026-03-01', type: '支出', srcAccount: 'C1', srcSymbol: 'TWD', srcQty: 2000 }),  // 一般消費
+    tx({ id: 'T3', date: '2026-03-20', type: '支出', srcAccount: 'C1', srcSymbol: 'TWD', srcQty: 800 }),   // 本期一般消費
+  ];
+  const sched = [FinCreditCard.expandInstallment({ id: 'I1', txId: 'T1', terms: 6 }, txs[0], 12, 0)];
+  const s = FinCreditCard.summary(txs, 'C1', 'TWD', 0, cs, '2026-03-25', null, sched);
+  assert.equal(s.statementAmountDue, 5000 + 2000, '3/12 這期帳單：分期第 1 期 5,000 ＋ 一般消費 2,000');
+  assert.equal(s.currentSpend, 5000 + 800, '本期（3/13～4/12）：分期第 2 期 5,000 ＋ 一般 800');
+  assert.equal(s.currentlyOwed, 30000 + 2000 + 800, '目前總欠款含分期全額');
+  assert.equal(s.availableCredit, 100000 - 32800, '可用額度扣全額（跟銀行一致）');
+  assert.equal(s.installmentRemaining, 20000, '之後各期（第 3～6 期）還沒出帳');
+  assert.equal(s.installmentCount, 1);
+  // 沒傳分期（舊呼叫方式）：行為不變，全額算進帳單
+  const old = FinCreditCard.summary(txs, 'C1', 'TWD', 0, cs, '2026-03-25');
+  assert.equal(old.statementAmountDue, 32000);
+  // 繳了這期 7,000 之後待繳歸零，但欠款仍含未出帳分期
+  const paid = txs.concat([tx({ id: 'T4', date: '2026-03-26', type: '轉帳', srcAccount: 'B1', srcSymbol: 'TWD', srcQty: 7000, dstAccount: 'C1', dstSymbol: 'TWD', dstQty: 7000 })]);
+  const s2 = FinCreditCard.summary(paid, 'C1', 'TWD', 0, cs, '2026-03-27', null, sched);
+  assert.equal(s2.statementAmountDue, 0);
+  assert.equal(s2.currentlyOwed, 25800);
+  // 下一期（4/12 結帳後）：待繳＝第 2 期 5,000 ＋ 800
+  const s3 = FinCreditCard.summary(paid, 'C1', 'TWD', 0, cs, '2026-04-15', null, sched);
+  assert.equal(s3.statementAmountDue, 5800);
+  assert.equal(s3.installmentRemaining, 15000, '第 4～6 期');
+});

@@ -66,16 +66,51 @@ var FinCreditCard = (function () {
   }
 
   /** 某區間內：以這張卡（或同額度群組多張卡，cardAccountIds 可傳陣列）為來源的「支出」總額，扣掉退回的「退款」（不含還款轉帳，還款不算這期的消費） */
-  function periodSpend(txs, cardAccountIds, symbol, decimals, period) {
+  function periodSpend(txs, cardAccountIds, symbol, decimals, period, excludeTxIds) {
     var idSet = toIdSet(cardAccountIds);
     var spendUnits = 0, refundUnits = 0;
     for (var i = 0; i < txs.length; i++) {
       var t = txs[i];
       if (t.status !== '有效' || t.date < period.start || t.date > period.end) continue;
+      if (excludeTxIds && excludeTxIds[t.id]) continue; // 分期的原始消費：本期消費只算當期那一份（另外加）
       if (t.type === '支出' && idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null) spendUnits += FinMoney.toUnits(t.srcQty, decimals);
       else if (t.type === '退款' && idSet[t.dstAccount] && t.dstSymbol === symbol && t.dstQty !== null) refundUnits += FinMoney.toUnits(t.dstQty, decimals);
     }
     return FinMoney.fromUnits(spendUnits - refundUnits, decimals);
+  }
+
+  // ---------- 分期（零利率） ----------
+  /**
+   * 把一筆分期展開成每期：{ accountId, symbol, txId, total, terms, periods: [{ n, amount, closeDate }] }
+   * inst: 分期列 { id, txId, terms, remainderOn('首期'|'末期'), payoffDate }；tx: 對應的「支出」交易（金額、日期、卡片以它為準）
+   * 第 1 期落在刷卡日所在週期的結帳日，之後每個結帳日一期；除不盡的零頭預設放第 1 期。
+   * 提前清償：清償日所在週期之後的各期，全部改到清償日所在週期的結帳日。回傳 null 表示不成立（交易不存在／作廢／不是支出）。
+   */
+  function expandInstallment(inst, tx, statementDay, decimals) {
+    if (!inst || !tx || tx.status !== '有效' || tx.type !== '支出' || !tx.srcAccount || !(Number(tx.srcQty) > 0)) return null;
+    var terms = Math.max(1, Math.floor(Number(inst.terms) || 1));
+    var totalUnits = FinMoney.toUnits(tx.srcQty, decimals);
+    var base = Math.floor(totalUnits / terms), rem = totalUnits - base * terms;
+    var close = periodContaining(statementDay, tx.date).end;
+    var payoffClose = inst.payoffDate ? periodContaining(statementDay, inst.payoffDate < tx.date ? tx.date : inst.payoffDate).end : null;
+    var periods = [];
+    for (var n = 1; n <= terms; n++) {
+      var u = base + ((inst.remainderOn === '末期' ? n === terms : n === 1) ? rem : 0);
+      var cd = payoffClose && close > payoffClose ? payoffClose : close;
+      periods.push({ n: n, amount: FinMoney.fromUnits(u, decimals), units: u, closeDate: cd });
+      close = nextStatementEnd(statementDay, close);
+    }
+    return { id: inst.id, accountId: tx.srcAccount, symbol: tx.srcSymbol, txId: tx.id, total: FinMoney.fromUnits(totalUnits, decimals), terms: terms, periods: periods, paidOff: !!inst.payoffDate };
+  }
+
+  /** 截至某個結帳日（含）還沒出帳的分期金額（整數單位）：closeDate 晚於 date 的各期 */
+  function unbilledUnitsAt(schedules, idSet, symbol, date) {
+    var u = 0;
+    (schedules || []).forEach(function (s) {
+      if (!idSet[s.accountId] || s.symbol !== symbol) return;
+      s.periods.forEach(function (p) { if (p.closeDate > date) u += p.units; });
+    });
+    return u;
   }
 
   /**
@@ -89,18 +124,26 @@ var FinCreditCard = (function () {
    * （假設同群組卡片的結帳日／繳款日／額度本來就該一致，呼叫端另外用 groupDateMismatch／groupLimitMismatch 標記不一致的情況）。
    * 沒有傳 groupAccountIds（或只有 1 個 id）時，行為等同單張卡，不受影響。
    */
-  function summary(txs, cardAccountId, symbol, decimals, cardSettings, asOfDate, groupAccountIds) {
+  function summary(txs, cardAccountId, symbol, decimals, cardSettings, asOfDate, groupAccountIds, installmentSchedules) {
     var ids = (groupAccountIds && groupAccountIds.length > 1) ? groupAccountIds : [cardAccountId];
     var hasGroup = ids.length > 1;
+    var idSetAll = toIdSet(ids);
+    // 這張卡（或同群組）的分期：原始消費記全額（影響欠款、可用額度），但帳單只算已輪到的各期
+    var sched = (installmentSchedules || []).filter(function (s) { return idSetAll[s.accountId] && s.symbol === symbol; });
+    var instTxIds = {};
+    sched.forEach(function (s) { instTxIds[s.txId] = true; });
 
     var current = periodContaining(cardSettings.statementDay, asOfDate);
-    var currentSpend = periodSpend(txs, ids, symbol, decimals, { start: current.start, end: asOfDate });
+    var currentSpend = periodSpend(txs, ids, symbol, decimals, { start: current.start, end: asOfDate }, instTxIds);
+    var currentInstUnits = 0;
+    sched.forEach(function (s) { s.periods.forEach(function (p) { if (p.closeDate === current.end) currentInstUnits += p.units; }); });
+    if (currentInstUnits) currentSpend = FinMoney.fromUnits(FinMoney.toUnits(currentSpend, decimals) + currentInstUnits, decimals);
     var lastClosedEnd = prevStatementEnd(cardSettings.statementDay, current.end);
     var lastClosedStart = FinDates.addDays(prevStatementEnd(cardSettings.statementDay, lastClosedEnd), 1);
     var lastClosed = { start: lastClosedStart, end: lastClosedEnd };
 
     var dueDate = dueDateFor(cardSettings.dueDay, lastClosed.end);
-    var balanceAtCloseUnits = balanceUnitsAsOf(txs, ids, symbol, decimals, lastClosed.end);
+    var balanceAtCloseUnits = balanceUnitsAsOf(txs, ids, symbol, decimals, lastClosed.end) + unbilledUnitsAt(sched, idSetAll, symbol, lastClosed.end);
     var debtAtCloseUnits = balanceAtCloseUnits < 0 ? -balanceAtCloseUnits : 0;
     // 結帳之後、今天之前，任何轉入這張卡（或同群組任一張卡）的金額（還款、退款…）都算已經繳掉這期帳單，扣掉之後才是這期還欠多少
     var idSet = toIdSet(ids);
@@ -127,11 +170,14 @@ var FinCreditCard = (function () {
       currentlyOwed: currentlyOwed, overdue: statementAmountDue > 0 && asOfDate > dueDate,
       limit: limit || null, availableCredit: availableCredit,
       sharedLimit: hasGroup, groupSize: hasGroup ? ids.length : null,
+      // 分期：之後各期（不含本期）還沒出帳的金額；目前總欠款與可用額度已經含全額
+      installmentRemaining: FinMoney.fromUnits(unbilledUnitsAt(sched, idSetAll, symbol, current.end), decimals),
+      installmentCount: sched.filter(function (s) { return s.periods.some(function (p) { return p.closeDate >= current.end; }); }).length,
     };
   }
 
   return {
-    periodContaining: periodContaining, dueDateFor: dueDateFor, periodSpend: periodSpend,
+    periodContaining: periodContaining, dueDateFor: dueDateFor, periodSpend: periodSpend, expandInstallment: expandInstallment, unbilledUnitsAt: unbilledUnitsAt,
     balanceUnitsAsOf: balanceUnitsAsOf, summary: summary,
     prevStatementEnd: prevStatementEnd, nextStatementEnd: nextStatementEnd, statementDateIn: statementDateIn,
   };

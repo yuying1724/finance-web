@@ -6,13 +6,15 @@ import { money, dateLabel, monthLabel, categoryInfo, amountClass, catIconStyle }
 import { openSheet, confirmDialog, toast, errorText } from '../ui.js';
 import { openTxForm } from './txform.js';
 import { write, applyTxLocal } from '../data.js';
+import { installmentOf, installmentText, openSetInstallment, togglePayoff } from './installments.js';
 
 // ---------- 共用：把一筆交易轉成畫面上的資訊 ----------
 export function describe(t) {
   const src = accountById(t.srcAccount), dst = accountById(t.dstAccount);
   const an = (a, id) => (a ? a.name : id || '');
   const fx = t.fxSymbol && t.fxQty ? ' · ' + money(t.fxQty, t.fxSymbol, { noMask: true }) : '';
-  const note = (t.merchant ? ' · ' + t.merchant : '') + fx + (t.note ? ' · ' + t.note : '');
+  const inst = t.type === '支出' ? installmentOf(t.id) : null;
+  const note = (inst ? ' · 分 ' + inst.terms + ' 期' : '') + (t.merchant ? ' · ' + t.merchant : '') + fx + (t.note ? ' · ' + t.note : '');
   switch (t.type) {
     case '支出': {
       const c = categoryInfo(t.categoryId);
@@ -80,6 +82,8 @@ export function openTxDetail(t) {
   if (t.fxSymbol && t.fxQty) rows.push(['原幣金額', money(t.fxQty, t.fxSymbol, { noMask: true })]);
   if (t.tags) rows.push(['標籤', h('span', null, String(t.tags).split(',').map((x) => h('span', { class: 'badge', style: { marginRight: '4px' } }, x)))]);
   if (t.note) rows.push(['備註', t.note]);
+  const inst = t.type === '支出' ? installmentOf(t.id) : null;
+  if (inst) rows.push(['分期', installmentText(inst)]);
   rows.push(['編號', t.id], ['更新時間', t.updatedAt]);
   const dl = h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)]));
 
@@ -89,6 +93,10 @@ export function openTxDetail(t) {
   if (t.status === '有效' || t.status === '待確認') {
     actions.appendChild(btn('編輯', '', () => { sheet.close(); setTimeout(() => openTxForm({ tx: t }), 0); }));
     if (t.type === '支出') actions.appendChild(btn('退款', '', () => { sheet.close(); setTimeout(() => openTxForm({ preset: { type: '退款', related: t } }), 0); }));
+    if (t.type === '支出' && t.status === '有效' && src && src.type === '信用卡') {
+      if (!inst) actions.appendChild(btn('設為分期', '', () => { sheet.close(); setTimeout(() => openSetInstallment(t), 0); }));
+      else if (inst.status !== '已完成') actions.appendChild(btn(inst.payoffDate ? '取消提前清償' : '提前清償', '', () => { sheet.close(); setTimeout(() => togglePayoff(inst), 0); }));
+    }
     actions.appendChild(btn('作廢', 'btn-danger', async (e) => {
       const button = e.currentTarget; // 事件結束後 currentTarget 會變成 null，要先存起來
       if (!(await confirmDialog({ title: '作廢這筆交易？', message: '作廢後不會計入餘額與報表，之後可以在交易清單「顯示已作廢」中還原。', confirmText: '作廢', danger: true }))) return;

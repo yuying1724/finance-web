@@ -75,6 +75,13 @@ var FinSchema = (function () {
         c('merchant', '商家'), c('tags', '標籤'), c('fxSymbol', '原幣'), c('fxQty', '原幣金額', 'num')],
     },
     txTags: { sheet: '交易標籤', idKey: null, cols: [c('txId', '交易ID'), c('tag', '標籤')] },
+    // 信用卡分期（零利率）：購買當下以一筆「支出」記全額（txId），這裡只記期數與零頭放哪；金額、日期、卡片一律取自那筆交易，
+    // 改了原交易就自動重算。帳單只把當期那一份算進待繳／本期消費（core/creditcard.js）。
+    installments: {
+      sheet: '分期', idKey: 'id', idPrefix: 'I', idWidth: 3,
+      cols: [c('id', '分期ID'), c('txId', '交易ID'), c('terms', '期數', 'num'), c('remainderOn', '零頭'), c('payoffDate', '提前清償日', 'date'),
+        c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts')],
+    },
     recurring: {
       sheet: '定期', idKey: 'id', idPrefix: 'R', idWidth: 3,
       cols: [c('id', '定期ID'), c('name', '名稱'), c('freq', '頻率'), c('days', '執行日'), c('holiday', '假日處理'),
@@ -114,7 +121,7 @@ var FinSchema = (function () {
 
   // 建立 Sheet 的順序（也是分頁順序）
   var SHEET_ORDER = ['settings', 'options', 'auditLog', 'accounts', 'cardSettings', 'loanSettings', 'brokerSettings', 'categories',
-    'instruments', 'transactions', 'txTags', 'recurring', 'prices', 'priceHistory', 'holidays', 'snapshots'];
+    'instruments', 'transactions', 'txTags', 'recurring', 'prices', 'priceHistory', 'holidays', 'snapshots', 'installments'];
 
   function headers(tableKey) { return TABLES[tableKey].cols.map(function (col) { return col.header; }); }
   function colOf(tableKey, key) {
@@ -127,7 +134,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.8.0',
+    APP_VERSION: '0.9.0',
   };
   return api;
 })();

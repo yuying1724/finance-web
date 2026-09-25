@@ -451,6 +451,56 @@ test('A 組：商家／標籤／外幣欄位、轉帳手續費、跨月搜尋、
   });
 });
 
+test('分期付款：記一筆勾選分期 → 淨值扣全額、帳單只算當期、清單顯示分 N 期；交易詳情可提前清償', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const boot0 = be.call('bootstrap').data;
+    const card = boot0.accounts.find((x) => x.name === '國泰信用卡').id;
+    const today = boot0.today;
+    const dom = (d) => Number(d.slice(8, 10));
+    // 結帳日＝昨天那個日子（今天刷落在下一期）、繳款日＝結帳後 15 天
+    const stDay = dom(be.ctx.FinDates.addDays(today, -1)), dueDay = dom(be.ctx.FinDates.addDays(today, 14));
+    assert.ok(be.call('upsertCardSettings', { card: { accountId: card, statementDay: stDay, dueDay, limit: 100000 } }).ok);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    const before = digits(await a.networth());
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '30001');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '國泰信用卡' });
+    await page.check('[data-testid=inst-toggle]');
+    await page.fill('input[aria-label="分期期數"]', '6');
+    assert.match(await page.locator('[data-testid=inst-preview]').innerText(), /每期 NT\$5,000.*第 1 期 NT\$5,001/);
+    await a.pickCategory('購物');
+    await page.fill('input[aria-label="商家"]', 'Apple');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    await page.waitForFunction((b) => Number(document.querySelector('[data-testid=networth]').innerText.replace(/[^\d-]/g, '')) === b - 30001, before);
+    await page.waitForFunction(() => /分 6 期/.test(document.body.innerText));
+    const d = be.call('bootstrap').data;
+    assert.equal(d.installments.length, 1);
+    const ov = d.cardOverview.items.find((x) => x.name === '國泰信用卡');
+    assert.equal(ov.installmentRemaining, 25000, '本期第 1 期 5,001，之後第 2～6 期 25,000 未出帳');
+    assert.equal(ov.currentSpend, 5001 + 0, '本期消費只算第 1 期（demo 裡這張卡其他消費都在更早的週期）');
+    // 信用卡總覽點進去看到分期中
+    await a.tab('accounts');
+    await page.click('[data-testid=subtab-cards]');
+    await page.click('[data-card-group="國泰信用卡"]');
+    await page.waitForSelector('[data-testid=inst-list]');
+    assert.match(await page.locator('[data-testid=inst-list]').innerText(), /Apple[\s\S]*分 6 期/);
+    await page.click('.sheet [aria-label="關閉"]'); await page.waitForSelector('.sheet', { state: 'detached' });
+    // 交易詳情 → 提前清償
+    await a.tab('tx');
+    await page.locator('.list').getByText('分 6 期').first().click();
+    await page.waitForSelector('.sheet');
+    await page.getByRole('button', { name: '提前清償' }).click();
+    await page.getByRole('button', { name: '提前清償' }).last().click();
+    await page.waitForFunction(() => /已提前清償/.test(document.body.innerText));
+    const d2 = be.call('bootstrap').data;
+    assert.equal(d2.installments[0].payoffDate, d2.today);
+    assert.equal(d2.cardOverview.items.find((x) => x.name === '國泰信用卡').installmentRemaining, 0, '提前清償後全部進本期');
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

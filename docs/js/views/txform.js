@@ -43,7 +43,8 @@ function uiField(type, serverField) {
     return m[serverField] || 'form';
   }
   const map = {
-    date: 'date', note: 'note', categoryId: 'cat', relatedTxId: 'related', type: 'type',
+    date: 'date', note: 'note', categoryId: 'cat', relatedTxId: 'related', type: 'type', terms: 'inst', remainderOn: 'inst',
+    merchant: 'merchant', tags: 'tags', fxSymbol: 'fxQty', fxQty: 'fxQty', feeAmount: 'feeAmount',
     srcAccount: 'acct', srcSymbol: 'sym', srcQty: 'amount',
     dstAccount: twoSided ? 'acct2' : 'acct', dstSymbol: twoSided ? (type === '換匯' ? 'sym2' : 'sym') : 'sym', dstQty: twoSided ? 'amount2' : 'amount',
   };
@@ -72,6 +73,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     settleDate: '', settleTouched: false, relatedSymbol: '', adjSide: 'dst',
     merchant: editing ? (tx.merchant || '') : '', tags: editing ? (tx.tags || '') : '', fxSymbol: editing ? (tx.fxSymbol || '') : '', fxQty: editing && tx.fxQty ? String(tx.fxQty) : '',
     feeAmount: '', more: false,
+    instOn: false, instTerms: '6', instRemainder: '首期',
   };
 
   const fmtNum = (n) => String(n);
@@ -201,6 +203,32 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     }
     return h('div', { style: { margin: '4px 0 12px' } }, toggle, box);
   }
+  // 分期付款（零利率）：付款帳戶是信用卡、新增時才出現。購買當下記全額，帳單每期只算一份（見 core/creditcard.js）
+  function installmentField() {
+    const a = accountById(f.acct);
+    if (editing || !a || a.type !== '信用卡') return null;
+    const hasSettings = (d.cardSettings || []).some((c) => c.accountId === a.id);
+    const box = h('div', { style: { display: f.instOn ? '' : 'none', marginTop: '8px' } });
+    const preview = h('div', { class: 'muted small', style: { marginTop: '4px' }, 'data-testid': 'inst-preview' });
+    const paintPreview = () => {
+      const amt = parseAmount(f.amount), n = Math.floor(Number(f.instTerms));
+      if (!amt.n || !(n >= 2)) { preview.textContent = ''; return; }
+      const dec = decimalsOf(f.sym), unit = Math.pow(10, dec);
+      const total = Math.round(amt.n * unit), base = Math.floor(total / n), rem = total - base * n;
+      const first = (f.instRemainder === '末期' ? base : base + rem) / unit, other = base / unit, last = (f.instRemainder === '末期' ? base + rem : base) / unit;
+      preview.textContent = rem ? `每期 ${money(other, f.sym, { noMask: true })}，${f.instRemainder === '末期' ? '最後一期 ' + money(last, f.sym, { noMask: true }) : '第 1 期 ' + money(first, f.sym, { noMask: true })}（含零頭）；今天記全額，帳單每期只算一份`
+        : `每期 ${money(other, f.sym, { noMask: true })}；今天記全額，帳單每期只算一份`;
+    };
+    const termsInput = h('input', { type: 'text', inputmode: 'numeric', value: f.instTerms, 'aria-label': '分期期數', style: { maxWidth: '90px' }, oninput: (e) => { f.instTerms = e.target.value; paintPreview(); } });
+    const chips = h('div', { class: 'chips' }, [3, 6, 12, 24].map((n) => h('button', { type: 'button', class: 'chip', onclick: () => { f.instTerms = String(n); termsInput.value = String(n); paintPreview(); } }, `${n} 期`)));
+    const remSel = h('select', { 'aria-label': '零頭', style: { maxWidth: '140px' }, onchange: (e) => { f.instRemainder = e.target.value; paintPreview(); } },
+      ['首期', '末期'].map((v) => h('option', { value: v, selected: v === f.instRemainder }, `零頭放${v}`)));
+    box.append(h('div', { class: 'row-flex wrap', style: { gap: '8px', alignItems: 'center' } }, termsInput, h('span', null, '期'), remSel), h('div', { style: { marginTop: '6px' } }, chips), preview);
+    const toggle = h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: f.instOn, 'data-testid': 'inst-toggle', disabled: !hasSettings, onchange: (e) => { f.instOn = e.target.checked; box.style.display = f.instOn ? '' : 'none'; paintPreview(); } }),
+      hasSettings ? '分期付款（零利率）' : '分期付款（這張卡要先設定結帳日／繳款日）');
+    paintPreview();
+    return field('inst', '', toggle, box);
+  }
   // 手續費（轉帳／換匯）：另外產生一筆同群組的「支出」（分類：手續費），從轉出帳戶扣
   const feeField = () => field('feeAmount', '手續費（選填）',
     h('input', { type: 'text', inputmode: 'decimal', value: f.feeAmount, placeholder: '例如 15，會另外記成一筆「手續費」支出', 'aria-label': '手續費', oninput: (e) => { f.feeAmount = e.target.value; } }));
@@ -268,7 +296,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     for (const k of Object.keys(fieldEls)) delete fieldEls[k];
     const parts = [];
     if (type === '支出') {
-      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '付款帳戶', 'acct', 'sym'), categoryField('支出'), merchantField(), dateField(), noteField(), moreFields(true));
+      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '付款帳戶', 'acct', 'sym'), installmentField(), categoryField('支出'), merchantField(), dateField(), noteField(), moreFields(true));
     } else if (type === '收入') {
       parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '入帳帳戶', 'acct', 'sym'), categoryField('收入'), merchantField(), dateField(), noteField(), moreFields(true));
     } else if (type === '退款') {
@@ -359,6 +387,11 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
       if (!f.fxSymbol) return { error: { field: 'fxQty', message: '請選擇原幣幣別' } };
       if (a.empty || a.bad || !(a.n > 0)) return { error: { field: 'fxQty', message: '原幣金額必須是大於 0 的數字' } };
       base.fxSymbol = f.fxSymbol; base.fxQty = a.n;
+    }
+    if (!editing && type === '支出' && f.instOn && (accountById(f.acct) || {}).type === '信用卡') {
+      const n = Number(String(f.instTerms).trim());
+      if (!(n >= 2 && n <= 60 && Math.floor(n) === n)) return { error: { field: 'inst', message: '分期期數請填 2～60 的整數' } };
+      base.__inst = { terms: n, remainderOn: f.instRemainder };
     }
     if (!editing && (type === '轉帳' || type === '換匯') && String(f.feeAmount).trim() !== '') {
       const fa = parseAmount(f.feeAmount);
@@ -459,6 +492,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     clearErrors();
     const built = buildTx();
     if (built.error) { setError(built.error.field, built.error.message); return; }
+    const inst = built.tx.__inst || null;
+    delete built.tx.__inst;
     last.type = type; last.acct = f.acct; if (type === '轉帳' || type === '換匯') last.acct2 = f.acct2;
     const localTx = Object.assign({}, editing ? tx : { status: '有效', createdAt: '', updatedAt: '' }, built.tx, { id: editing ? tx.id : 'tmp-' + Date.now().toString(36) });
     // 合併帳單繳款：後端依各卡欠款分攤成多筆轉帳（畫面上先當一筆轉帳套用，背景更新後會是正式的多筆）
@@ -466,7 +501,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     const params = editing ? { id: tx.id, expectedUpdatedAt: tx.updatedAt, tx: built.tx }
       : cardPay ? { accountIds: cardPay.accountIds, fromAccount: built.tx.srcAccount, amount: built.tx.srcQty, date: built.tx.date, note: built.tx.note, tags: built.tx.tags, requestId }
         : { tx: built.tx, requestId };
-    const action = editing ? 'updateTransaction' : cardPay ? 'addCardPayment' : 'addTransaction';
+    if (inst) { params.terms = inst.terms; params.remainderOn = inst.remainderOn; }
+    const action = editing ? 'updateTransaction' : cardPay ? 'addCardPayment' : inst ? 'addInstallment' : 'addTransaction';
     const reopen = (errors) => openTxForm({ tx, preset, onDone, draft: { type, f: Object.assign({}, f) }, serverErrors: errors || null });
     sheet.close();
     const res = await write(action, params, {
@@ -481,7 +517,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     if (onDone && onDone !== refresh) { try { await onDone(); } catch (e) { /* 資料稍後會自動更新 */ } }
     if (cardPay) { toast(`已記錄繳款${res.txs && res.txs.length > 1 ? `（分攤到 ${res.txs.length} 張卡）` : ''}`); return; }
     const saved = res.tx;
-    const msgs = [editing ? '已儲存修改' : '已新增'].concat(res.warnings || []);
+    const msgs = [editing ? '已儲存修改' : inst ? `已新增（分 ${inst.terms} 期）` : '已新增'].concat(res.warnings || []);
     toast(msgs.join('　'), editing ? {} : { action: { label: '復原', fn: async () => {
       const r = await write('voidTransaction', { id: saved.id, expectedUpdatedAt: saved.updatedAt }, { optimistic: () => applyTxLocal(Object.assign({}, saved, { status: '作廢' }), saved), failPrefix: '復原失敗：' });
       if (r) toast('已復原');

@@ -100,7 +100,7 @@ var FinRepo = (function () {
   // 沒加、或 API 呼叫失敗（例如分頁改名），都自動退回原本逐張讀取，功能一樣只是慢。
   // 之後新增「每次請求都會讀」的分頁要記得加進 PRELOAD_TABLES；不加也能用，只是那幾張會逐張讀。
   var PRELOAD_TABLES = ['settings', 'accounts', 'categories', 'instruments', 'transactions', 'prices', 'brokerSettings',
-    'holidays', 'cardSettings', 'loanSettings', 'recurring'];
+    'holidays', 'cardSettings', 'loanSettings', 'recurring', 'installments'];
 
   function padRows(rows) {
     // getValues() 回的是整齊的矩形（空格為 ''），API 會省略列尾的空格與最後的空白列，這裡補齊

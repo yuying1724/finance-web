@@ -358,3 +358,82 @@ test('免息期推薦：今天刷哪張卡最晚付款（結帳日剛過的卡�
   assert.equal(B.chargeTodayDueDate, '2026-04-01'); assert.equal(B.graceDays, 22);
   assert.equal(ov.bestToday.name, 'A卡');
 });
+
+test('分期付款（零利率）：購買當下記全額、帳單只算當期、可用額度扣全額；既有消費可設為分期；提前清償；驗證', () => {
+  const b = fresh();
+  const bank = b.acct('銀行', '銀行');
+  const card = b.acct('玉山-Ubear卡', '信用卡');
+  const noSet = b.acct('沒設定的卡', '信用卡');
+  b.card({ accountId: card, statementDay: 12, dueDay: 28, limit: 100000 });
+  const food = cat(b, '飲食');
+  assert.ok(b.add({ type: '調整', date: '2026-02-01', dstAccount: bank, dstSymbol: 'TWD', dstQty: 100000 }).ok);
+  const nw0 = b.boot().netWorth.total;
+  // 2/20 刷 30,001 分 6 期（零頭放首期）→ 3/12 起每期 5,000，第 1 期 5,001
+  const r = b.call('addInstallment', { tx: { type: '支出', date: '2026-02-20', srcAccount: card, srcSymbol: 'TWD', srcQty: 30001, categoryId: food, merchant: 'Apple' }, terms: 6, remainderOn: '首期', requestId: 'inst-1' });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(r.data.created, true);
+  assert.equal(r.data.installment.terms, 6);
+  // 重送不會重複
+  assert.ok(b.call('addInstallment', { tx: { type: '支出', date: '2026-02-20', srcAccount: card, srcSymbol: 'TWD', srcQty: 30001, categoryId: food }, terms: 6, requestId: 'inst-1' }).ok);
+  assert.equal(b.call('listTransactions', { filters: { accountId: card } }).data.total, 1);
+  const d = b.boot();
+  assert.equal(d.netWorth.total, nw0 - 30001, '淨資產立刻反映全額');
+  assert.equal(d.installments.length, 1);
+  assert.equal(d.installments[0].name, 'Apple');
+  // 一般消費 2,000
+  assert.ok(b.add({ type: '支出', date: '2026-03-01', srcAccount: card, srcSymbol: 'TWD', srcQty: 2000, categoryId: food }).ok);
+  const st = b.statement(card, '2026-03-20');
+  assert.ok(st.ok, JSON.stringify(st));
+  assert.equal(st.data.statementAmountDue, 5001 + 2000, '3/12 帳單：第 1 期 5,001 ＋ 一般 2,000');
+  assert.equal(st.data.currentSpend, 5000, '本期（3/13～4/12）：第 2 期 5,000');
+  assert.equal(st.data.availableCredit, 100000 - 32001, '可用額度扣全額');
+  assert.equal(st.data.installmentRemaining, 20000, '第 3～6 期');
+  assert.equal(st.data.installments.length, 1);
+  assert.deepEqual(st.data.installments[0].currentPeriods, [2]);
+  const ov = b.call('getCardOverview', { asOf: '2026-03-20' }).data.items.find((x) => x.name === '玉山-Ubear卡');
+  assert.equal(ov.statementAmountDue, 7001);
+  assert.equal(ov.installmentRemaining, 20000);
+  // 繳了 7,001：這期繳清（但還有分期未出帳）
+  assert.ok(b.add({ type: '轉帳', date: '2026-03-25', srcAccount: bank, srcSymbol: 'TWD', srcQty: 7001, dstAccount: card, dstSymbol: 'TWD', dstQty: 7001 }).ok);
+  const ov2 = b.call('getCardOverview', { asOf: '2026-03-26' }).data.items.find((x) => x.name === '玉山-Ubear卡');
+  assert.equal(ov2.statementAmountDue, 0); assert.equal(ov2.paid, true);
+  // 既有消費設為分期：3/5 刷的 12,000 → 3 期
+  const r2 = b.add({ type: '支出', date: '2026-03-05', srcAccount: card, srcSymbol: 'TWD', srcQty: 12000, categoryId: food, note: '機票' });
+  assert.ok(r2.ok);
+  const r3 = b.call('addInstallment', { txId: r2.data.tx.id, terms: 3 });
+  assert.ok(r3.ok, JSON.stringify(r3));
+  assert.equal(r3.data.created, false);
+  assert.equal(b.call('addInstallment', { txId: r2.data.tx.id, terms: 3 }).error.code, 'VALIDATION', '同一筆不能重複設為分期');
+  // 3/5 屬於 2/13～3/12 那期 → 3/12 帳單多 4,000；但 3/25 已繳 7,001，所以 3/12 帳單還欠 4,000
+  assert.equal(b.statement(card, '2026-03-26').data.statementAmountDue, 4000);
+  // 提前清償第一筆（4/20）：第 3～6 期全部進 5/12 帳單
+  const iid = b.boot().installments.find((x) => x.name === 'Apple').id;
+  assert.ok(b.call('setInstallmentPayoff', { id: iid, date: '2026-04-20' }).ok);
+  const st5 = b.statement(card, '2026-05-15');
+  // 5/12 帳單：Apple 第 3～6 期 20,000 ＋ 機票第 3 期 4,000；前面 4/12 帳單（Apple 第 2 期 5,000＋機票第 2 期 4,000）與 3/12 欠的 4,000 都沒繳 → 累計
+  assert.equal(st5.data.statementAmountDue, 20000 + 4000 + 5000 + 4000 + 4000);
+  assert.equal(st5.data.installmentRemaining, 0);
+  const inst = b.boot().installments.find((x) => x.id === iid);
+  assert.equal(inst.payoffDate, '2026-04-20');
+  // 取消提前清償
+  assert.ok(b.call('setInstallmentPayoff', { id: iid, date: '' }).ok);
+  assert.equal(b.boot().installments.find((x) => x.id === iid).payoffDate, '');
+  // 作廢原交易：分期自動消失
+  const orig = b.boot().installments.find((x) => x.id === iid);
+  const tx = b.call('listTransactions', { filters: { q: 'Apple' } }).data.items[0];
+  assert.ok(b.call('voidTransaction', { id: tx.id, expectedUpdatedAt: tx.updatedAt }).ok);
+  assert.equal(b.boot().installments.some((x) => x.id === orig.id), false);
+  // 驗證
+  assert.equal(b.call('addInstallment', { tx: { type: '支出', date: '2026-03-05', srcAccount: bank, srcSymbol: 'TWD', srcQty: 100, categoryId: food }, terms: 3 }).error.code, 'VALIDATION', '銀行帳戶不能分期');
+  assert.equal(b.call('addInstallment', { tx: { type: '支出', date: '2026-03-05', srcAccount: noSet, srcSymbol: 'TWD', srcQty: 100, categoryId: food }, terms: 3 }).error.code, 'VALIDATION', '沒設定結帳日的卡不能分期');
+  assert.equal(b.call('addInstallment', { tx: { type: '支出', date: '2026-03-05', srcAccount: card, srcSymbol: 'TWD', srcQty: 100, categoryId: food }, terms: 1 }).error.code, 'VALIDATION', '期數至少 2');
+  assert.equal(b.call('addInstallment', { tx: { type: '支出', date: '2026-03-05', srcAccount: card, srcSymbol: 'TWD', srcQty: 100, categoryId: food }, terms: 3, remainderOn: '中間' }).error.code, 'VALIDATION');
+});
+
+test('分期表還沒建立（新版部署後、執行「初始化／修復資料表」之前）：系統照常運作，當作沒有分期', () => {
+  const b = fresh();
+  b.ss.deleteSheet(b.ss.sheet('分期'));
+  const r = b.call('bootstrap');
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepEqual(r.data.installments, []);
+});

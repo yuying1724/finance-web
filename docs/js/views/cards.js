@@ -5,6 +5,7 @@ import { money } from '../fmt.js';
 import { openSheet } from '../ui.js';
 import { openTxForm } from './txform.js';
 import { openCardStatement, openCardSettingsForm } from './liability.js';
+import { installmentListBlock } from './installments.js';
 
 /**
  * 信用卡總覽：參考 MOZE 的「主帳戶／合併帳單」與麻布記帳「依銀行看帳單」的做法——
@@ -57,7 +58,7 @@ export function openCardGroupSheet(item) {
     h('dt', null, '待繳'), h('dd', null, h('b', null, money(item.statementAmountDue, item.symbol)), ' ', dueBadge(item)),
     h('dt', null, '繳款截止'), h('dd', null, item.dueDate || '—'),
     h('dt', null, '本期已刷'), h('dd', null, money(item.currentSpend, item.symbol), h('span', { class: 'muted small' }, `（${mmdd(item.currentPeriod.start)}～結帳日 ${item.statementDay} 號）`)),
-    h('dt', null, '目前欠款'), h('dd', null, money(item.currentlyOwed, item.symbol)),
+    h('dt', null, '目前欠款'), h('dd', null, money(item.currentlyOwed, item.symbol), item.installmentRemaining > 0 ? h('span', { class: 'muted small' }, `（含分期未出帳 ${money(item.installmentRemaining, item.symbol)}）`) : null),
     h('dt', null, '可用額度'), h('dd', null, item.availableCredit === null ? '未設定額度' : `${money(item.availableCredit, item.symbol)} / ${money(item.limit, item.symbol)}`, meter(item))) : null;
   const sheet = openSheet({
     title: item.isGroup ? `${item.name}　合併帳單（${item.members.length} 張卡）` : item.name,
@@ -66,6 +67,7 @@ export function openCardGroupSheet(item) {
       item.groupDateMismatch ? h('div', { class: 'notice bad', style: { marginBottom: '10px' } }, '這個群組裡的卡片結帳日或繳款日填得不一樣，請把群組內每張卡改成一致') : null,
       item.groupLimitMismatch ? h('div', { class: 'notice bad', style: { marginBottom: '10px' } }, '這個群組裡的卡片額度填得不一樣，請把群組內每張卡的額度都改成同一個總額度') : null,
       kv,
+      installmentListBlock(((state.data && state.data.installments) || []).filter((x) => item.accountIds.includes(x.accountId) && (x.status === '進行中' || x.status === '提前清償中'))),
       h('div', { class: 'row-flex wrap', style: { marginTop: '14px', marginBottom: '6px' } },
         item.hasSettings && item.statementAmountDue > 0 ? h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'card-pay', onclick: () => { sheet.close(); setTimeout(() => openPayForm(item), 0); } }, '記一筆繳款') : null,
         item.hasSettings ? h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardStatement(first), 0); } }, '帳單明細') : null,
