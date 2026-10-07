@@ -49,7 +49,12 @@ export function renderAccounts(root, route) {
       const byInst = new Map();
       items.forEach((a) => { const k = a.institution || '其他'; if (!byInst.has(k)) byInst.set(k, []); byInst.get(k).push(a); });
       for (const [inst, arr] of byInst) {
-        if (byInst.size > 1 || inst !== '其他') content.appendChild(h('div', { class: 'day-head', style: { paddingTop: '8px' } }, h('span', null, inst)));
+        if (byInst.size > 1 || inst !== '其他') {
+          // 同一家機構有兩個以上帳戶時，標題右邊顯示各幣別的合計（例如「NT$10,232 · ¥65,031」），不同幣別不換算、不混加
+          const totals = sec.key === 'cash' && arr.length > 1 ? currencyTotals(arr) : '';
+          content.appendChild(h('div', { class: 'day-head', style: { paddingTop: '8px' } }, h('span', null, inst),
+            totals ? h('span', { 'data-testid': 'inst-total', 'data-inst': inst }, totals) : null));
+        }
         content.appendChild(h('ul', { class: 'list' }, arr.map((a) => h('li', null, accountItem(a)))));
       }
     }
@@ -77,6 +82,18 @@ export function subtabs(active) {
     h('button', { class: active === 'accounts' ? 'on' : '', onclick: () => { location.hash = '#/accounts'; } }, '帳戶'),
     h('button', { class: active === 'cards' ? 'on' : '', 'data-testid': 'subtab-cards', onclick: () => { location.hash = '#/accounts/cards'; } }, '信用卡'),
     h('button', { class: active === 'categories' ? 'on' : '', 'data-testid': 'subtab-categories', onclick: () => { location.hash = '#/accounts/categories'; } }, '分類'));
+}
+
+/** 一組帳戶各幣別餘額的合計，基準幣別排第一、其餘依出現順序；合計為 0 的幣別不顯示 */
+function currencyTotals(accounts) {
+  const d = state.data;
+  const ids = new Set(accounts.map((a) => a.id));
+  const sums = new Map();
+  if (d.base) sums.set(d.base, 0);
+  d.balances.forEach((b) => { if (ids.has(b.accountId)) sums.set(b.symbol, (sums.get(b.symbol) || 0) + Number(b.qty || 0)); });
+  const parts = [];
+  sums.forEach((qty, sym) => { if (Math.abs(qty) > 1e-9) parts.push(money(qty, sym)); });
+  return parts.length ? '合計 ' + parts.join(' · ') : '';
 }
 
 function accountItem(a) {

@@ -166,6 +166,7 @@ test('餘額調整（對帳）：輸入實際餘額，自動算出差額', { ski
   await withApp({}, async (a) => {
     const { page } = a;
     await a.login(); await page.waitForSelector('[data-testid=networth]');
+    const expenseBefore = a.bootstrap().month.expense;
     await a.fab();
     await page.click('.sheet button[data-type="調整"]');
     await page.selectOption('select[aria-label="帳戶"]', { label: '錢包現金' });
@@ -175,7 +176,7 @@ test('餘額調整（對帳）：輸入實際餘額，自動算出差額', { ski
     await page.waitForSelector('.sheet', { state: 'detached' });
     const boot = a.bootstrap();
     assert.equal(boot.balances.find((x) => boot.accounts.find((ac) => ac.id === x.accountId).name === '錢包現金').qty, 3000);
-    assert.equal(boot.month.expense, 17105, '調整不算收入或支出');
+    assert.equal(boot.month.expense, expenseBefore, '調整不算收入或支出');
   });
 });
 
@@ -315,6 +316,25 @@ test('本機快取秒開：重新整理時先顯示上次的資料，不用等�
     assert.match(await page.locator('body').innerText(), /更新中…/);
     await page.waitForFunction(() => !/更新中…/.test(document.body.innerText), null, { timeout: 8000 });
     await page.unroute('**/api');
+  });
+});
+
+test('帳戶頁：同一家銀行兩個以上帳戶時，標題顯示各幣別合計（不同幣別不混加）', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page } = a;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('accounts');
+    const head = page.locator('[data-testid=inst-total][data-inst="玉山銀行"]');
+    await head.waitFor();
+    const boot = a.bootstrap();
+    const ids = boot.accounts.filter((x) => x.institution === '玉山銀行' && ['銀行', '數位錢包', '現金'].includes(x.type)).map((x) => x.id);
+    const twd = boot.balances.filter((b) => ids.includes(b.accountId) && b.symbol === 'TWD').reduce((s, b) => s + b.qty, 0);
+    const text = await head.innerText();
+    assert.match(text, /^合計 NT\$/);
+    assert.ok(text.includes('NT$' + twd.toLocaleString('en-US')), text);
+    assert.match(text, /US\$2,500\.00/);
+    // 只有一個帳戶的機構不顯示合計
+    assert.equal(await page.locator('[data-testid=inst-total][data-inst="其他"]').count(), 0);
   });
 });
 
