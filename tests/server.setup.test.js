@@ -106,8 +106,7 @@ test('第一次設定精靈：依序初始化、設 PIN、產生裝置授權碼�
   const devs = b.ctx.FinAuth.listDevices();
   assert.equal(devs.length, 1);
   assert.equal(devs[0].name, '我的手機');
-  assert.equal(b.state.triggers.length, 1);
-  assert.equal(b.state.triggers[0].getHandlerFunction(), 'dailyJob');
+  assert.deepEqual(b.state.triggers.map((t) => t.getHandlerFunction()).sort(), ['afternoonPriceJob', 'dailyJob']);
   const tokenAlert = b.state.ui.log.find((l) => l.kind === 'alert' && l.title.includes('授權碼'));
   assert.match(tokenAlert.msg, /[A-Z2-9]{5}-[A-Z2-9]{5}-[A-Z2-9]{5}-[A-Z2-9]{5}/);
   // 拿畫面上顯示的授權碼實際登入
@@ -130,11 +129,15 @@ test('設定 PIN：太短、全同字元、兩次不一致都會被擋（最多�
   assert.equal(b.ctx.FinAuth.checkPin('135791'), false);
 });
 
-test('每日排程：重複安裝只會留下一個；dailyJob 更新價格', () => {
+test('每日排程：重複安裝只會留下早上、下午各一個；dailyJob 更新價格', () => {
   const b = loadBackend().setup();
   b.ctx.FinSetup.installDailyTrigger();
   b.ctx.FinSetup.installDailyTrigger();
-  assert.equal(b.state.triggers.length, 1);
+  assert.equal(b.state.triggers.length, 2);
+  const byFn = Object.fromEntries(b.state.triggers.map((t) => [t.getHandlerFunction(), t.spec]));
+  assert.equal(byFn.dailyJob.hour, 7);
+  assert.equal(byFn.afternoonPriceJob.hour, 15);
+  assert.equal(b.ctx.FinSetup.status().afternoonTriggers, 1);
   const price = b.ss.sheet('價格');
   price.formulaResults['2,2'] = 32.5; // USD 的現價公式算出 32.5
   price.formulaResults['3,2'] = '#N/A'; // JPY 公式出錯

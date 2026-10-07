@@ -85,11 +85,14 @@ var FinSetup = (function () {
     return report;
   }
 
+  // 每天兩個排程：早上 7 點 dailyJob（價格＋定期交易＋提醒信）、下午 3 點 afternoonPriceJob（只更新價格，收盤後讓上櫃股票也用當天收盤價）
+  var JOB_FUNCTIONS = ['dailyJob', 'afternoonPriceJob'];
   function installDailyTrigger() {
     ScriptApp.getProjectTriggers().forEach(function (t) {
-      if (t.getHandlerFunction() === 'dailyJob') ScriptApp.deleteTrigger(t);
+      if (JOB_FUNCTIONS.indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t);
     });
     ScriptApp.newTrigger('dailyJob').timeBased().everyDays(1).atHour(7).create();
+    ScriptApp.newTrigger('afternoonPriceJob').timeBased().everyDays(1).atHour(15).create();
   }
 
   /** 檢查目前狀態，回傳給選單顯示 */
@@ -97,6 +100,7 @@ var FinSetup = (function () {
     var props = PropertiesService.getScriptProperties();
     var out = { initialized: !!props.getProperty('SHEET_ID'), pin: FinAuth.hasPin(), devices: FinAuth.listDevices(), triggers: 0, problems: [] };
     out.triggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'dailyJob'; }).length;
+    out.afternoonTriggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'afternoonPriceJob'; }).length;
     if (out.initialized) {
       try {
         FinRepo.reset();
@@ -113,10 +117,18 @@ var FinSetup = (function () {
 
 /** 排程工作 */
 var FinJobs = (function () {
-  // 上櫃／興櫃股票 GOOGLEFINANCE 常常抓不到（例如太醫、綠界科技、元太），改用櫃買中心 OpenAPI 的每日收盤價當備援。
-  // 免費、不用金鑰；只有「現價」抓不到值時才會呼叫，而且每次 refreshPrices() 最多呼叫一次。
+  // 上櫃／興櫃股票 GOOGLEFINANCE 常常抓不到（例如太醫、綠界科技、元太），改用櫃買中心的收盤價當備援。免費、不用金鑰。
+  // 兩個來源依序使用：
+  //  1. 櫃買中心網站「上櫃股票每日收盤行情」指定今天日期：收盤後（約 14:30 起）就有當天收盤價；開盤前／假日回傳空清單
+  //  2. 櫃買中心 OpenAPI：最近一個交易日的收盤價，但要到晚上才會換成當天的（所以早上 7 點跑的是前一天收盤）
+  // 只有「現價」抓不到值時才會呼叫，每次 refreshPrices() 每個來源最多呼叫一次。
   // 需要 appsscript.json 的 script.external_request 權限；沒授權或抓取失敗都靜默回傳空物件，退回原本「沿用舊值」的邏輯。
   var TPEX_URL = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes';
+  var TPEX_DAILY_URL = 'https://www.tpex.org.tw/www/zh-tw/afterTrading/otc?type=EW&response=json&date=';
+  function toClose_(v) {
+    var n = Number(String(v === undefined || v === null ? '' : v).replace(/,/g, '').trim());
+    return isFinite(n) && n > 0 ? n : 0;
+  }
   function fetchTpexCloseMap_() {
     var map = {};
     try {
@@ -125,21 +137,51 @@ var FinJobs = (function () {
       var list = JSON.parse(res.getContentText());
       (list || []).forEach(function (it) {
         var code = String(it.SecuritiesCompanyCode || '').trim();
-        var close = Number(String(it.Close === undefined || it.Close === null ? '' : it.Close).replace(/,/g, ''));
-        if (code && isFinite(close) && close > 0) map[code] = close;
+        var close = toClose_(it.Close);
+        if (code && close) map[code] = close;
       });
     } catch (e) {
       try { Logger.log('TPEx 收盤價抓取失敗（沿用舊值）：' + (e && e.message ? e.message : e)); } catch (x) { /* ignore */ }
     }
     return map;
   }
+  /** 櫃買中心網站指定日期（yyyy-MM-dd）的上櫃收盤行情：{ 代號: 收盤價 }；沒成交（收盤顯示 ----）的不列入 */
+  function fetchTpexDailyMap_(date) {
+    var map = {};
+    try {
+      var res = UrlFetchApp.fetch(TPEX_DAILY_URL + encodeURIComponent(String(date).replace(/-/g, '/')), { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) return map;
+      var body = JSON.parse(res.getContentText()) || {};
+      // 回應的日期要跟要求的一樣，避免拿到別天的資料
+      if (body.date && String(body.date) !== String(date).replace(/-/g, '')) return map;
+      (body.tables || []).forEach(function (t) {
+        (t && t.data || []).forEach(function (row) {
+          if (!Array.isArray(row)) return;
+          var code = String(row[0] || '').trim();
+          var close = toClose_(row[2]);
+          if (code && close) map[code] = close;
+        });
+      });
+    } catch (e) {
+      try { Logger.log('TPEx 當日收盤行情抓取失敗：' + (e && e.message ? e.message : e)); } catch (x) { /* ignore */ }
+    }
+    return map;
+  }
 
-  /** 把「現價」公式算出來的有效數字存進「上次有效價」；公式出錯就先查櫃買中心收盤價，再不行就沿用舊值並標記狀態 */
+  /** 把「現價」公式算出來的有效數字存進「上次有效價」；公式出錯就先查櫃買中心收盤價（當天優先），再不行就沿用舊值並標記狀態 */
   function refreshPrices() {
     FinRepo.reset();
-    var now = FinDates.timestamp(FinClock.now());
+    var nowMs = FinClock.now();
+    var now = FinDates.timestamp(nowMs);
+    var today = FinDates.today(nowMs);
     var changed = 0;
-    var tpexMap = null; // 第一次需要時才抓，整個執行只抓一次
+    var dailyMap = null, openMap = null; // 第一次需要時才抓，整個執行每個來源只抓一次
+    function tpexClose(symbol) {
+      if (dailyMap === null) dailyMap = fetchTpexDailyMap_(today);
+      if (dailyMap[symbol] > 0) return dailyMap[symbol];
+      if (openMap === null) openMap = fetchTpexCloseMap_();
+      return openMap[symbol] > 0 ? openMap[symbol] : 0;
+    }
     FinRepo.readTable('prices').rows.forEach(function (r) {
       if (r._bad) return;
       if (r.price > 0) {
@@ -147,8 +189,7 @@ var FinJobs = (function () {
         changed++;
         return;
       }
-      if (tpexMap === null) tpexMap = fetchTpexCloseMap_();
-      var close = tpexMap[String(r.symbol)];
+      var close = tpexClose(String(r.symbol));
       if (close > 0) {
         FinRepo.setCells('prices', r._row, { lastValid: close, updatedAt: now, status: '正常' });
         changed++;
@@ -160,5 +201,5 @@ var FinJobs = (function () {
     });
     return changed;
   }
-  return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_ };
+  return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_ };
 })();

@@ -158,18 +158,41 @@ test('價格：GOOGLEFINANCE 抓不到時，改用櫃買中心 OpenAPI 的收盤
 
   // 1. 尚未授權 external_request：UrlFetchApp 丟例外 → 靜默退回沿用舊值，其他標的照常更新
   b.ctx.FinJobs.refreshPrices();
-  assert.equal(b.state.urlFetch.calls.length, 1, '整個 refreshPrices 只該呼叫一次 TPEx API');
+  assert.equal(b.state.urlFetch.calls.length, 2, '當日行情、OpenAPI 各只呼叫一次');
   let d = b.boot();
   assert.equal(d.prices['4126'].status, '沿用舊值');
   assert.equal(d.prices['4126'].price, 75.1);
   assert.ok(b.state.logs.some((l) => /TPEx 收盤價抓取失敗/.test(l)));
 
-  // 2. 授權後：API 查得到的用收盤價當「正常」，查不到的仍沿用舊值
-  b.state.urlFetch.handler = (url) => { assert.match(url, /tpex\.org\.tw/); return { body: [{ SecuritiesCompanyCode: '4126', Close: '78.30' }, { SecuritiesCompanyCode: '6763', Close: '60' }] }; };
+  // 2. 授權後、開盤前（當日行情是空的）：用 OpenAPI 的收盤價；查不到的仍沿用舊值
+  const today = b.ctx.FinDates.today(b.ctx.FinClock.now());
+  const daily = (rows, date = today) => ({ body: { tables: [{ date: 'x', data: rows }], date: date.replace(/-/g, ''), stat: 'ok' } });
+  let dailyRows = [];
+  b.state.urlFetch.handler = (url) => {
+    assert.match(url, /tpex\.org\.tw/);
+    if (/afterTrading\/otc/.test(url)) { assert.ok(url.includes(encodeURIComponent(today.replace(/-/g, '/'))), url); return daily(dailyRows); }
+    return { body: [{ SecuritiesCompanyCode: '4126', Close: '78.30' }, { SecuritiesCompanyCode: '6763', Close: '60' }] };
+  };
+  b.state.logs.length = 0;
   b.ctx.FinJobs.refreshPrices();
+  assert.deepEqual(b.state.logs.filter((l) => /TPEx/.test(l)), [], '授權後不該有抓取失敗');
   d = b.boot();
   assert.equal(d.prices['4126'].status, '正常');
   assert.equal(d.prices['4126'].price, 78.3);
   assert.equal(d.prices['9999'].status, '沿用舊值');
   assert.equal(d.prices['9999'].price, 10);
+
+  // 3. 下午收盤後：當日行情有資料就用當天收盤價（優先於 OpenAPI 的前一天收盤）；沒成交（----）的退回 OpenAPI
+  dailyRows = [['4126', '太醫', '77.50', '+0.10'], ['9999', '查不到', '----', '---']];
+  b.state.urlFetch.calls.length = 0;
+  b.ctx.FinJobs.refreshPrices();
+  d = b.boot();
+  assert.equal(d.prices['4126'].price, 77.5);
+  assert.equal(d.prices['9999'].status, '沿用舊值');
+  assert.equal(b.state.urlFetch.calls.length, 2, '9999 當日沒成交，才再查 OpenAPI 一次');
+
+  // 4. 當日行情回的是別天的資料（日期不符）→ 不採用
+  b.state.urlFetch.handler = (url) => (/afterTrading\/otc/.test(url) ? daily([['4126', '太醫', '99.00']], '2000-01-01') : { body: [] });
+  b.ctx.FinJobs.refreshPrices();
+  assert.equal(b.boot().prices['4126'].price, 77.5);
 });

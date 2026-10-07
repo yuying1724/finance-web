@@ -29,6 +29,11 @@ function dailyJob() {
   try { FinRecurringJob.runDaily(FinClock.now()); } catch (e) { try { Logger.log('定期排程失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
 }
 
+/** 下午收盤後的價格更新（只更新價格，不跑定期交易、不寄信） */
+function afternoonPriceJob() {
+  FinJobs.refreshPrices();
+}
+
 // ---------- 試算表選單 ----------
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('財務系統')
@@ -116,7 +121,7 @@ function menuSignOutAll() {
 
 function menuInstallTriggers() {
   FinSetup.installDailyTrigger();
-  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信。' +
+  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信；下午 3 點收盤後會再更新一次股價。' +
     '第一次安裝、或第一次寄信時 Google 可能會要求你另外授權（寄信需要的 script.send_mail 權限），請按允許。');
 }
 
@@ -126,7 +131,7 @@ function menuStatus() {
     '已初始化：' + (s.initialized ? '是' : '否'),
     'PIN：' + (s.pin ? '已設定' : '尚未設定'),
     '裝置：' + (s.devices.length ? s.devices.map(function (d) { return d.name; }).join('、') : '無'),
-    '每日排程：' + (s.triggers ? '已安裝' : '尚未安裝'),
+    '每日排程：' + (s.triggers ? '已安裝' : '尚未安裝') + '；下午價格更新：' + (s.afternoonTriggers ? '已安裝' : '尚未安裝（請按「安裝每日排程」）'),
   ];
   lines.push(s.problems.length ? '資料問題（' + s.problems.length + '）：\n' + s.problems.slice(0, 15).join('\n') : '資料檢查：沒有發現問題');
   alert_('目前狀態', lines.join('\n'));
