@@ -150,6 +150,11 @@ test('美股股息（現金股息扣預扣稅）與拆股/併股（股數調整�
 
   assert.equal(h2.dividends.length, 1);
   assert.ok(Math.abs(h2.dividends[0].net - 2.52) < 1e-6);
+
+  // 用股數調整把剩下的股數全部扣掉（例如已賣出的舊部位、沒記賣出金額）：0 股的部位不再列入持倉
+  assert.ok(b.add({ type: '股數調整', date: '2026-05-01', srcAccount: broker1, srcSymbol: 'VOO', srcQty: 2 }).ok);
+  const h3 = b.holdings('2026-05-02');
+  assert.equal(h3.positions.filter((p) => p.symbol === 'VOO').length, 0, '0 股不顯示在持倉');
 });
 
 test('休市日種子資料（2026 真實台灣行事曆）：春節封關 2/11 成交 T+2=2/13；封關期間交易則跳過整個連假到開紅盤後', () => {

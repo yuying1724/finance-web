@@ -4,7 +4,7 @@
  * 買入：qty += 目的數量；costNative += 成交金額+手續費+稅款；costBase += 來源那筆現金換算成基準幣別的金額（來源本來就是 TWD 時直接用，否則用成交當日的歷史價格估算，並標記 estimated）。
  * 賣出：依「賣出股數 / 持有股數」比例扣除兩種成本；已實現損益 = 淨收入(成交金額-手續費-稅款/入帳金額) − 被扣除的成本。
  * 股息：目的標的若與持倉標的相同（配股）→ 只加股數、成本不變；否則是現金股息，只記录收入，不影響持倉成本。
- * 股數調整：只改股數（拆股／併股／標的更名），總成本不變。
+ * 股數調整：只改股數（拆股／併股／標的更名），總成本不變；調整後股數變成 0 的部位不再列入持倉（剩下的成本不計入）。
  */
 var FinHoldings = (function () {
   //#ifnode
@@ -103,7 +103,8 @@ var FinHoldings = (function () {
       }
     });
 
-    var positions = Object.keys(pos).map(function (k) { return pos[k]; }).filter(function (p) { return Math.abs(p.qty) > 1e-9 || Math.abs(p.costNative) > 1e-9; });
+    // 股數已經是 0 的不算持倉（例如用「股數調整」把已賣出的舊部位扣掉、沒有記賣出金額時，會留下 0 股但還有成本的部位），不顯示在持倉清單
+    var positions = Object.keys(pos).map(function (k) { return pos[k]; }).filter(function (p) { return Math.abs(p.qty) > 1e-9; });
     positions.sort(function (a, b) { return a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : (a.symbol < b.symbol ? -1 : 1); });
     return { positions: positions, realized: realized, dividends: dividends, issues: issues };
   }
