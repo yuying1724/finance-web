@@ -3,7 +3,8 @@ import { icon } from '../icons.js';
 import { state, instrumentBySymbol, accountById } from '../store.js';
 import * as api from '../api.js';
 import { money, amountClass } from '../fmt.js';
-import { openSheet, errorText } from '../ui.js';
+import { openSheet, errorText, toast } from '../ui.js';
+import { refreshInBackground } from '../data.js';
 
 const S = { seq: 0 };
 
@@ -81,7 +82,17 @@ function dividendRow(dv) {
 /** 只畫「持倉」分頁的內容（不含頁首與分頁切換，那些由 invest.js 統一處理） */
 export function renderHoldingsBody(root) {
   const listBox = h('div', { class: 'card' });
-  mount(root, listBox);
+  // 手動更新價格：不用等早上 7 點／傍晚 6 點的排程
+  const btn = h('button', { class: 'btn btn-sm', 'data-testid': 'refresh-prices', onclick: async () => {
+    btn.disabled = true; btn.textContent = '更新中…';
+    try {
+      const r = await api.call('refreshPrices', {}, { timeoutMs: 90000 });
+      if (r.skipped) toast(`剛更新過，請 ${r.waitSeconds} 秒後再試`);
+      else { toast(`價格已更新（${r.changed} 檔）`); refreshInBackground(); renderHoldingsBody(root); return; }
+    } catch (e) { toast(errorText(e), { kind: 'bad' }); }
+    btn.disabled = false; btn.textContent = '更新價格';
+  } }, '更新價格');
+  mount(root, h('div', { style: { display: 'flex', justifyContent: 'flex-end', margin: '0 0 8px' } }, btn), listBox);
   mount(listBox, h('div', { class: 'empty' }, '載入中…'));
 
   const my = ++S.seq;

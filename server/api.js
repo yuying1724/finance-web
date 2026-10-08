@@ -1368,6 +1368,20 @@ var FinApi = (function () {
     },
   };
 
+  // 手動更新價格（投資頁「更新價格」按鈕）：跟排程一樣讀試算表的 GOOGLEFINANCE 現價、上櫃股票查櫃買中心收盤價。
+  // 1 分鐘內只能按一次，避免連按一直打外部 API。
+  H.refreshPrices = {
+    fn: function (p, env) {
+      var nowMs = env.now;
+      var last = Number(cacheGet('refreshPrices:last') || 0);
+      if (last && nowMs - last < 60000) return { skipped: true, waitSeconds: Math.ceil((60000 - (nowMs - last)) / 1000) };
+      var changed = FinRepo.withLock(function () { return FinJobs.refreshPrices(); });
+      cachePut('refreshPrices:last', String(nowMs), 300);
+      FinRepo.audit('更新價格', 'prices', '', '手動更新價格（' + changed + ' 檔）', env.device);
+      return { changed: changed, at: FinDates.timestamp(nowMs) };
+    },
+  };
+
   H.changePin = {
     fn: function (p, env) {
       if (!FinAuth.checkPin(p.oldPin)) throw FinFail('AUTH_FAILED', '目前的 PIN 不正確');

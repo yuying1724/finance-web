@@ -338,6 +338,19 @@ test('帳戶頁：同一家銀行兩個以上帳戶時，標題顯示各幣別�
   });
 });
 
+test('投資頁：按「更新價格」會立即更新價格並提示；1 分鐘內再按會提示稍後再試', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page } = a;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('invest');
+    await page.click('[data-testid=refresh-prices]');
+    await page.waitForFunction(() => /價格已更新（\d+ 檔）/.test(document.body.innerText));
+    await page.waitForSelector('[data-testid=refresh-prices]:not([disabled])');
+    await page.click('[data-testid=refresh-prices]');
+    await page.waitForFunction(() => /剛更新過，請 \d+ 秒後再試/.test(document.body.innerText));
+  });
+});
+
 test('信用卡總覽：帳戶頁依類型分區可收合；同銀行合併帳單只顯示一列；總覽頁看待繳與繳款日；一鍵記繳款', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page, s } = a;

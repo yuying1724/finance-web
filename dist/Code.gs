@@ -140,7 +140,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.5',
+    APP_VERSION: '0.9.6',
   };
   return api;
 })();
@@ -3625,6 +3625,20 @@ var FinApi = (function () {
         v.netPl = v.missing ? null : v.totalBase - sc.total;
       });
       return { asOf: asOf, positions: valued, realized: h.realized, dividends: h.dividends, issues: h.issues };
+    },
+  };
+
+  // 手動更新價格（投資頁「更新價格」按鈕）：跟排程一樣讀試算表的 GOOGLEFINANCE 現價、上櫃股票查櫃買中心收盤價。
+  // 1 分鐘內只能按一次，避免連按一直打外部 API。
+  H.refreshPrices = {
+    fn: function (p, env) {
+      var nowMs = env.now;
+      var last = Number(cacheGet('refreshPrices:last') || 0);
+      if (last && nowMs - last < 60000) return { skipped: true, waitSeconds: Math.ceil((60000 - (nowMs - last)) / 1000) };
+      var changed = FinRepo.withLock(function () { return FinJobs.refreshPrices(); });
+      cachePut('refreshPrices:last', String(nowMs), 300);
+      FinRepo.audit('更新價格', 'prices', '', '手動更新價格（' + changed + ' 檔）', env.device);
+      return { changed: changed, at: FinDates.timestamp(nowMs) };
     },
   };
 

@@ -196,3 +196,21 @@ test('價格：GOOGLEFINANCE 抓不到時，改用櫃買中心 OpenAPI 的收盤
   b.ctx.FinJobs.refreshPrices();
   assert.equal(b.boot().prices['4126'].price, 77.5);
 });
+
+test('手動更新價格：refreshPrices 會更新「上次有效價」；1 分鐘內再按會被擋下', () => {
+  const b = fresh();
+  const sh = b.ss.sheet('價格');
+  sh.formulaResults = sh.formulaResults || {};
+  sh.formulaResults['2,2'] = 32.1; // USD 的現價公式
+  const r1 = b.call('refreshPrices', {});
+  assert.ok(r1.ok, JSON.stringify(r1));
+  assert.ok(r1.data.changed >= 1);
+  assert.equal(b.boot().prices.USD.price, 32.1);
+  const r2 = b.call('refreshPrices', {});
+  assert.ok(r2.ok);
+  assert.equal(r2.data.skipped, true);
+  assert.ok(r2.data.waitSeconds > 0 && r2.data.waitSeconds <= 60);
+  b.advance(61000);
+  const r3 = b.call('refreshPrices', {});
+  assert.ok(r3.ok && !r3.data.skipped, JSON.stringify(r3));
+});
