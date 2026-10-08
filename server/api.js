@@ -1349,6 +1349,12 @@ var FinApi = (function () {
   };
 
   // ---------- 持倉／投資損益 ----------
+  function roundHalfEven(x) {
+    var f = Math.floor(x), d = x - f;
+    if (Math.abs(d - 0.5) < 1e-9) return f % 2 === 0 ? f : f + 1;
+    return Math.round(x);
+  }
+
   H.getHoldings = {
     fn: function (p, env) {
       var c = loadContext(env.now);
@@ -1362,7 +1368,10 @@ var FinApi = (function () {
       valued.forEach(function (v) {
         var sc = FinHoldings.estimateSellCost(v, c.instruments[v.symbol], c.brokerByAccount[v.accountId], c.base);
         v.sellFee = sc.fee; v.sellTax = sc.tax; v.sellCost = sc.total; v.sellFeeRate = sc.feeRate; v.sellTaxRate = sc.taxRate;
-        v.netPl = v.missing ? null : v.totalBase - sc.total;
+        // 券商 app 的損益取整數用「四捨六入五成雙」（剛好 .5 時取偶數，例如 24,276.5 → 24,276、2,059.5 → 2,060）；
+        // 先四捨五入到分，避免浮點誤差（例如 5747.9999999）
+        var raw = v.missing ? null : Math.round((v.totalBase - sc.total) * 100) / 100;
+        v.netPl = raw === null ? null : (sc.total > 0 ? roundHalfEven(raw) : v.totalBase);
       });
       return { asOf: asOf, positions: valued, realized: h.realized, dividends: h.dividends, issues: h.issues };
     },
