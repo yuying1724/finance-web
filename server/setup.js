@@ -85,14 +85,14 @@ var FinSetup = (function () {
     return report;
   }
 
-  // 每天兩個排程：早上 7 點 dailyJob（價格＋定期交易＋提醒信）、下午 3 點 afternoonPriceJob（只更新價格，收盤後讓上櫃股票也用當天收盤價）
+  // 每天兩個排程：早上 7 點 dailyJob（價格＋定期交易＋提醒信）、傍晚 6 點 afternoonPriceJob（只更新價格；櫃買中心當日收盤行情下午 3 點多還沒出來，所以排在 6 點）
   var JOB_FUNCTIONS = ['dailyJob', 'afternoonPriceJob'];
   function installDailyTrigger() {
     ScriptApp.getProjectTriggers().forEach(function (t) {
       if (JOB_FUNCTIONS.indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t);
     });
     ScriptApp.newTrigger('dailyJob').timeBased().everyDays(1).atHour(7).create();
-    ScriptApp.newTrigger('afternoonPriceJob').timeBased().everyDays(1).atHour(15).create();
+    ScriptApp.newTrigger('afternoonPriceJob').timeBased().everyDays(1).atHour(18).create();
   }
 
   /** 檢查目前狀態，回傳給選單顯示 */

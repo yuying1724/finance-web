@@ -129,14 +129,14 @@ test('設定 PIN：太短、全同字元、兩次不一致都會被擋（最多�
   assert.equal(b.ctx.FinAuth.checkPin('135791'), false);
 });
 
-test('每日排程：重複安裝只會留下早上、下午各一個；dailyJob 更新價格', () => {
+test('每日排程：重複安裝只會留下早上、傍晚各一個；dailyJob 更新價格', () => {
   const b = loadBackend().setup();
   b.ctx.FinSetup.installDailyTrigger();
   b.ctx.FinSetup.installDailyTrigger();
   assert.equal(b.state.triggers.length, 2);
   const byFn = Object.fromEntries(b.state.triggers.map((t) => [t.getHandlerFunction(), t.spec]));
   assert.equal(byFn.dailyJob.hour, 7);
-  assert.equal(byFn.afternoonPriceJob.hour, 15);
+  assert.equal(byFn.afternoonPriceJob.hour, 18);
   assert.equal(b.ctx.FinSetup.status().afternoonTriggers, 1);
   const price = b.ss.sheet('價格');
   price.formulaResults['2,2'] = 32.5; // USD 的現價公式算出 32.5

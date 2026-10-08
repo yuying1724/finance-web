@@ -13,6 +13,7 @@ test('預估賣出費用：跟券商 app 的損益一致（手續費 0.1425%、�
     { inst: etf, mv: 114.95 * 215, cost: 18907, broker: 5748 }, // 0050
     { inst: stock, mv: 1965 * 9, cost: 15799, broker: 1808 }, // 台達電
     { inst: stock, mv: 144 * 485, cost: 85185, broker: -15653 }, // 元太
+    { inst: etf, mv: 30.56 * 119, cost: 3904, broker: -290 }, // 富邦印度：手續費不足 20 元以 20 元計
   ];
   for (const c of cases) {
     const v = { mvBase: c.mv, totalBase: c.mv - c.cost, missing: false };
@@ -28,8 +29,11 @@ test('預估賣出費用：美股／複委託、缺價格不扣；證券帳戶�
   assert.equal(us.total, 0);
   assert.equal(FinHoldings.estimateSellCost({ mvBase: 1000, missing: false }, etf, { market: '複委託' }, 'TWD').total, 0);
   assert.equal(FinHoldings.estimateSellCost({ missing: true }, stock, TW_BROKER, 'TWD').total, 0);
-  const disc = FinHoldings.estimateSellCost({ mvBase: 100000, missing: false }, stock, { market: '台股', feeRate: 0.001425, feeDiscount: 0.28, taxRateStock: 0.003 }, 'TWD');
+  const disc = FinHoldings.estimateSellCost({ mvBase: 100000, missing: false }, stock, { market: '台股', feeRate: 0.001425, feeDiscount: 0.28, minFee: 1, taxRateStock: 0.003 }, 'TWD');
   assert.deepEqual([disc.fee, disc.tax], [39, 300]);
   // 沒有證券帳戶設定：用預設費率
   assert.equal(FinHoldings.estimateSellCost({ mvBase: 100000, missing: false }, stock, null, 'TWD').total, 142 + 300);
+  // 最低手續費：預設 20 元；證券帳戶設定有填就用設定值
+  assert.equal(FinHoldings.estimateSellCost({ mvBase: 1000, missing: false }, stock, TW_BROKER, 'TWD').fee, 20);
+  assert.equal(FinHoldings.estimateSellCost({ mvBase: 1000, missing: false }, stock, Object.assign({}, TW_BROKER, { minFee: 1 }), 'TWD').fee, 1);
 });

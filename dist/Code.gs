@@ -140,7 +140,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.4',
+    APP_VERSION: '0.9.5',
   };
   return api;
 })();
@@ -932,7 +932,7 @@ var FinHoldings = (function () {
    * 預估「現在全部賣掉」要付的手續費＋證交稅（基準幣別），跟券商 app 的「損益」一樣先扣掉。
    * 只算台股（計價幣別＝基準幣別、類型為台股或 ETF）；複委託／美股券商 app 的損益不扣費用，這裡也回傳 0。
    * 手續費率：證券帳戶設定有填就用「費率 × 折扣」，沒填（0）用法定上限 0.1425%（券商 app 預估損益也是用這個）。
-   * 證交稅：股票 0.3%、ETF 0.1%（證券帳戶設定有填就用設定值）。各自無條件捨去到整數元。
+   * 證交稅：股票 0.3%、ETF 0.1%（證券帳戶設定有填就用設定值）。各自無條件捨去到整數元；手續費最低 20 元。
    */
   function estimateSellCost(valued, inst, broker, base) {
     if (!valued || valued.missing || !inst) return { fee: 0, tax: 0, total: 0, feeRate: 0, taxRate: 0 };
@@ -944,7 +944,9 @@ var FinHoldings = (function () {
     var taxRaw = inst.type === 'ETF' ? b.taxRateEtf : b.taxRateStock;
     var taxRate = taxRaw === undefined || taxRaw === null || taxRaw === '' || !isFinite(Number(taxRaw)) ? (inst.type === 'ETF' ? 0.001 : 0.003) : Number(taxRaw);
     var mv = Math.max(0, valued.mvBase || 0);
-    var fee = Math.floor(mv * feeRate + 1e-9), tax = Math.floor(mv * taxRate + 1e-9);
+    // 手續費有最低收費（券商 app 預估也用 20 元；證券帳戶設定的「最低手續費」有填就用設定值）
+    var minFee = Number(b.minFee) > 0 ? Number(b.minFee) : 20;
+    var fee = mv > 0 ? Math.max(Math.floor(mv * feeRate + 1e-9), minFee) : 0, tax = Math.floor(mv * taxRate + 1e-9);
     return { fee: fee, tax: tax, total: fee + tax, feeRate: feeRate, taxRate: taxRate };
   }
 
@@ -4012,14 +4014,14 @@ var FinSetup = (function () {
     return report;
   }
 
-  // 每天兩個排程：早上 7 點 dailyJob（價格＋定期交易＋提醒信）、下午 3 點 afternoonPriceJob（只更新價格，收盤後讓上櫃股票也用當天收盤價）
+  // 每天兩個排程：早上 7 點 dailyJob（價格＋定期交易＋提醒信）、傍晚 6 點 afternoonPriceJob（只更新價格；櫃買中心當日收盤行情下午 3 點多還沒出來，所以排在 6 點）
   var JOB_FUNCTIONS = ['dailyJob', 'afternoonPriceJob'];
   function installDailyTrigger() {
     ScriptApp.getProjectTriggers().forEach(function (t) {
       if (JOB_FUNCTIONS.indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t);
     });
     ScriptApp.newTrigger('dailyJob').timeBased().everyDays(1).atHour(7).create();
-    ScriptApp.newTrigger('afternoonPriceJob').timeBased().everyDays(1).atHour(15).create();
+    ScriptApp.newTrigger('afternoonPriceJob').timeBased().everyDays(1).atHour(18).create();
   }
 
   /** 檢查目前狀態，回傳給選單顯示 */
@@ -4255,7 +4257,7 @@ function menuSignOutAll() {
 
 function menuInstallTriggers() {
   FinSetup.installDailyTrigger();
-  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信；下午 3 點收盤後會再更新一次股價。' +
+  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信；傍晚 6 點會再更新一次股價（上櫃股票用當天收盤價）。' +
     '第一次安裝、或第一次寄信時 Google 可能會要求你另外授權（寄信需要的 script.send_mail 權限），請按允許。');
 }
 
@@ -4265,7 +4267,7 @@ function menuStatus() {
     '已初始化：' + (s.initialized ? '是' : '否'),
     'PIN：' + (s.pin ? '已設定' : '尚未設定'),
     '裝置：' + (s.devices.length ? s.devices.map(function (d) { return d.name; }).join('、') : '無'),
-    '每日排程：' + (s.triggers ? '已安裝' : '尚未安裝') + '；下午價格更新：' + (s.afternoonTriggers ? '已安裝' : '尚未安裝（請按「安裝每日排程」）'),
+    '每日排程：' + (s.triggers ? '已安裝' : '尚未安裝') + '；傍晚價格更新：' + (s.afternoonTriggers ? '已安裝' : '尚未安裝（請按「安裝每日排程」）'),
   ];
   lines.push(s.problems.length ? '資料問題（' + s.problems.length + '）：\n' + s.problems.slice(0, 15).join('\n') : '資料檢查：沒有發現問題');
   alert_('目前狀態', lines.join('\n'));
