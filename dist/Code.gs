@@ -19,7 +19,7 @@ var FinSchema = (function () {
     recurMode: ['自動入帳', '提醒確認', '券商定期定額', '手動下單'],
     recurHoliday: ['順延', '提前', '不調整'],
     recurTypes: ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '貸款還款'],
-    priceSources: ['GOOGLEFINANCE', 'CoinGecko', '固定值', '手動'],
+    priceSources: ['GOOGLEFINANCE', 'BitoPro', 'CoinGecko', '固定值', '手動'],
   };
   // 第 1 批已開放的交易類型；其餘類型在後續批次啟用
   var ENABLED_TX_TYPES = ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '股數調整', '退款', '調整'];
@@ -140,7 +140,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.9',
+    APP_VERSION: '0.9.10',
   };
   return api;
 })();
@@ -4124,14 +4124,40 @@ var FinJobs = (function () {
     return map;
   }
 
-  /** 把「現價」公式算出來的有效數字存進「上次有效價」；公式出錯就先查櫃買中心收盤價（當天優先），再不行就沿用舊值並標記狀態 */
+  // 加密貨幣可以改用 BitoPro（幣託）公開報價：跟 BitoPro app 顯示的市值／損益一致。免費、不用金鑰、不用登入。
+  // 標的的「價格來源」選 BitoPro，「行情代碼」填交易對（例如 btc_twd；沒填就用「代號_計價幣別」）。
+  var BITOPRO_URL = 'https://api.bitopro.com/v3/tickers';
+  function fetchBitoProMap_() {
+    var map = {};
+    try {
+      var res = UrlFetchApp.fetch(BITOPRO_URL, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) return map;
+      var body = JSON.parse(res.getContentText()) || {};
+      (body.data || []).forEach(function (it) {
+        var pair = String(it.pair || '').toLowerCase().trim();
+        var price = toClose_(it.lastPrice);
+        if (pair && price) map[pair] = price;
+      });
+    } catch (e) {
+      try { Logger.log('BitoPro 報價抓取失敗（沿用舊值）：' + (e && e.message ? e.message : e)); } catch (x) { /* ignore */ }
+    }
+    return map;
+  }
+  function bitoPair_(inst) {
+    return (String(inst.quoteCode || '').trim() || (inst.symbol + '_' + (inst.quote || 'TWD'))).toLowerCase();
+  }
+
+  /** 把「現價」公式算出來的有效數字存進「上次有效價」；公式出錯就先查櫃買中心收盤價（當天優先），再不行就沿用舊值並標記狀態。
+   *  價格來源是 BitoPro 的標的優先用 BitoPro 報價（抓不到才看公式），其餘照舊。 */
   function refreshPrices() {
     FinRepo.reset();
     var nowMs = FinClock.now();
     var now = FinDates.timestamp(nowMs);
     var today = FinDates.today(nowMs);
     var changed = 0;
-    var dailyMap = null, openMap = null; // 第一次需要時才抓，整個執行每個來源只抓一次
+    var dailyMap = null, openMap = null, bitoMap = null; // 第一次需要時才抓，整個執行每個來源只抓一次
+    var instBySymbol = {};
+    FinRepo.readTable('instruments').rows.forEach(function (i) { if (!i._bad) instBySymbol[String(i.symbol)] = i; });
     function tpexClose(symbol) {
       if (dailyMap === null) dailyMap = fetchTpexDailyMap_(today);
       if (dailyMap[symbol] > 0) return dailyMap[symbol];
@@ -4140,6 +4166,16 @@ var FinJobs = (function () {
     }
     FinRepo.readTable('prices').rows.forEach(function (r) {
       if (r._bad) return;
+      var inst = instBySymbol[String(r.symbol)];
+      if (inst && inst.priceSource === 'BitoPro') {
+        if (bitoMap === null) bitoMap = fetchBitoProMap_();
+        var bp = bitoMap[bitoPair_(inst)];
+        if (bp > 0) {
+          FinRepo.setCells('prices', r._row, { lastValid: bp, updatedAt: now, status: '正常' });
+          changed++;
+          return;
+        }
+      }
       if (r.price > 0) {
         FinRepo.setCells('prices', r._row, { lastValid: r.price, updatedAt: now, status: '正常' });
         changed++;
@@ -4157,7 +4193,7 @@ var FinJobs = (function () {
     });
     return changed;
   }
-  return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_ };
+  return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_, fetchBitoProMap_: fetchBitoProMap_ };
 })();
 
 // ==================== server/main.js ====================

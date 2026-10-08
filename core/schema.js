@@ -13,7 +13,7 @@ var FinSchema = (function () {
     recurMode: ['自動入帳', '提醒確認', '券商定期定額', '手動下單'],
     recurHoliday: ['順延', '提前', '不調整'],
     recurTypes: ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '貸款還款'],
-    priceSources: ['GOOGLEFINANCE', 'CoinGecko', '固定值', '手動'],
+    priceSources: ['GOOGLEFINANCE', 'BitoPro', 'CoinGecko', '固定值', '手動'],
   };
   // 第 1 批已開放的交易類型；其餘類型在後續批次啟用
   var ENABLED_TX_TYPES = ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '股數調整', '退款', '調整'];
@@ -134,7 +134,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.9',
+    APP_VERSION: '0.9.10',
   };
   return api;
 })();

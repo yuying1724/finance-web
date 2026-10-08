@@ -214,3 +214,26 @@ test('手動更新價格：refreshPrices 會更新「上次有效價」；1 分�
   const r3 = b.call('refreshPrices', {});
   assert.ok(r3.ok && !r3.data.skipped, JSON.stringify(r3));
 });
+
+test('價格：價格來源選 BitoPro 的加密貨幣用 BitoPro 公開報價；抓不到才沿用舊值，其他標的不受影響', () => {
+  const b = fresh();
+  const r = b.call('upsertInstrument', { instrument: { symbol: 'BTC', name: '比特幣', type: '加密', quote: 'TWD', decimals: 8, priceSource: 'BitoPro', quoteCode: 'btc_twd' } });
+  assert.ok(r.ok, JSON.stringify(r));
+  let bito = [{ pair: 'btc_twd', lastPrice: '2608273.00000000' }, { pair: 'eth_twd', lastPrice: '90000' }];
+  b.state.urlFetch.handler = (url) => {
+    if (/bitopro/.test(url)) return { body: { data: bito } };
+    return { body: [] };
+  };
+  b.ctx.FinJobs.refreshPrices();
+  let d = b.boot();
+  assert.equal(d.prices.BTC.price, 2608273);
+  assert.equal(d.prices.BTC.status, '正常');
+  assert.equal(b.state.urlFetch.calls.filter((c) => /bitopro/.test(c.url)).length, 1, 'BitoPro 每次更新只呼叫一次');
+  // 抓不到（交易對不在清單）→ 沿用舊值
+  bito = [];
+  b.ctx.FinJobs.refreshPrices();
+  d = b.boot();
+  assert.equal(d.prices.BTC.price, 2608273);
+  assert.equal(d.prices.BTC.status, '沿用舊值');
+  assert.ok(b.call('upsertInstrument', { instrument: { symbol: 'X1', name: '錯誤來源', type: '加密', quote: 'TWD', decimals: 8, priceSource: '亂填' } }).error, '價格來源要在清單內');
+});
