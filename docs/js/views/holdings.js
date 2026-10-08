@@ -8,7 +8,7 @@ import { refreshInBackground } from '../data.js';
 
 const S = { seq: 0 };
 
-function qty(n) { return shares(n); }
+function qty(n, symbol) { return shares(n, { symbol }); }
 function plMoney(n, symbol) { return money(n, symbol, { sign: true, noMask: true }); }
 function plClass(n) { return amountClass(n > 0 ? 'pos' : n < 0 ? 'neg' : 'mute'); }
 // 主要損益：扣掉預估賣出手續費＋證交稅（跟券商 app 一致）；舊版後端沒有 netPl 時退回帳面損益
@@ -36,7 +36,7 @@ function positionDetail(p) {
   const inst = instrumentBySymbol(p.symbol);
   const acct = accountById(p.accountId);
   const quoteSym = p.quote || (inst && inst.quote) || state.data.base;
-  const rows = [['帳戶', acct ? acct.name : p.accountId], ['持有股數', qty(p.qty, p.symbol)],
+  const rows = [['帳戶', acct ? acct.name : p.accountId], [inst && inst.type === '加密' ? '持有數量' : '持有股數', qty(p.qty, p.symbol)],
     ['平均成本', money(p.costNative, quoteSym, { noMask: true }) + (p.estimated ? '（部分估算）' : '')]];
   if (!p.missing) {
     rows.push(['現價', money(p.priceNative, quoteSym, { noMask: true })]);

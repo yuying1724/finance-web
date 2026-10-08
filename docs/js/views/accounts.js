@@ -121,7 +121,7 @@ function openAccountDetail(a) {
     title: a.name,
     body: h('div', null,
       h('div', { class: 'muted small', style: { marginBottom: '8px' } }, `${a.type}${a.institution ? ' · ' + a.institution : ''}${a.note ? ' · ' + a.note : ''}`),
-      holdings.length ? h('ul', { class: 'list' }, holdings.map((b) => { const inst = state.data.instruments.find((i) => i.symbol === b.symbol); const isShare = isShareSymbol(b.symbol); return h('li', null, h('div', { class: 'item' }, h('div', { class: 'grow' }, isShare && inst ? `${b.symbol}　${inst.name}` : b.symbol), h('div', { class: 'amt' }, isShare ? shares(b.qty, { mask: true }) : money(b.qty, b.symbol)))); })) : h('div', { class: 'muted' }, '目前沒有餘額'),
+      holdings.length ? h('ul', { class: 'list' }, holdings.map((b) => { const inst = state.data.instruments.find((i) => i.symbol === b.symbol); const isShare = isShareSymbol(b.symbol); return h('li', null, h('div', { class: 'item' }, h('div', { class: 'grow' }, isShare && inst ? `${b.symbol}　${inst.name}` : b.symbol), h('div', { class: 'amt' }, isShare ? shares(b.qty, { mask: true, symbol: b.symbol }) : money(b.qty, b.symbol)))); })) : h('div', { class: 'muted' }, '目前沒有餘額'),
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
         ...liabilityBtns,
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); location.hash = '#/tx?acct=' + a.id; } }, '看交易'),
