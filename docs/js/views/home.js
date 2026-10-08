@@ -1,7 +1,7 @@
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
 import { prefs, state, notify } from '../store.js';
-import { money, monthLabel, ACCOUNT_ICON, amountClass } from '../fmt.js';
+import { money, monthLabel, ACCOUNT_ICON, amountClass, holdingText, isShareSymbol } from '../fmt.js';
 import { txRow, groupRows } from './transactions.js';
 import { openAccountForm } from './accountform.js';
 import { refresh } from '../data.js';
@@ -93,7 +93,10 @@ export function accountRow(a, d) {
   const holdings = d.balances.filter((b) => b.accountId === a.id);
   const total = d.netWorth.byAccount[a.id] || 0;
   const foreign = holdings.filter((b) => b.symbol !== d.base);
-  const sub = [a.institution && a.institution !== a.name ? a.institution : '', ...foreign.map((b) => money(b.qty, b.symbol))].filter(Boolean).join(' · ');
+  const stocks = foreign.filter((b) => isShareSymbol(b.symbol));
+  const fx = foreign.filter((b) => !isShareSymbol(b.symbol)).map((b) => money(b.qty, b.symbol));
+  const stockParts = stocks.length > 2 ? [`${stocks.length} 檔持股`] : stocks.map((b) => holdingText(b.qty, b.symbol));
+  const sub = [a.institution && a.institution !== a.name ? a.institution : '', ...fx, ...stockParts].filter(Boolean).join(' · ');
   return h('li', null, h('a', { class: 'item', href: '#/tx?acct=' + a.id, style: { textDecoration: 'none', color: 'inherit' } },
     h('div', { class: 'ico' }, icon(ACCOUNT_ICON[a.type] || 'briefcase')),
     h('div', { class: 'grow' }, h('div', { class: 't' }, a.name, a.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')), sub ? h('div', { class: 's' }, sub) : null),

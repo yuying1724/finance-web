@@ -1,7 +1,7 @@
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
 import { state } from '../store.js';
-import { money, ACCOUNT_ICON } from '../fmt.js';
+import { money, ACCOUNT_ICON, holdingText, isShareSymbol, shares } from '../fmt.js';
 import { openSheet, toast } from '../ui.js';
 import { openAccountForm } from './accountform.js';
 import { openTxForm } from './txform.js';
@@ -100,7 +100,11 @@ function accountItem(a) {
   const d = state.data;
   const holdings = d.balances.filter((b) => b.accountId === a.id);
   const total = d.netWorth.byAccount[a.id];
-  const sub = holdings.length ? holdings.map((b) => money(b.qty, b.symbol)).join('　') : '無餘額';
+  // 證券帳戶持股很多時只顯示「N 檔持股」，避免副標題擠成一長串；現金部位照常顯示金額
+  const stockHoldings = holdings.filter((b) => isShareSymbol(b.symbol));
+  const cashParts = holdings.filter((b) => !isShareSymbol(b.symbol)).map((b) => money(b.qty, b.symbol));
+  const stockParts = stockHoldings.length > 2 ? [`${stockHoldings.length} 檔持股`] : stockHoldings.map((b) => holdingText(b.qty, b.symbol));
+  const sub = holdings.length ? cashParts.concat(stockParts).join('　') : '無餘額';
   return h('button', { class: 'item', onclick: () => openAccountDetail(a), 'data-account': a.name },
     h('div', { class: 'ico' }, icon(ACCOUNT_ICON[a.type] || 'briefcase')),
     h('div', { class: 'grow' }, h('div', { class: 't' }, a.name, a.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')), h('div', { class: 's' }, `${a.type} · ${sub}`)),
@@ -117,7 +121,7 @@ function openAccountDetail(a) {
     title: a.name,
     body: h('div', null,
       h('div', { class: 'muted small', style: { marginBottom: '8px' } }, `${a.type}${a.institution ? ' · ' + a.institution : ''}${a.note ? ' · ' + a.note : ''}`),
-      holdings.length ? h('ul', { class: 'list' }, holdings.map((b) => h('li', null, h('div', { class: 'item' }, h('div', { class: 'grow' }, b.symbol), h('div', { class: 'amt' }, money(b.qty, b.symbol)))))) : h('div', { class: 'muted' }, '目前沒有餘額'),
+      holdings.length ? h('ul', { class: 'list' }, holdings.map((b) => { const inst = state.data.instruments.find((i) => i.symbol === b.symbol); const isShare = isShareSymbol(b.symbol); return h('li', null, h('div', { class: 'item' }, h('div', { class: 'grow' }, isShare && inst ? `${b.symbol}　${inst.name}` : b.symbol), h('div', { class: 'amt' }, isShare ? shares(b.qty, { mask: true }) : money(b.qty, b.symbol)))); })) : h('div', { class: 'muted' }, '目前沒有餘額'),
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
         ...liabilityBtns,
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); location.hash = '#/tx?acct=' + a.id; } }, '看交易'),

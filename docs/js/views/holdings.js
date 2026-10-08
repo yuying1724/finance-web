@@ -2,13 +2,13 @@ import { h, mount, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { state, instrumentBySymbol, accountById } from '../store.js';
 import * as api from '../api.js';
-import { money, amountClass } from '../fmt.js';
+import { money, amountClass, shares } from '../fmt.js';
 import { openSheet, errorText, toast } from '../ui.js';
 import { refreshInBackground } from '../data.js';
 
 const S = { seq: 0 };
 
-function qty(n, symbol) { return money(n, symbol, { plain: true, noMask: true }) + ' ' + symbol; }
+function qty(n) { return shares(n); }
 function plMoney(n, symbol) { return money(n, symbol, { sign: true, noMask: true }); }
 function plClass(n) { return amountClass(n > 0 ? 'pos' : n < 0 ? 'neg' : 'mute'); }
 // 主要損益：扣掉預估賣出手續費＋證交稅（跟券商 app 一致）；舊版後端沒有 netPl 時退回帳面損益

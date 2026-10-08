@@ -8,6 +8,22 @@ export function decimalsOf(symbol) {
   return i ? i.decimals : 0;
 }
 
+/** 是否為股票／ETF 等「數量是股數」的標的（不是法幣） */
+export function isShareSymbol(symbol) {
+  const i = instrumentBySymbol(symbol);
+  return !!i && i.type !== '法幣';
+}
+/** 股數顯示：215 股、2.16917 股（整數不顯示小數，零股最多 5 位小數）；opts.mask 為 true 時受隱私遮蔽影響 */
+export function shares(n, opts = {}) {
+  if (opts.mask && prefs.mask) return MASK;
+  if (n === null || n === undefined || n === '') return '—';
+  return Number(n).toLocaleString('en-US', { maximumFractionDigits: 5 }) + ' 股';
+}
+/** 帳戶餘額的一筆：法幣顯示金額（NT$1,234），股票顯示「代號 股數」（0050 215 股） */
+export function holdingText(qty, symbol) {
+  return isShareSymbol(symbol) ? `${symbol} ${shares(qty, { mask: true })}` : money(qty, symbol);
+}
+
 /** 金額顯示：NT$1,234／US$100.25／0.3 BTC。opts.sign 顯示正負號；opts.plain 不加幣別符號；opts.noMask 不受隱私遮蔽影響 */
 export function money(amount, symbol, opts = {}) {
   if (prefs.mask && !opts.noMask) return MASK;
