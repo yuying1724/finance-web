@@ -140,7 +140,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.3',
+    APP_VERSION: '0.9.4',
   };
   return api;
 })();
@@ -928,7 +928,27 @@ var FinHoldings = (function () {
     });
   }
 
-  return { computeHoldings: computeHoldings, unrealized: unrealized, valuePositions: valuePositions, HOLDING_TYPES: HOLDING_TYPES };
+  /**
+   * 預估「現在全部賣掉」要付的手續費＋證交稅（基準幣別），跟券商 app 的「損益」一樣先扣掉。
+   * 只算台股（計價幣別＝基準幣別、類型為台股或 ETF）；複委託／美股券商 app 的損益不扣費用，這裡也回傳 0。
+   * 手續費率：證券帳戶設定有填就用「費率 × 折扣」，沒填（0）用法定上限 0.1425%（券商 app 預估損益也是用這個）。
+   * 證交稅：股票 0.3%、ETF 0.1%（證券帳戶設定有填就用設定值）。各自無條件捨去到整數元。
+   */
+  function estimateSellCost(valued, inst, broker, base) {
+    if (!valued || valued.missing || !inst) return { fee: 0, tax: 0, total: 0, feeRate: 0, taxRate: 0 };
+    var quote = inst.quote || base;
+    if (quote !== base || (inst.type !== '台股' && inst.type !== 'ETF')) return { fee: 0, tax: 0, total: 0, feeRate: 0, taxRate: 0 };
+    if (broker && broker.market === '複委託') return { fee: 0, tax: 0, total: 0, feeRate: 0, taxRate: 0 };
+    var b = broker || {};
+    var feeRate = Number(b.feeRate) > 0 ? Number(b.feeRate) * (Number(b.feeDiscount) > 0 ? Number(b.feeDiscount) : 1) : 0.001425;
+    var taxRaw = inst.type === 'ETF' ? b.taxRateEtf : b.taxRateStock;
+    var taxRate = taxRaw === undefined || taxRaw === null || taxRaw === '' || !isFinite(Number(taxRaw)) ? (inst.type === 'ETF' ? 0.001 : 0.003) : Number(taxRaw);
+    var mv = Math.max(0, valued.mvBase || 0);
+    var fee = Math.floor(mv * feeRate + 1e-9), tax = Math.floor(mv * taxRate + 1e-9);
+    return { fee: fee, tax: tax, total: fee + tax, feeRate: feeRate, taxRate: taxRate };
+  }
+
+  return { computeHoldings: computeHoldings, unrealized: unrealized, valuePositions: valuePositions, estimateSellCost: estimateSellCost, HOLDING_TYPES: HOLDING_TYPES };
 })();
 
 // ==================== core/loan.js ====================
@@ -3596,6 +3616,12 @@ var FinApi = (function () {
       priceHistoryRows.forEach(function (r) { priceHistory[r.date + '|' + r.symbol] = r.close; });
       var h = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: asOf, prices: c.prices, priceHistory: priceHistory });
       var valued = FinHoldings.valuePositions(h.positions, c.instruments, c.prices, c.base);
+      // 跟券商 app 一致：台股損益先扣掉預估賣出手續費＋證交稅（netPl）；totalBase 保留「帳面損益（未扣費用）」
+      valued.forEach(function (v) {
+        var sc = FinHoldings.estimateSellCost(v, c.instruments[v.symbol], c.brokerByAccount[v.accountId], c.base);
+        v.sellFee = sc.fee; v.sellTax = sc.tax; v.sellCost = sc.total; v.sellFeeRate = sc.feeRate; v.sellTaxRate = sc.taxRate;
+        v.netPl = v.missing ? null : v.totalBase - sc.total;
+      });
       return { asOf: asOf, positions: valued, realized: h.realized, dividends: h.dividends, issues: h.issues };
     },
   };

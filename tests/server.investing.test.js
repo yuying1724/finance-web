@@ -170,3 +170,35 @@ test('休市日種子資料（2026 真實台灣行事曆）：春節封關 2/11 
   // 美股休市日也已種入（2026 元旦）
   assert.ok(boot.holidays.some((r) => r.market === '美國' && r.date === '2026-01-01'));
 });
+
+test('持倉損益：台股回傳扣掉預估賣出手續費＋證交稅的 netPl（跟券商 app 一致），複委託不扣', () => {
+  const b = fresh();
+  const bank = b.acct('銀行', '銀行');
+  const tw = b.acct('元大證券', '證券');
+  const us = b.acct('元大複委託', '證券');
+  b.inst({ symbol: '0050', name: '元大台灣50', type: 'ETF', quote: 'TWD', decimals: 0 });
+  b.inst({ symbol: '2548', name: '華固', type: '台股', quote: 'TWD', decimals: 0 });
+  b.inst({ symbol: 'VOO', name: 'Vanguard S&P 500', type: 'ETF', quote: 'USD', decimals: 5 });
+  b.broker({ accountId: tw, market: '台股', calendar: '台灣', settleAccountId: bank });
+  b.broker({ accountId: us, market: '複委託', calendar: '台灣+美國', settleAccountId: bank });
+  assert.ok(b.add({ type: '調整', date: '2026-03-01', dstAccount: bank, dstSymbol: 'TWD', dstQty: 1000000 }).ok);
+  assert.ok(b.add({ type: '買入', date: '2026-03-02', settleDate: '2026-03-02', srcAccount: bank, srcSymbol: 'TWD', srcQty: 18907, dstAccount: tw, dstSymbol: '0050', dstQty: 215, amount: 18907 }).ok);
+  assert.ok(b.add({ type: '買入', date: '2026-03-02', settleDate: '2026-03-02', srcAccount: bank, srcSymbol: 'TWD', srcQty: 232244, dstAccount: tw, dstSymbol: '2548', dstQty: 4000, amount: 232244 }).ok);
+  assert.ok(b.add({ type: '買入', date: '2026-03-02', settleDate: '2026-03-02', srcAccount: bank, srcSymbol: 'TWD', srcQty: 43756, dstAccount: us, dstSymbol: 'VOO', dstQty: 2.15468, amount: 1373.38 }).ok);
+  const sh = b.ss.sheet('價格');
+  const header = sh.dump()[0];
+  const col = (name) => header.indexOf(name) + 1;
+  const rowOf = (sym) => sh.dump().findIndex((r) => r[col('標的代號') - 1] === sym) + 1;
+  sh.poke(rowOf('0050'), col('上次有效價'), 114.95);
+  sh.poke(rowOf('2548'), col('上次有效價'), 91.8);
+  sh.poke(rowOf('VOO'), col('上次有效價'), 714.34);
+  sh.poke(rowOf('USD'), col('上次有效價'), 31.86);
+  const h = b.holdings();
+  const p = (sym) => h.positions.find((x) => x.symbol === sym);
+  assert.equal(Math.round(p('0050').netPl), 5748, '0050 跟券商 app 一樣');
+  assert.equal(Math.round(p('2548').netPl), 133332, '華固跟券商 app 一樣');
+  assert.equal(p('2548').sellCost, 1624);
+  assert.ok(Math.abs(p('2548').totalBase - 134956) < 1e-6, 'totalBase 保留帳面損益');
+  assert.equal(p('VOO').sellCost, 0, '複委託不扣');
+  assert.ok(Math.abs(p('VOO').netPl - p('VOO').totalBase) < 1e-9);
+});

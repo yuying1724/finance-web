@@ -1358,6 +1358,12 @@ var FinApi = (function () {
       priceHistoryRows.forEach(function (r) { priceHistory[r.date + '|' + r.symbol] = r.close; });
       var h = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: asOf, prices: c.prices, priceHistory: priceHistory });
       var valued = FinHoldings.valuePositions(h.positions, c.instruments, c.prices, c.base);
+      // 跟券商 app 一致：台股損益先扣掉預估賣出手續費＋證交稅（netPl）；totalBase 保留「帳面損益（未扣費用）」
+      valued.forEach(function (v) {
+        var sc = FinHoldings.estimateSellCost(v, c.instruments[v.symbol], c.brokerByAccount[v.accountId], c.base);
+        v.sellFee = sc.fee; v.sellTax = sc.tax; v.sellCost = sc.total; v.sellFeeRate = sc.feeRate; v.sellTaxRate = sc.taxRate;
+        v.netPl = v.missing ? null : v.totalBase - sc.total;
+      });
       return { asOf: asOf, positions: valued, realized: h.realized, dividends: h.dividends, issues: h.issues };
     },
   };

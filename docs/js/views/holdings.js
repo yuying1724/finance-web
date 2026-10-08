@@ -10,6 +10,9 @@ const S = { seq: 0 };
 function qty(n, symbol) { return money(n, symbol, { plain: true, noMask: true }) + ' ' + symbol; }
 function plMoney(n, symbol) { return money(n, symbol, { sign: true, noMask: true }); }
 function plClass(n) { return amountClass(n > 0 ? 'pos' : n < 0 ? 'neg' : 'mute'); }
+// 主要損益：扣掉預估賣出手續費＋證交稅（跟券商 app 一致）；舊版後端沒有 netPl 時退回帳面損益
+const netOf = (p) => (p.netPl === undefined || p.netPl === null ? p.totalBase : p.netPl);
+const pct = (r) => String(Number((r * 100).toFixed(4))) + '%';
 
 function positionItem(p) {
   const inst = instrumentBySymbol(p.symbol);
@@ -23,7 +26,9 @@ function positionItem(p) {
   }
   return h('button', { class: 'item', onclick: () => openDetail(p) },
     h('div', { class: 'grow' }, h('div', { class: 't' }, title), h('div', { class: 's' }, sub + ` · 市值 ${money(p.mvBase, state.data.base)}`)),
-    h('div', { class: plClass(p.totalBase) }, plMoney(p.totalBase, state.data.base)));
+    h('div', { style: { textAlign: 'right' } },
+      h('div', { class: plClass(netOf(p)), 'data-testid': 'pos-pl' }, plMoney(netOf(p), state.data.base)),
+      p.sellCost > 0 ? h('div', { class: 'muted small', 'data-testid': 'pos-pl-gross' }, '未扣費用 ' + plMoney(p.totalBase, state.data.base)) : null));
 }
 
 function positionDetail(p) {
@@ -35,9 +40,18 @@ function positionDetail(p) {
   if (!p.missing) {
     rows.push(['現價', money(p.priceNative, quoteSym, { noMask: true })]);
     rows.push(['市值', `${money(p.mvNative, quoteSym, { noMask: true })}　≈ ${money(p.mvBase, state.data.base, { noMask: true })}`]);
-    rows.push(['損益（股價）', plMoney(p.pricePl, state.data.base)]);
-    if (quoteSym !== state.data.base) rows.push(['損益（匯率）', plMoney(p.fxPl, state.data.base)]);
-    rows.push(['總損益', plMoney(p.totalBase, state.data.base)]);
+    // 台幣計價的標的「股價損益」就等於帳面損益，不重複列
+    if (quoteSym !== state.data.base) {
+      rows.push(['損益（股價）', plMoney(p.pricePl, state.data.base)]);
+      rows.push(['損益（匯率）', plMoney(p.fxPl, state.data.base)]);
+    }
+    if (p.sellCost > 0) {
+      rows.push(['帳面損益（未扣費用）', plMoney(p.totalBase, state.data.base)]);
+      rows.push(['預估賣出費用', `${money(-p.sellCost, state.data.base, { sign: true, noMask: true })}（手續費 ${pct(p.sellFeeRate)} ${money(p.sellFee, state.data.base, { noMask: true })}＋證交稅 ${pct(p.sellTaxRate)} ${money(p.sellTax, state.data.base, { noMask: true })}）`]);
+      rows.push(['損益（扣除賣出費用）', plMoney(netOf(p), state.data.base)]);
+    } else {
+      rows.push(['總損益', plMoney(p.totalBase, state.data.base)]);
+    }
   } else {
     rows.push(['市值', '缺價格，無法估算']);
   }
@@ -78,10 +92,14 @@ export function renderHoldingsBody(root) {
       listBox.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, icon('graphUp')), '目前沒有投資部位。用右下角「＋」記一筆「買入」開始。'));
     } else {
       const totalBase = res.positions.reduce((s, p) => s + (p.missing ? 0 : p.totalBase), 0);
+      const netTotal = res.positions.reduce((s, p) => s + (p.missing ? 0 : netOf(p)), 0);
       const mvBase = res.positions.reduce((s, p) => s + (p.missing ? 0 : p.mvBase), 0);
+      const hasCost = res.positions.some((p) => p.sellCost > 0);
       listBox.appendChild(h('div', { class: 'stats' },
         h('div', { class: 'stat' }, h('div', { class: 'k' }, '總市值'), h('div', { class: 'v' }, money(mvBase, state.data.base))),
-        h('div', { class: 'stat' }, h('div', { class: 'k' }, '未實現損益'), h('div', { class: 'v ' + (totalBase >= 0 ? 'amt-pos' : 'amt-neg') }, plMoney(totalBase, state.data.base)))));
+        h('div', { class: 'stat' }, h('div', { class: 'k' }, '未實現損益'), h('div', { class: 'v ' + (netTotal >= 0 ? 'amt-pos' : 'amt-neg'), 'data-testid': 'pl-total' }, plMoney(netTotal, state.data.base)),
+          hasCost ? h('div', { class: 'muted small' }, '未扣賣出費用 ' + plMoney(totalBase, state.data.base)) : null)));
+      if (hasCost) listBox.appendChild(h('p', { class: 'muted small', style: { margin: '4px 2px 0' } }, '台股損益已先扣掉預估賣出手續費 0.1425% 與證交稅（股票 0.3%、ETF 0.1%），跟券商 app 一致；美股（複委託）不扣。'));
       listBox.appendChild(h('div', { class: 'day-head' }, h('span', null, '持倉')));
       listBox.appendChild(h('ul', { class: 'list' }, res.positions.map((p) => h('li', null, positionItem(p)))));
     }
