@@ -140,7 +140,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.8',
+    APP_VERSION: '0.9.9',
   };
   return api;
 })();
@@ -3619,7 +3619,11 @@ var FinApi = (function () {
     fn: function (p, env) {
       var c = loadContext(env.now);
       var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
-      var priceHistoryRows = FinRepo.goodRows('priceHistory');
+      // 價格歷史只在「用外幣現金買賣」時才需要（估算台幣成本）；都用台幣交割就不讀，少讀一張分頁
+      var needHistory = c.txRows.some(function (t) {
+        return (t.type === '買入' && t.srcSymbol && t.srcSymbol !== c.base) || (t.type === '賣出' && t.dstSymbol && t.dstSymbol !== c.base);
+      });
+      var priceHistoryRows = needHistory ? FinRepo.goodRows('priceHistory') : [];
       var priceHistory = {};
       priceHistoryRows.forEach(function (r) { priceHistory[r.date + '|' + r.symbol] = r.close; });
       var h = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: asOf, prices: c.prices, priceHistory: priceHistory });

@@ -351,6 +351,31 @@ test('投資頁：按「更新價格」會立即更新價格並提示；1 分鐘
   });
 });
 
+test('投資頁持倉：第二次進來先顯示上次的結果（不再「載入中…」），背景更新；重新整理後也用快取', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page } = a;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('invest');
+    await page.waitForFunction(() => !/載入中…/.test(document.querySelector('main').innerText));
+    let calls = 0;
+    await page.route('**/api', async (route) => {
+      const body = JSON.parse(route.request().postData() || '{}');
+      if (body.action === 'getHoldings') { calls++; await new Promise((r) => setTimeout(r, 1500)); }
+      await route.continue();
+    });
+    await a.tab('home'); await a.tab('invest');
+    assert.doesNotMatch(await page.locator('main').innerText(), /載入中…/, '有快取時直接顯示');
+    await page.waitForTimeout(300);
+    assert.equal(calls, 0, '資料沒變、5 分鐘內不重抓');
+    await page.reload(); // 網址還在 #/invest：有快取的話不用等後端（後端被故意延遲 1.5 秒）就會畫出持倉
+    await page.waitForFunction(() => /目前沒有投資部位|未實現損益/.test(document.querySelector('main') ? document.querySelector('main').innerText : ''), null, { timeout: 8000 });
+    assert.equal(await page.locator('[data-testid=holdings-status]').innerText(), '更新中…', '先畫快取，背景才在抓新資料');
+    await page.waitForFunction(() => !/更新中…/.test(document.querySelector('main').innerText), null, { timeout: 10000 });
+    assert.ok(calls >= 1 && calls <= 2, `背景更新次數 ${calls}`);
+    await page.unroute('**/api');
+  });
+});
+
 test('信用卡總覽：帳戶頁依類型分區可收合；同銀行合併帳單只顯示一列；總覽頁看待繳與繳款日；一鍵記繳款', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page, s } = a;

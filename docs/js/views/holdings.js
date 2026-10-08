@@ -1,6 +1,6 @@
 import { h, mount, clear } from '../dom.js';
 import { icon } from '../icons.js';
-import { state, instrumentBySymbol, accountById } from '../store.js';
+import { state, prefs, instrumentBySymbol, accountById } from '../store.js';
 import * as api from '../api.js';
 import { money, amountClass, shares } from '../fmt.js';
 import { openSheet, errorText, toast } from '../ui.js';
@@ -79,51 +79,96 @@ function dividendRow(dv) {
     h('div', { class: amountClass('pos') }, '+' + money(dv.net, dv.symbol, { noMask: true }))));
 }
 
+// ---------- 持倉資料快取（開頁先畫上次的結果，背景再更新；避免每次重畫都重新等後端） ----------
+// 記憶體快取＋ localStorage（fin.holdings，綁定裝置身分，換授權碼就不沿用）。
+// 首頁資料重新整理過（state.loadedAt 變了，例如剛記一筆交易）或超過 5 分鐘才重新抓；同時間只會有一個請求。
+const HCACHE_KEY = 'fin.holdings';
+const STALE_MS = 5 * 60 * 1000;
+const C = { res: null, stamp: null, at: 0, inflight: null };
+function deviceId() { const s = prefs.session; return s && s.session ? String(s.session).split('.')[0] : ''; }
+function dataStamp() { return state.loadedAt ? new Date(state.loadedAt).getTime() : 0; }
+function loadHoldingsCache() {
+  if (C.res) return;
+  try {
+    const c = JSON.parse(localStorage.getItem(HCACHE_KEY) || 'null');
+    if (c && c.device === deviceId() && c.res && Array.isArray(c.res.positions)) { C.res = c.res; C.at = c.at || 0; C.stamp = null; }
+  } catch (e) { /* 忽略 */ }
+}
+function saveHoldingsCache() {
+  try { localStorage.setItem(HCACHE_KEY, JSON.stringify({ device: deviceId(), at: C.at, res: C.res })); } catch (e) { /* 空間不足就算了 */ }
+}
+export function clearHoldingsCache() { C.res = null; C.stamp = null; C.at = 0; try { localStorage.removeItem(HCACHE_KEY); } catch (e) { /* 忽略 */ } }
+function isStale() { return !C.res || C.stamp !== dataStamp() || Date.now() - C.at > STALE_MS; }
+function fetchHoldings() {
+  if (C.inflight) return C.inflight;
+  const stamp = dataStamp();
+  C.inflight = api.call('getHoldings', {}).then((res) => {
+    C.res = res; C.stamp = stamp; C.at = Date.now(); saveHoldingsCache();
+    return res;
+  }).finally(() => { C.inflight = null; });
+  return C.inflight;
+}
+
+function drawHoldings(listBox, res) {
+  clear(listBox);
+  if (!res.positions.length) {
+    listBox.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, icon('graphUp')), '目前沒有投資部位。用右下角「＋」記一筆「買入」開始。'));
+  } else {
+    const totalBase = res.positions.reduce((s, p) => s + (p.missing ? 0 : p.totalBase), 0);
+    const netTotal = res.positions.reduce((s, p) => s + (p.missing ? 0 : netOf(p)), 0);
+    const mvBase = res.positions.reduce((s, p) => s + (p.missing ? 0 : p.mvBase), 0);
+    const hasCost = res.positions.some((p) => p.sellCost > 0);
+    listBox.appendChild(h('div', { class: 'stats' },
+      h('div', { class: 'stat' }, h('div', { class: 'k' }, '總市值'), h('div', { class: 'v' }, money(mvBase, state.data.base))),
+      h('div', { class: 'stat' }, h('div', { class: 'k' }, '未實現損益'), h('div', { class: 'v ' + (netTotal >= 0 ? 'amt-pos' : 'amt-neg'), 'data-testid': 'pl-total' }, plMoney(netTotal, state.data.base)),
+        hasCost ? h('div', { class: 'muted small' }, '未扣賣出費用 ' + plMoney(totalBase, state.data.base)) : null)));
+    if (hasCost) listBox.appendChild(h('p', { class: 'muted small', style: { margin: '4px 2px 0' } }, '台股損益已先扣掉預估賣出手續費 0.1425% 與證交稅（股票 0.3%、ETF 0.1%），跟券商 app 一致；美股（複委託）不扣。'));
+    listBox.appendChild(h('div', { class: 'day-head' }, h('span', null, '持倉')));
+    listBox.appendChild(h('ul', { class: 'list' }, res.positions.map((p) => h('li', null, positionItem(p)))));
+  }
+  if (res.realized.length) {
+    listBox.appendChild(h('div', { class: 'day-head', style: { marginTop: '14px' } }, h('span', null, '已實現損益（最近）')));
+    listBox.appendChild(h('ul', { class: 'list' }, res.realized.slice().reverse().slice(0, 20).map((r) => realizedRow(r))));
+  }
+  if (res.dividends.length) {
+    listBox.appendChild(h('div', { class: 'day-head', style: { marginTop: '14px' } }, h('span', null, '股息（最近）')));
+    listBox.appendChild(h('ul', { class: 'list' }, res.dividends.slice().reverse().slice(0, 20).map((dv) => dividendRow(dv))));
+  }
+  if (res.issues.length) {
+    listBox.appendChild(h('div', { class: 'notice bad', style: { marginTop: '14px' } }, res.issues.map((i) => i.message).join('；')));
+  }
+}
+
 /** 只畫「持倉」分頁的內容（不含頁首與分頁切換，那些由 invest.js 統一處理） */
 export function renderHoldingsBody(root) {
   const listBox = h('div', { class: 'card' });
+  const status = h('span', { class: 'muted small', 'data-testid': 'holdings-status' });
   // 手動更新價格：不用等早上 7 點／傍晚 6 點的排程
   const btn = h('button', { class: 'btn btn-sm', 'data-testid': 'refresh-prices', onclick: async () => {
     btn.disabled = true; btn.textContent = '更新中…';
     try {
       const r = await api.call('refreshPrices', {}, { timeoutMs: 90000 });
       if (r.skipped) toast(`剛更新過，請 ${r.waitSeconds} 秒後再試`);
-      else { toast(`價格已更新（${r.changed} 檔）`); refreshInBackground(); renderHoldingsBody(root); return; }
+      else { toast(`價格已更新（${r.changed} 檔）`); C.at = 0; refreshInBackground(); renderHoldingsBody(root); return; }
     } catch (e) { toast(errorText(e), { kind: 'bad' }); }
     btn.disabled = false; btn.textContent = '更新價格';
   } }, '更新價格');
-  mount(root, h('div', { style: { display: 'flex', justifyContent: 'flex-end', margin: '0 0 8px' } }, btn), listBox);
-  mount(listBox, h('div', { class: 'empty' }, '載入中…'));
+  mount(root, h('div', { style: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '10px', margin: '0 0 8px' } }, status, btn), listBox);
 
   const my = ++S.seq;
-  api.call('getHoldings', {}).then((res) => {
+  loadHoldingsCache();
+  if (C.res) drawHoldings(listBox, C.res);
+  else mount(listBox, h('div', { class: 'empty' }, '載入中…'));
+  if (!isStale()) return;
+  if (C.res) status.textContent = '更新中…';
+  fetchHoldings().then((res) => {
     if (my !== S.seq) return;
-    clear(listBox);
-    if (!res.positions.length) {
-      listBox.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, icon('graphUp')), '目前沒有投資部位。用右下角「＋」記一筆「買入」開始。'));
-    } else {
-      const totalBase = res.positions.reduce((s, p) => s + (p.missing ? 0 : p.totalBase), 0);
-      const netTotal = res.positions.reduce((s, p) => s + (p.missing ? 0 : netOf(p)), 0);
-      const mvBase = res.positions.reduce((s, p) => s + (p.missing ? 0 : p.mvBase), 0);
-      const hasCost = res.positions.some((p) => p.sellCost > 0);
-      listBox.appendChild(h('div', { class: 'stats' },
-        h('div', { class: 'stat' }, h('div', { class: 'k' }, '總市值'), h('div', { class: 'v' }, money(mvBase, state.data.base))),
-        h('div', { class: 'stat' }, h('div', { class: 'k' }, '未實現損益'), h('div', { class: 'v ' + (netTotal >= 0 ? 'amt-pos' : 'amt-neg'), 'data-testid': 'pl-total' }, plMoney(netTotal, state.data.base)),
-          hasCost ? h('div', { class: 'muted small' }, '未扣賣出費用 ' + plMoney(totalBase, state.data.base)) : null)));
-      if (hasCost) listBox.appendChild(h('p', { class: 'muted small', style: { margin: '4px 2px 0' } }, '台股損益已先扣掉預估賣出手續費 0.1425% 與證交稅（股票 0.3%、ETF 0.1%），跟券商 app 一致；美股（複委託）不扣。'));
-      listBox.appendChild(h('div', { class: 'day-head' }, h('span', null, '持倉')));
-      listBox.appendChild(h('ul', { class: 'list' }, res.positions.map((p) => h('li', null, positionItem(p)))));
-    }
-    if (res.realized.length) {
-      listBox.appendChild(h('div', { class: 'day-head', style: { marginTop: '14px' } }, h('span', null, '已實現損益（最近）')));
-      listBox.appendChild(h('ul', { class: 'list' }, res.realized.slice().reverse().slice(0, 20).map((r) => realizedRow(r))));
-    }
-    if (res.dividends.length) {
-      listBox.appendChild(h('div', { class: 'day-head', style: { marginTop: '14px' } }, h('span', null, '股息（最近）')));
-      listBox.appendChild(h('ul', { class: 'list' }, res.dividends.slice().reverse().slice(0, 20).map((dv) => dividendRow(dv))));
-    }
-    if (res.issues.length) {
-      listBox.appendChild(h('div', { class: 'notice bad', style: { marginTop: '14px' } }, res.issues.map((i) => i.message).join('；')));
-    }
-  }).catch((e) => { if (my !== S.seq) return; mount(listBox, h('div', { class: 'notice bad' }, errorText(e))); });
+    status.textContent = '';
+    drawHoldings(listBox, res);
+  }).catch((e) => {
+    if (my !== S.seq) return;
+    status.textContent = '';
+    if (C.res) toast('持倉更新失敗：' + errorText(e), { kind: 'bad' });
+    else mount(listBox, h('div', { class: 'notice bad' }, errorText(e)));
+  });
 }
