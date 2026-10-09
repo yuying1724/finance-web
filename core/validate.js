@@ -53,7 +53,11 @@ var FinValidate = (function () {
       if (y < 2000 || y > 2100) err('date', '日期超出合理範圍');
       else if (ctx.today && t.date > ctx.today) warnings.push('這筆交易的日期在未來，今天之前不會計入餘額');
     }
-    if (t.settleDate && !FinDates.isValid(t.settleDate)) err('settleDate', '交割日格式不正確');
+    var isCardType = t.type === '支出' || t.type === '退款';
+    if (t.settleDate && !FinDates.isValid(t.settleDate)) err('settleDate', (isCardType ? '入帳日' : '交割日') + '格式不正確');
+    // 支出／退款的 settleDate 是信用卡「入帳日」（銀行請款入帳那天，決定列入哪一期帳單），不能早於消費日
+    else if (isCardType && t.settleDate && FinDates.isValid(t.date) && t.settleDate < t.date) err('settleDate', '入帳日不能早於消費日');
+    else if (isCardType && t.settleDate === t.date) t.settleDate = ''; // 跟消費日同一天就不用另外記
     if (t.note.length > MAX_NOTE) err('note', '備註過長（上限 ' + MAX_NOTE + ' 字）');
     // ---- 原幣金額（選填）：台幣帳戶刷外幣時保留原幣，兩個欄位要一起填 ----
     if (t.fxSymbol || t.fxQty !== null) {

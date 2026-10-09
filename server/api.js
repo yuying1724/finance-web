@@ -232,6 +232,7 @@ var FinApi = (function () {
         var s = FinCreditCard.summary(c.txRows, first.id, symbol, decimals, g.settings, asOf, ids.length > 1 ? ids : null, sched);
         item.installmentRemaining = s.installmentRemaining; item.installmentCount = s.installmentCount;
         item.statementAmountDue = s.statementAmountDue; item.dueDate = s.dueDate; item.overdue = s.overdue;
+        item.dueLikelyNextPeriod = s.dueLikelyNextPeriod; item.nearCloseUnposted = s.nearCloseUnposted;
         item.currentSpend = s.currentSpend; item.currentlyOwed = s.currentlyOwed;
         item.limit = s.limit; item.availableCredit = s.availableCredit;
         item.currentPeriod = s.currentPeriod; item.lastClosedPeriod = s.lastClosedPeriod;
@@ -252,7 +253,7 @@ var FinApi = (function () {
       }
       out.push(item);
     });
-    var rank = function (x) { return !x.hasSettings ? 3 : x.overdue ? 0 : (x.statementAmountDue > 0 ? 1 : 2); };
+    var rank = function (x) { return !x.hasSettings ? 3 : x.overdue ? 0 : (x.statementAmountDue > 0 && !x.dueLikelyNextPeriod ? 1 : 2); };
     out.sort(function (a, b) {
       var ra = rank(a), rb = rank(b);
       if (ra !== rb) return ra - rb;
@@ -261,7 +262,7 @@ var FinApi = (function () {
     });
     var totalDue = 0, nearest = null;
     out.forEach(function (x) {
-      if (x.hasSettings && x.statementAmountDue > 0) {
+      if (x.hasSettings && x.statementAmountDue > 0 && !x.dueLikelyNextPeriod) { // 「可能列入下期」的不算待繳
         totalDue += x.statementAmountDue;
         if (!nearest || x.dueDate < nearest.dueDate) nearest = { name: x.name, dueDate: x.dueDate, dueInDays: x.dueInDays, amount: x.statementAmountDue, symbol: x.symbol };
       }
@@ -301,7 +302,7 @@ var FinApi = (function () {
       });
     });
     (cardOv ? cardOv.items : []).forEach(function (x) {
-      if (!x.hasSettings || !(x.statementAmountDue > 0) || !x.dueDate || x.dueDate > to) return;
+      if (!x.hasSettings || !(x.statementAmountDue > 0) || x.dueLikelyNextPeriod || !x.dueDate || x.dueDate > to) return;
       items.push({ date: x.dueDate, kind: '信用卡', name: x.name + (x.isGroup ? '（合併帳單）' : ''), amount: x.statementAmountDue, symbol: x.symbol, direction: 'out', overdue: x.overdue, cardKey: x.key, accountId: x.accountIds[0] });
     });
     c.loanRows.forEach(function (ls) {

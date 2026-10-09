@@ -79,6 +79,7 @@ export function openTxDetail(t) {
   if (t.dstAccount) rows.push([t.type === '調整' ? '調多' : '轉入／入帳', `${dst ? dst.name : t.dstAccount}　${money(t.dstQty, t.dstSymbol, { noMask: true })}`]);
   if (t.categoryId && t.type !== '調整') rows.push(['分類', categoryInfo(t.categoryId).name]);
   if (t.merchant) rows.push(['商家', t.merchant]);
+  if ((t.type === '支出' || t.type === '退款') && t.settleDate && t.settleDate !== t.date) rows.push(['信用卡入帳日', dateLabel(t.settleDate, state.data.today) + '（帳單依入帳日分期）']);
   if (t.fxSymbol && t.fxQty) rows.push(['原幣金額', money(t.fxQty, t.fxSymbol, { noMask: true })]);
   if (t.tags) rows.push(['標籤', h('span', null, String(t.tags).split(',').map((x) => h('span', { class: 'badge', style: { marginRight: '4px' } }, x)))]);
   if (t.note) rows.push(['備註', t.note]);

@@ -5,6 +5,7 @@ import { money } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
 import { mergeRow, refreshInBackground } from '../data.js';
 import { installmentListBlock } from './installments.js';
+import { nearCloseNotice } from './cards.js';
 
 const LOAN_METHODS = ['本息平均攤還', '本金平均攤還', '只繳息'];
 
@@ -153,6 +154,7 @@ export function openCardStatement(account) {
       h('ul', { class: 'list small' }, s.groupMembers.map((m) => h('li', null, `${m.name}：${money(m.currentSpend, m.symbol)}`)))) : null;
     mount(body,
       s.overdue ? h('div', { class: 'notice bad', style: { marginBottom: '12px' } }, '這期帳單已逾期，請盡快繳款') : null,
+      nearCloseNotice(s),
       h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
       groupBlock,
       installmentListBlock(s.installments),

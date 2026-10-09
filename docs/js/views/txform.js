@@ -44,7 +44,7 @@ function uiField(type, serverField) {
   }
   const map = {
     date: 'date', note: 'note', categoryId: 'cat', relatedTxId: 'related', type: 'type', terms: 'inst', remainderOn: 'inst',
-    merchant: 'merchant', tags: 'tags', fxSymbol: 'fxQty', fxQty: 'fxQty', feeAmount: 'feeAmount',
+    merchant: 'merchant', tags: 'tags', fxSymbol: 'fxQty', fxQty: 'fxQty', feeAmount: 'feeAmount', settleDate: 'postDate',
     srcAccount: 'acct', srcSymbol: 'sym', srcQty: 'amount',
     dstAccount: twoSided ? 'acct2' : 'acct', dstSymbol: twoSided ? (type === '換匯' ? 'sym2' : 'sym') : 'sym', dstQty: twoSided ? 'amount2' : 'amount',
   };
@@ -72,7 +72,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     instAcct: '', instSym: '', instQty: '', cashAcct: '', cashSym: '', cashQty: '', gross: '', fee: '', tax: '',
     settleDate: '', settleTouched: false, relatedSymbol: '', adjSide: 'dst',
     merchant: editing ? (tx.merchant || '') : '', tags: editing ? (tx.tags || '') : '', fxSymbol: editing ? (tx.fxSymbol || '') : '', fxQty: editing && tx.fxQty ? String(tx.fxQty) : '',
-    feeAmount: '', more: false,
+    feeAmount: '', more: false, postDate: editing && (tx.type === '支出' || tx.type === '退款') ? (tx.settleDate || '') : '',
     instOn: false, instTerms: '6', instRemainder: '首期',
   };
 
@@ -189,8 +189,10 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
   // 「更多」：標籤、原幣金額（台幣帳戶刷外幣時保留原幣）
   const tagListId = 'tag-list-' + requestId.slice(0, 8);
   function moreFields(withFx) {
+    const withPost = type === '支出' || type === '退款';
+    if (withPost && f.postDate) f.more = true; // 編輯時已經填過入帳日：直接展開讓人看到
     const box = h('div', { style: { display: f.more ? '' : 'none' } });
-    const toggle = h('button', { type: 'button', class: 'chip', 'data-testid': 'tx-more', onclick: () => { f.more = !f.more; box.style.display = f.more ? '' : 'none'; toggle.textContent = f.more ? '收起' : '更多（標籤' + (withFx ? '、外幣金額' : '') + '）'; } }, f.more ? '收起' : '更多（標籤' + (withFx ? '、外幣金額' : '') + '）');
+    const toggle = h('button', { type: 'button', class: 'chip', 'data-testid': 'tx-more', onclick: () => { f.more = !f.more; box.style.display = f.more ? '' : 'none'; toggle.textContent = f.more ? '收起' : '更多（標籤' + (withFx ? '、外幣金額' : '') + (withPost ? '、入帳日' : '') + '）'; } }, f.more ? '收起' : '更多（標籤' + (withFx ? '、外幣金額' : '') + (withPost ? '、入帳日' : '') + '）');
     const tagInput = h('input', { type: 'text', maxlength: 160, value: f.tags, list: tagListId, placeholder: '用逗號分隔，例如：日本旅遊,公司報帳', 'aria-label': '標籤', oninput: (e) => { f.tags = e.target.value; } });
     box.appendChild(field('tags', '標籤（選填）', tagInput, h('datalist', { id: tagListId }, (d.tagList || []).map((m) => h('option', { value: m })))));
     if (withFx) {
@@ -200,6 +202,12 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
       const fxInput = h('input', { type: 'text', inputmode: 'decimal', value: f.fxQty, placeholder: '例如 12000', 'aria-label': '原幣金額', oninput: (e) => { f.fxQty = e.target.value; } });
       box.appendChild(field('fxQty', '原幣金額（選填，刷外幣時記錄原幣）', h('div', { class: 'two' }, fxInput, fxSel),
         h('div', { class: 'muted small', style: { marginTop: '3px' } }, '上面的「金額」仍填帳戶幣別的實際扣款金額；這裡只是保留當時的外幣金額供查閱')));
+    }
+    if (withPost) {
+      // 信用卡「入帳日」（選填）：銀行請款入帳那天。結帳日前刷、隔幾天才入帳的消費，銀行會列入下一期帳單；填了系統就照入帳日算帳單
+      const postInput = h('input', { type: 'date', value: f.postDate, 'aria-label': '信用卡入帳日', onchange: (e) => { f.postDate = e.target.value; } });
+      box.appendChild(field('postDate', '信用卡入帳日（選填）', postInput,
+        h('div', { class: 'muted small', style: { marginTop: '3px' } }, '銀行帳單上的「入帳日」。只有結帳日前幾天刷的卡才需要填，填了帳單期別就會跟銀行一樣；不是信用卡不用填')));
     }
     return h('div', { style: { margin: '4px 0 12px' } }, toggle, box);
   }
@@ -382,6 +390,11 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
   // ---------- 送出 ----------
   function buildTx() {
     const base = { type, date: f.date, note: f.note.trim(), merchant: f.merchant.trim(), tags: f.tags.trim() };
+    if (type === '支出' || type === '退款') {
+      const isCard = (accountById(f.acct) || {}).type === '信用卡';
+      if (isCard && f.postDate && f.postDate < f.date) return { error: { field: 'postDate', message: '入帳日不能早於消費日' } };
+      base.settleDate = isCard && f.postDate && f.postDate !== f.date ? f.postDate : '';
+    }
     if (f.fxSymbol || String(f.fxQty).trim() !== '') {
       const a = parseAmount(f.fxQty);
       if (!f.fxSymbol) return { error: { field: 'fxQty', message: '請選擇原幣幣別' } };

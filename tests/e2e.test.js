@@ -559,6 +559,65 @@ test('分期付款：記一筆勾選分期 → 淨值扣全額、帳單只算當
   });
 });
 
+test('信用卡入帳日：結帳日前刷、還沒填入帳日 → 顯示「可能列入下期」與提醒；填上入帳日後帳單期別跟銀行一致', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const card = be.call('upsertAccount', { account: { name: 'E2E卡', type: '信用卡', defaultSymbol: 'TWD', institution: 'E2E銀行' } }).data.account.id;
+    const today = be.ctx.FinDates.today(Date.now());
+    const day = (n) => be.ctx.FinDates.addDays(today, n);
+    const dom = (d) => Number(d.slice(8, 10));
+    // 上期結帳日＝15 天前、繳款日＝3 天前（已過繳款日）；結帳日前一天刷了一筆 137，還沒填入帳日
+    assert.ok(be.call('upsertCardSettings', { card: { accountId: card, statementDay: dom(day(-15)), dueDay: dom(day(-3)), limit: 50000 } }).ok);
+    const food = be.call('bootstrap').data.categories.find((c) => c.name === '午餐' && c.type === '支出').id;
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: day(-16), srcAccount: card, srcSymbol: 'TWD', srcQty: 137, categoryId: food, merchant: '結帳前小吃' } }).ok);
+    const item = be.call('getCardOverview', {}).data.items.find((x) => x.name === 'E2E卡');
+    assert.equal(item.statementAmountDue, 137);
+    assert.equal(item.dueLikelyNextPeriod, true);
+    assert.equal(item.overdue, false, '待繳全是結帳日前未入帳的消費：不當成逾期');
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('accounts');
+    await page.click('[data-testid=subtab-cards]');
+    await page.waitForSelector('[data-card-group="E2E卡"]');
+    assert.match(await page.locator('[data-card-group="E2E卡"]').innerText(), /可能列入下期/);
+    await page.click('[data-card-group="E2E卡"]');
+    await page.waitForSelector('[data-testid=near-close-notice]');
+    assert.match(await page.locator('[data-testid=near-close-notice]').innerText(), /還沒填入帳日[\s\S]*不用理會/);
+    await page.click('.sheet [aria-label="關閉"]'); await page.waitForSelector('.sheet', { state: 'detached' });
+
+    // 編輯那筆消費：在「更多」填上入帳日（結帳後 2 天）
+    await a.tab('tx');
+    await page.fill('input[aria-label="搜尋"]', '結帳前小吃');
+    await page.locator('.list').getByText('結帳前小吃').first().click();
+    await page.waitForSelector('.sheet');
+    await page.getByRole('button', { name: '編輯' }).click();
+    await page.waitForSelector('[data-testid=tx-save]');
+    await page.click('[data-testid=tx-more]');
+    assert.match(await page.locator('[data-testid=tx-more]').innerText(), /收起/);
+    await page.fill('input[aria-label="信用卡入帳日"]', day(-13));
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    let tx = null;
+    for (let i = 0; i < 50 && !(tx && tx.settleDate); i++) { await page.waitForTimeout(100); tx = be.call('listTransactions', { filters: { q: '結帳前小吃' } }).data.items[0]; }
+    assert.equal(tx.settleDate, day(-13));
+    const item2 = be.call('getCardOverview', {}).data.items.find((x) => x.name === 'E2E卡');
+    assert.equal(item2.statementAmountDue, 0, '填了入帳日：列入下一期，上期不再有待繳');
+    assert.equal(item2.currentSpend, 137);
+    // 詳情顯示入帳日；入帳日早於消費日會被擋
+    await a.tab('home'); await a.tab('tx');
+    await page.fill('input[aria-label="搜尋"]', '結帳前小吃');
+    await page.locator('.list').getByText('結帳前小吃').first().click();
+    await page.waitForSelector('.sheet');
+    assert.match(await page.locator('.sheet').innerText(), /信用卡入帳日/);
+    await page.getByRole('button', { name: '編輯' }).click();
+    await page.waitForSelector('[data-testid=tx-save]');
+    await page.fill('input[aria-label="信用卡入帳日"]', day(-20));
+    await page.click('[data-testid=tx-save]');
+    await page.waitForFunction(() => /入帳日不能早於消費日/.test(document.body.innerText));
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

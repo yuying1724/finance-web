@@ -112,3 +112,16 @@ test('備註以 = + - @ 開頭時前面補空白，避免在試算表被當成�
     assert.ok(r.tx.note.startsWith(' '));
   });
 });
+
+test('支出的信用卡入帳日（settleDate）：可以晚於消費日、不能早於消費日；跟消費日同一天就不另外記', () => {
+  const base = { type: '支出', date: '2026-03-02', srcAccount: 'A001', srcSymbol: 'TWD', srcQty: 100, categoryId: food };
+  const ok = V.validateTransaction({ ...base, settleDate: '2026-03-05' }, ctx());
+  assert.ok(ok.ok, JSON.stringify(ok.errors));
+  assert.equal(ok.tx.settleDate, '2026-03-05');
+  const early = V.validateTransaction({ ...base, settleDate: '2026-03-01' }, ctx());
+  assert.ok(fields(early).includes('settleDate'));
+  assert.match(early.errors.find((e) => e.field === 'settleDate').message, /入帳日不能早於消費日/);
+  const same = V.validateTransaction({ ...base, settleDate: '2026-03-02' }, ctx());
+  assert.ok(same.ok);
+  assert.equal(same.tx.settleDate, '');
+});

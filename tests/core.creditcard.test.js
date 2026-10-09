@@ -181,3 +181,46 @@ test('expandInstallment：台幣記到角分時，每期仍以整數元分期，
   const s3 = FinCreditCard.expandInstallment({ terms: 3 }, Object.assign({}, t, { srcQty: 1000 }), 12, 2);
   assert.deepEqual(s3.periods.map((p) => p.amount), [333.34, 333.33, 333.33]);
 });
+
+test('入帳日：有填 settleDate 的消費依入帳日分帳單（結帳日前刷、結帳後入帳 → 列入下一期），沒填照舊用消費日', () => {
+  const cs = { statementDay: 12, dueDay: 27, limit: 100000 };
+  const txs = [
+    tx({ id: 'T1', date: '2026-09-05', type: '支出', srcAccount: 'C', srcSymbol: 'TWD', srcQty: 1000 }), // 上期，已繳
+    tx({ id: 'T2', date: '2026-09-11', settleDate: '2026-09-14', type: '支出', srcAccount: 'C', srcSymbol: 'TWD', srcQty: 137 }), // 9/11 刷、9/14 入帳 → 下一期
+    tx({ id: 'P', date: '2026-09-25', type: '轉帳', srcAccount: 'B', srcSymbol: 'TWD', srcQty: 1000, dstAccount: 'C', dstSymbol: 'TWD', dstQty: 1000 }),
+    tx({ id: 'T3', date: '2026-10-01', type: '支出', srcAccount: 'C', srcSymbol: 'TWD', srcQty: 50 }),
+  ];
+  const s = FinCreditCard.summary(txs, 'C', 'TWD', 0, cs, '2026-10-09');
+  assert.equal(s.statementAmountDue, 0);
+  assert.equal(s.overdue, false);
+  assert.equal(s.currentSpend, 187);
+  assert.equal(s.currentlyOwed, 187);
+  // 同樣的消費沒填入帳日：會被算進上期 → 上期多 137 待繳；因為是結帳日前 3 天內、沒填入帳日，標示「可能列入下期」而不是逾期
+  const noPost = txs.map((t) => (t.id === 'T2' ? Object.assign({}, t, { settleDate: '' }) : t));
+  const s2 = FinCreditCard.summary(noPost, 'C', 'TWD', 0, cs, '2026-10-09');
+  assert.equal(s2.statementAmountDue, 137);
+  assert.equal(s2.dueLikelyNextPeriod, true);
+  assert.equal(s2.overdue, false);
+  assert.deepEqual(s2.nearCloseUnposted, { count: 1, amount: 137, from: '2026-09-09', to: '2026-09-12' });
+});
+
+test('可能列入下期：待繳超過結帳日前未入帳消費的總額時，仍然是逾期（真的沒繳）', () => {
+  const cs = { statementDay: 12, dueDay: 27, limit: 100000 };
+  const txs = [
+    tx({ id: 'T1', date: '2026-09-01', type: '支出', srcAccount: 'C', srcSymbol: 'TWD', srcQty: 2000 }),
+    tx({ id: 'T2', date: '2026-09-11', type: '支出', srcAccount: 'C', srcSymbol: 'TWD', srcQty: 137 }),
+  ];
+  const s = FinCreditCard.summary(txs, 'C', 'TWD', 0, cs, '2026-10-09');
+  assert.equal(s.statementAmountDue, 2137);
+  assert.equal(s.dueLikelyNextPeriod, false);
+  assert.equal(s.overdue, true);
+  assert.equal(s.nearCloseUnposted.count, 1);
+});
+
+test('expandInstallment：分期的原始消費有入帳日時，第 1 期依入帳日所在的帳單', () => {
+  const t = tx({ id: 'T9', date: '2026-08-12', settleDate: '2026-08-14', type: '支出', srcAccount: 'A', srcSymbol: 'TWD', srcQty: 3849 });
+  const s = FinCreditCard.expandInstallment({ terms: 3 }, t, 12, 0);
+  assert.deepEqual(s.periods.map((p) => p.closeDate), ['2026-09-12', '2026-10-12', '2026-11-12']);
+  const s2 = FinCreditCard.expandInstallment({ terms: 3 }, Object.assign({}, t, { settleDate: '' }), 12, 0);
+  assert.equal(s2.periods[0].closeDate, '2026-08-12');
+});

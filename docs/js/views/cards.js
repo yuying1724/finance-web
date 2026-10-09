@@ -18,6 +18,7 @@ const DUE_SOON_DAYS = 3;
 /** 繳款日狀態標籤 */
 function dueBadge(item) {
   if (!item.hasSettings) return h('span', { class: 'badge warn' }, '尚未設定');
+  if (item.dueLikelyNextPeriod) return h('span', { class: 'badge warn', title: '待繳的都是結帳日前幾天刷、還沒填入帳日的消費，銀行多半會列入下一期' }, '可能列入下期');
   if (item.overdue) return h('span', { class: 'badge bad' }, `已逾期 ${-item.dueInDays} 天`);
   if (item.statementAmountDue > 0) {
     if (item.dueInDays === 0) return h('span', { class: 'badge bad' }, '今天到期');
@@ -29,6 +30,21 @@ function dueBadge(item) {
 }
 
 function mmdd(d) { return d ? d.slice(5).replace('-', '/') : '—'; }
+
+/**
+ * 貼心提醒：上期結帳日前幾天刷、還沒填「入帳日」的消費，銀行常常隔幾天才入帳、列到下一期帳單。
+ * 有這種消費時提醒一下；如果待繳全部都可能是它們造成的，說明「已照銀行帳單繳清就不用理會」。
+ * item 需要有 nearCloseUnposted {count, amount, from, to}、dueLikelyNextPeriod、symbol（cardOverview 與 getCardStatement 的回傳都有）
+ */
+export function nearCloseNotice(item) {
+  const n = item.nearCloseUnposted;
+  if (!n || !n.count || !(item.statementAmountDue > 0)) return null;
+  const range = `${mmdd(n.from)}～${mmdd(n.to)}`;
+  return h('div', { class: 'notice', style: { marginBottom: '10px' }, 'data-testid': 'near-close-notice' },
+    item.dueLikelyNextPeriod
+      ? `上期待繳 ${money(item.statementAmountDue, item.symbol)} 都是結帳日前（${range}）刷的 ${n.count} 筆消費，還沒填入帳日。銀行多半會把它們列入下一期帳單；如果這期已經照銀行帳單繳清，就不用理會。想讓期別跟銀行一致，可以在那幾筆交易的「更多」填上信用卡入帳日。`
+      : `結帳日前（${range}）有 ${n.count} 筆、共 ${money(n.amount, item.symbol)} 的消費還沒填入帳日，可能會列入下一期帳單，上期待繳金額可能因此偏高。`);
+}
 
 /** 額度使用條 */
 function meter(item) {
@@ -54,12 +70,12 @@ export function openCardGroupSheet(item) {
       h('div', { class: 'grow' }, h('div', { class: 't' }, m.name), h('div', { class: 's' }, m.hasSettings ? (m.currentSpend === null ? '' : `本期刷了 ${money(m.currentSpend, item.symbol)}`) : '尚未設定結帳日／繳款日')),
       h('div', { class: 'amt muted' }, icon('right'))));
   });
-  const kv = item.hasSettings ? h('dl', { class: 'kv' },
+  const kv = item.hasSettings ? h('div', null, nearCloseNotice(item), h('dl', { class: 'kv' },
     h('dt', null, '待繳'), h('dd', null, h('b', null, money(item.statementAmountDue, item.symbol)), ' ', dueBadge(item)),
     h('dt', null, '繳款截止'), h('dd', null, item.dueDate || '—'),
     h('dt', null, '本期已刷'), h('dd', null, money(item.currentSpend, item.symbol), h('span', { class: 'muted small' }, `（${mmdd(item.currentPeriod.start)}～結帳日 ${item.statementDay} 號）`)),
     h('dt', null, '目前欠款'), h('dd', null, money(item.currentlyOwed, item.symbol), item.installmentRemaining > 0 ? h('span', { class: 'muted small' }, `（含分期未出帳 ${money(item.installmentRemaining, item.symbol)}）`) : null),
-    h('dt', null, '可用額度'), h('dd', null, item.availableCredit === null ? '未設定額度' : `${money(item.availableCredit, item.symbol)} / ${money(item.limit, item.symbol)}`, meter(item))) : null;
+    h('dt', null, '可用額度'), h('dd', null, item.availableCredit === null ? '未設定額度' : `${money(item.availableCredit, item.symbol)} / ${money(item.limit, item.symbol)}`, meter(item)))) : null;
   const sheet = openSheet({
     title: item.isGroup ? `${item.name}　合併帳單（${item.members.length} 張卡）` : item.name,
     body: h('div', null,

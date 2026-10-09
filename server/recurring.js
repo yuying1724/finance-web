@@ -226,7 +226,7 @@ var FinRecurringJob = (function () {
       }
       var inst = c.instruments[acct.defaultSymbol];
       var s = FinCreditCard.summary(c.txRows, cs.accountId, acct.defaultSymbol, inst ? inst.decimals : 0, cs, c.today, ids, FinApi.installmentSchedules(c));
-      if (!s.dueDate || s.statementAmountDue <= 0) return;
+      if (!s.dueDate || s.statementAmountDue <= 0 || s.dueLikelyNextPeriod) return; // 待繳全是結帳日前、還沒入帳的消費：多半會列入下期，不寄提醒
       if (daysBetween(c.today, s.dueDate) === CARD_REMIND_DAYS) {
         var name = ids ? siblings.map(function (r) { return (c.accounts[r.accountId] || {}).name || r.accountId; }).join('、') : acct.name;
         items.push({ accountName: name, dueDate: s.dueDate, amount: s.statementAmountDue, symbol: acct.defaultSymbol });

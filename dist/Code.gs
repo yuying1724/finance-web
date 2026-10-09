@@ -140,7 +140,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.11',
+    APP_VERSION: '0.9.12',
   };
   return api;
 })();
@@ -1063,6 +1063,15 @@ var FinLoan = (function () {
  */
 var FinCreditCard = (function () {
 
+  /**
+   * 信用卡帳務用的日期：有「入帳日」（交易的 settleDate 欄位）就用入帳日，沒有才用消費日。
+   * 銀行是依入帳日決定一筆消費進哪一期帳單（例如結帳日前一天刷、三天後才請款，會列入下一期）。
+   */
+  function billDate(t) { return (t && t.settleDate) || (t && t.date) || ''; }
+
+  /** 「可能列入下期」的判斷範圍：結帳日（含）往前 N 天內、沒有填入帳日的消費 */
+  var NEAR_CLOSE_DAYS = 3;
+
   function clampDay(y, m, day) { return Math.min(Math.max(1, Number(day) || 1), FinDates.daysInMonth(y, m)); }
 
   /** 某个「結帳日」在某個 yyyy-MM 當月對應的實際日期（超過當月天數時取月底） */
@@ -1101,7 +1110,7 @@ var FinCreditCard = (function () {
     var units = 0;
     for (var i = 0; i < txs.length; i++) {
       var t = txs[i];
-      if (t.status !== '有效' || t.date > asOfDate) continue;
+      if (t.status !== '有效' || billDate(t) > asOfDate) continue;
       if (idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null && t.srcQty !== undefined && t.srcQty !== '') {
         units -= FinMoney.toUnits(t.srcQty, decimals);
       }
@@ -1125,7 +1134,8 @@ var FinCreditCard = (function () {
     var spendUnits = 0, refundUnits = 0;
     for (var i = 0; i < txs.length; i++) {
       var t = txs[i];
-      if (t.status !== '有效' || t.date < period.start || t.date > period.end) continue;
+      var bd = billDate(t);
+      if (t.status !== '有效' || bd < period.start || bd > period.end) continue;
       if (excludeTxIds && excludeTxIds[t.id]) continue; // 分期的原始消費：本期消費只算當期那一份（另外加）
       if (t.type === '支出' && idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null) spendUnits += FinMoney.toUnits(t.srcQty, decimals);
       else if (t.type === '退款' && idSet[t.dstAccount] && t.dstSymbol === symbol && t.dstQty !== null) refundUnits += FinMoney.toUnits(t.dstQty, decimals);
@@ -1147,8 +1157,9 @@ var FinCreditCard = (function () {
     // 每期金額以「帳單位數」為單位（台幣是整數元），零頭（含角分）都放在首期／末期；單位仍用帳戶幣別的最小單位
     var step = billDecimals !== undefined && billDecimals !== null && billDecimals < decimals ? Math.pow(10, decimals - billDecimals) : 1;
     var base = Math.floor(totalUnits / terms / step) * step, rem = totalUnits - base * terms;
-    var close = periodContaining(statementDay, tx.date).end;
-    var payoffClose = inst.payoffDate ? periodContaining(statementDay, inst.payoffDate < tx.date ? tx.date : inst.payoffDate).end : null;
+    var txBill = billDate(tx);
+    var close = periodContaining(statementDay, txBill).end;
+    var payoffClose = inst.payoffDate ? periodContaining(statementDay, inst.payoffDate < txBill ? txBill : inst.payoffDate).end : null;
     var periods = [];
     for (var n = 1; n <= terms; n++) {
       var u = base + ((inst.remainderOn === '末期' ? n === terms : n === 1) ? rem : 0);
@@ -1206,7 +1217,8 @@ var FinCreditCard = (function () {
     var creditsAfterCloseUnits = 0;
     for (var ci = 0; ci < txs.length; ci++) {
       var ct = txs[ci];
-      if (ct.status !== '有效' || ct.date <= lastClosed.end || ct.date > asOfDate) continue;
+      var cbd = billDate(ct);
+      if (ct.status !== '有效' || cbd <= lastClosed.end || cbd > asOfDate) continue;
       if (idSet[ct.dstAccount] && ct.dstSymbol === symbol && ct.dstQty !== null && ct.dstQty !== undefined && ct.dstQty !== '') {
         creditsAfterCloseUnits += FinMoney.toUnits(ct.dstQty, decimals);
       }
@@ -1217,13 +1229,28 @@ var FinCreditCard = (function () {
     var balanceTodayUnits = balanceUnitsAsOf(txs, ids, symbol, decimals, asOfDate);
     var currentlyOwed = balanceTodayUnits < 0 ? FinMoney.fromUnits(-balanceTodayUnits, decimals) : 0;
 
+    // 貼心提醒：上期結帳日前 N 天內刷、但還沒填入帳日的消費，銀行常常隔幾天才入帳、會列到下一期。
+    // 如果「上期待繳」全部都可能是這些消費造成的，就標示「可能列入下期」，不當成逾期。
+    var nearStart = FinDates.addDays(lastClosed.end, -NEAR_CLOSE_DAYS);
+    var nearUnits = 0, nearCount = 0;
+    for (var ni = 0; ni < txs.length; ni++) {
+      var nt = txs[ni];
+      if (nt.status !== '有效' || nt.settleDate || nt.type !== '支出' || instTxIds[nt.id]) continue;
+      if (!idSet[nt.srcAccount] || nt.srcSymbol !== symbol || nt.srcQty === null || nt.srcQty === undefined || nt.srcQty === '') continue;
+      if (nt.date < nearStart || nt.date > lastClosed.end) continue;
+      nearUnits += FinMoney.toUnits(nt.srcQty, decimals); nearCount++;
+    }
+    var dueLikelyNextPeriod = statementDueUnits > 0 && statementDueUnits <= nearUnits;
+
     var limit = Number(cardSettings.limit) || 0;
     var availableCredit = limit > 0 ? FinMoney.round(Math.max(0, limit - currentlyOwed), decimals) : null;
 
     return {
       currentPeriod: current, currentSpend: currentSpend,
       lastClosedPeriod: lastClosed, statementAmountDue: statementAmountDue, dueDate: dueDate,
-      currentlyOwed: currentlyOwed, overdue: statementAmountDue > 0 && asOfDate > dueDate,
+      currentlyOwed: currentlyOwed, overdue: statementAmountDue > 0 && asOfDate > dueDate && !dueLikelyNextPeriod,
+      nearCloseUnposted: { count: nearCount, amount: FinMoney.fromUnits(nearUnits, decimals), from: nearStart, to: lastClosed.end },
+      dueLikelyNextPeriod: dueLikelyNextPeriod,
       limit: limit || null, availableCredit: availableCredit,
       sharedLimit: hasGroup, groupSize: hasGroup ? ids.length : null,
       // 分期：之後各期（不含本期）還沒出帳的金額；目前總欠款與可用額度已經含全額
@@ -1233,6 +1260,7 @@ var FinCreditCard = (function () {
   }
 
   return {
+    billDate: billDate, NEAR_CLOSE_DAYS: NEAR_CLOSE_DAYS,
     periodContaining: periodContaining, dueDateFor: dueDateFor, periodSpend: periodSpend, expandInstallment: expandInstallment, unbilledUnitsAt: unbilledUnitsAt,
     balanceUnitsAsOf: balanceUnitsAsOf, summary: summary,
     prevStatementEnd: prevStatementEnd, nextStatementEnd: nextStatementEnd, statementDateIn: statementDateIn,
@@ -1289,7 +1317,11 @@ var FinValidate = (function () {
       if (y < 2000 || y > 2100) err('date', '日期超出合理範圍');
       else if (ctx.today && t.date > ctx.today) warnings.push('這筆交易的日期在未來，今天之前不會計入餘額');
     }
-    if (t.settleDate && !FinDates.isValid(t.settleDate)) err('settleDate', '交割日格式不正確');
+    var isCardType = t.type === '支出' || t.type === '退款';
+    if (t.settleDate && !FinDates.isValid(t.settleDate)) err('settleDate', (isCardType ? '入帳日' : '交割日') + '格式不正確');
+    // 支出／退款的 settleDate 是信用卡「入帳日」（銀行請款入帳那天，決定列入哪一期帳單），不能早於消費日
+    else if (isCardType && t.settleDate && FinDates.isValid(t.date) && t.settleDate < t.date) err('settleDate', '入帳日不能早於消費日');
+    else if (isCardType && t.settleDate === t.date) t.settleDate = ''; // 跟消費日同一天就不用另外記
     if (t.note.length > MAX_NOTE) err('note', '備註過長（上限 ' + MAX_NOTE + ' 字）');
     // ---- 原幣金額（選填）：台幣帳戶刷外幣時保留原幣，兩個欄位要一起填 ----
     if (t.fxSymbol || t.fxQty !== null) {
@@ -2502,6 +2534,7 @@ var FinApi = (function () {
         var s = FinCreditCard.summary(c.txRows, first.id, symbol, decimals, g.settings, asOf, ids.length > 1 ? ids : null, sched);
         item.installmentRemaining = s.installmentRemaining; item.installmentCount = s.installmentCount;
         item.statementAmountDue = s.statementAmountDue; item.dueDate = s.dueDate; item.overdue = s.overdue;
+        item.dueLikelyNextPeriod = s.dueLikelyNextPeriod; item.nearCloseUnposted = s.nearCloseUnposted;
         item.currentSpend = s.currentSpend; item.currentlyOwed = s.currentlyOwed;
         item.limit = s.limit; item.availableCredit = s.availableCredit;
         item.currentPeriod = s.currentPeriod; item.lastClosedPeriod = s.lastClosedPeriod;
@@ -2522,7 +2555,7 @@ var FinApi = (function () {
       }
       out.push(item);
     });
-    var rank = function (x) { return !x.hasSettings ? 3 : x.overdue ? 0 : (x.statementAmountDue > 0 ? 1 : 2); };
+    var rank = function (x) { return !x.hasSettings ? 3 : x.overdue ? 0 : (x.statementAmountDue > 0 && !x.dueLikelyNextPeriod ? 1 : 2); };
     out.sort(function (a, b) {
       var ra = rank(a), rb = rank(b);
       if (ra !== rb) return ra - rb;
@@ -2531,7 +2564,7 @@ var FinApi = (function () {
     });
     var totalDue = 0, nearest = null;
     out.forEach(function (x) {
-      if (x.hasSettings && x.statementAmountDue > 0) {
+      if (x.hasSettings && x.statementAmountDue > 0 && !x.dueLikelyNextPeriod) { // 「可能列入下期」的不算待繳
         totalDue += x.statementAmountDue;
         if (!nearest || x.dueDate < nearest.dueDate) nearest = { name: x.name, dueDate: x.dueDate, dueInDays: x.dueInDays, amount: x.statementAmountDue, symbol: x.symbol };
       }
@@ -2571,7 +2604,7 @@ var FinApi = (function () {
       });
     });
     (cardOv ? cardOv.items : []).forEach(function (x) {
-      if (!x.hasSettings || !(x.statementAmountDue > 0) || !x.dueDate || x.dueDate > to) return;
+      if (!x.hasSettings || !(x.statementAmountDue > 0) || x.dueLikelyNextPeriod || !x.dueDate || x.dueDate > to) return;
       items.push({ date: x.dueDate, kind: '信用卡', name: x.name + (x.isGroup ? '（合併帳單）' : ''), amount: x.statementAmountDue, symbol: x.symbol, direction: 'out', overdue: x.overdue, cardKey: x.key, accountId: x.accountIds[0] });
     });
     c.loanRows.forEach(function (ls) {
@@ -3936,7 +3969,7 @@ var FinRecurringJob = (function () {
       }
       var inst = c.instruments[acct.defaultSymbol];
       var s = FinCreditCard.summary(c.txRows, cs.accountId, acct.defaultSymbol, inst ? inst.decimals : 0, cs, c.today, ids, FinApi.installmentSchedules(c));
-      if (!s.dueDate || s.statementAmountDue <= 0) return;
+      if (!s.dueDate || s.statementAmountDue <= 0 || s.dueLikelyNextPeriod) return; // 待繳全是結帳日前、還沒入帳的消費：多半會列入下期，不寄提醒
       if (daysBetween(c.today, s.dueDate) === CARD_REMIND_DAYS) {
         var name = ids ? siblings.map(function (r) { return (c.accounts[r.accountId] || {}).name || r.accountId; }).join('、') : acct.name;
         items.push({ accountName: name, dueDate: s.dueDate, amount: s.statementAmountDue, symbol: acct.defaultSymbol });
