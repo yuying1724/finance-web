@@ -757,9 +757,10 @@ test('股息：除息日自動產生待確認，定期頁顯示預估明細；�
     assert.ok(be.call('addTransaction', { tx: { type: '調整', date: day(-30), dstAccount: broker, dstSymbol: '00919', dstQty: 2000, categoryId: '' } }).ok);
     be.state.urlFetch.handler = (url) => (/TWT48U_ALL/.test(url) ? { body: [{ Date: roc(today), Code: '00919', Name: '群益台灣精選高息', Exdividend: '息', CashDividend: '0.72' }] } : { body: [] });
     await a.login(); await page.waitForSelector('[data-testid=networth]');
-    await a.tab('recurring');
+    await a.tab('todo');
     await page.click('[data-testid=check-dividends]');
     await page.waitForSelector('[data-testid=pending-item]');
+    await page.waitForSelector('[data-testid=todo-later] [data-testid=pending-item]'); // 預估發放日在一個月後：放在「還沒到日子」
     const row = await page.locator('[data-testid=pending-item]').first().innerText();
     assert.match(row, /股息　00919 群益台灣精選高息/);
     assert.match(row, /預估實收 NT\$1,430/); // 2,000 × 0.72 = 1,440 − 匯費 10
@@ -811,8 +812,8 @@ test('定期「每N天」：表單選每 N 天＋從實際付款日起算，列�
     const sum = be.ctx.FinRecurringJob.runDaily(be.state.clock.now);
     assert.equal(sum.created, 1, JSON.stringify(sum));
     await page.reload(); await page.waitForSelector('.tabbar a[data-tab=home]');
-    await a.tab('home'); await a.tab('recurring');
-    await page.waitForSelector('[data-testid=pending-item]:has-text("捷運月票")');
+    await a.tab('home'); await a.tab('todo');
+    await page.waitForSelector('[data-testid=todo-now] [data-testid=pending-item]:has-text("捷運月票")');
     await page.click('[data-testid=pending-item]:has-text("捷運月票") [data-testid=postpone-pending]');
     await page.waitForSelector('.sheet');
     assert.match(await page.locator('.sheet').innerText(), /預計哪天付款/);
@@ -820,7 +821,7 @@ test('定期「每N天」：表單選每 N 天＋從實際付款日起算，列�
     // 確認時可以換付款帳戶
     const other = be.call('upsertAccount', { account: { name: '這次用的卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
     await page.waitForTimeout(500); // 關閉視窗會用 history.back()，等它跑完再重新整理
-    await page.reload(); await page.waitForSelector('.tabbar a[data-tab=home]'); await a.tab('home'); await a.tab('recurring');
+    await page.reload(); await page.waitForSelector('.tabbar a[data-tab=home]'); await a.tab('home'); await a.tab('todo');
     await page.click('[data-testid=pending-item]:has-text("捷運月票") [data-testid=confirm-pending]');
     await page.waitForSelector('.sheet [data-testid=confirm-account]');
     assert.match(await page.locator('.sheet').innerText(), /實際付款日[\s\S]*下一次會從這天起算 30 天/);
@@ -829,6 +830,47 @@ test('定期「每N天」：表單選每 N 天＋從實際付款日起算，列�
     await page.waitForSelector('.sheet', { state: 'detached' });
     const t = be.call('listTransactions', { filters: { includeVoid: true }, limit: 200 }).data.items.find((x) => x.recurringId === tpl.id);
     assert.deepEqual([t.status, t.srcAccount], ['有效', other]);
+  });
+});
+
+test('待辦頁：到期的待確認與 7 天內的信用卡帳單在「現在要處理」、底部分頁顯示件數；還沒到日子的另外列；定期頁只留範本', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const day = (n) => be.ctx.FinDates.addDays(today, n);
+    const dom = (d) => Number(d.slice(8, 10));
+    const bank = be.call('upsertAccount', { account: { name: '待辦測試銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const card = be.call('upsertAccount', { account: { name: '待辦測試卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('upsertCardSettings', { card: { accountId: card, statementDay: dom(day(-5)), dueDay: dom(day(3)), limit: 50000, payAccountId: bank } }).ok);
+    const food = be.call('bootstrap').data.categories.find((c) => c.name === '午餐' && c.type === '支出').id;
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: day(-12), srcAccount: card, srcSymbol: 'TWD', srcQty: 1234, categoryId: food } }).ok);
+    // 今天到期的提醒確認（現在要處理）、10 天後到期的（還沒到日子：先產生再把日期延後模擬）
+    const r1 = be.call('upsertRecurring', { recurring: { name: '待辦-今天', freq: '每月', days: [dom(today)], holiday: '不調整', startDate: today, type: '支出', srcAccount: bank, srcSymbol: 'TWD', srcQty: 100, categoryId: food, mode: '提醒確認' } });
+    assert.ok(r1.ok, JSON.stringify(r1));
+    be.ctx.FinRecurringJob.runDaily(be.state.clock.now);
+    const later = be.call('addTransaction', { tx: { type: '股息', date: day(20), dstAccount: bank, dstSymbol: 'TWD', dstQty: 50, relatedSymbol: 'USD', categoryId: '' } });
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.waitForSelector('.tabbar .nav-badge[data-badge-tab=todo]:not([style*="none"])');
+    assert.equal((await page.locator('.tabbar .nav-badge[data-badge-tab=todo]').innerText()).trim(), '2', '1 筆到期待確認＋1 張 7 天內到期的卡');
+    await a.tab('todo');
+    const now = await page.locator('[data-testid=todo-now]').innerText();
+    assert.match(now, /現在要處理（2）/); assert.match(now, /待辦測試卡/); assert.match(now, /待辦-今天/);
+    assert.ok(await page.locator('[data-testid=todo-now] [data-testid=todo-pay]').count() === 1);
+    assert.match(await page.locator('[data-testid=todo-later]').innerText(), /還沒到日子（0）/);
+    // 繳款按鈕開「記一筆」轉帳，金額帶待繳
+    await page.click('[data-testid=todo-now] [data-testid=todo-pay]');
+    await page.waitForSelector('.sheet');
+    assert.match(await page.locator('.sheet').innerText(), /轉帳/);
+    await page.click('.sheet [aria-label="關閉"]'); await page.waitForSelector('.sheet', { state: 'detached' });
+    // 定期頁只留範本，有連結到待辦
+    await a.tab('recurring');
+    await page.waitForSelector('[data-testid=recurring-todo-link]');
+    assert.equal(await page.locator('[data-testid=pending-item]').count(), 0);
+    // 首頁待確認提示連到待辦
+    await a.tab('home');
+    assert.equal(await page.locator('[data-testid=pending-notice]').getAttribute('href'), '#/todo');
+    void later;
   });
 });
 

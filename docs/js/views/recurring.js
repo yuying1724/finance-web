@@ -43,17 +43,13 @@ export function pendingCount() {
   return d && d.pendingConfirmations ? d.pendingConfirmations.length : 0;
 }
 
-// ==================== 主畫面：待確認 + 定期範本 ====================
+// ==================== 主畫面：定期範本（待確認移到「待辦」頁） ====================
 export function renderRecurring(root) {
   const d = state.data;
-  const groups = groupPending(d.pendingConfirmations || []);
-
-  const pendingCard = h('div', { class: 'card' },
-    h('div', { class: 'card-title' }, h('h2', null, `待確認（${groups.length}）`),
-      h('button', { class: 'btn btn-sm', 'data-testid': 'check-dividends', onclick: (e) => checkDividendsNow(e.currentTarget) }, icon('coin'), '檢查股息')),
-    groups.length
-      ? h('ul', { class: 'list' }, groups.map((g) => h('li', null, pendingRow(g))))
-      : h('div', { class: 'muted', style: { padding: '8px 0' } }, '目前沒有待確認的定期交易或股息'));
+  const pending = (d.pendingConfirmations || []).length;
+  const pendingLink = pending
+    ? h('a', { class: 'notice', href: '#/todo', 'data-testid': 'recurring-todo-link', style: { display: 'block', marginBottom: '12px', textDecoration: 'none' } }, `有 ${pending} 筆待確認，到「待辦」處理 →`)
+    : null;
 
   const templates = (d.recurring || []).slice().sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1));
   const tplCard = h('div', { class: 'card' },
@@ -63,11 +59,11 @@ export function renderRecurring(root) {
       ? h('ul', { class: 'list' }, templates.map((t) => h('li', null, templateRow(t))))
       : h('div', { class: 'muted', style: { padding: '8px 0' } }, '還沒有定期範本'));
 
-  mount(root, h('div', { class: 'page-head' }, h('h1', null, '定期')), pendingCard, tplCard);
+  mount(root, h('div', { class: 'page-head' }, h('h1', null, '定期')), pendingLink, tplCard);
 }
 
 /** 立即檢查股息公告（平常每天早上 7 點自動檢查） */
-async function checkDividendsNow(btn) {
+export async function checkDividendsNow(btn) {
   await withBusy(btn, async () => {
     try {
       const r = await api.call('checkDividends', {});
@@ -82,7 +78,7 @@ async function checkDividendsNow(btn) {
   });
 }
 
-function groupPending(list) {
+export function groupPending(list) {
   const byGroup = new Map();
   const out = [];
   list.forEach((t) => {
@@ -105,10 +101,10 @@ function legLabel(t) {
   return `${t.type}　${money(t.srcQty, t.srcSymbol)}`;
 }
 
-function pendingRow(group) {
+export function pendingRow(group) {
   const first = group[0];
   const d = state.data;
-  return h('div', { class: 'item', 'data-testid': 'pending-item' },
+  return h('div', { class: 'item pending-item', 'data-testid': 'pending-item' },
     h('div', { class: 'ico' }, icon('refresh')),
     h('div', { class: 'grow' },
       h('div', { class: 't' }, first.templateName || '定期交易', h('span', { class: 'badge', style: { marginLeft: '6px' } }, first.mode || '')),

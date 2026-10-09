@@ -142,9 +142,9 @@ export function todoCard() {
   const alertRow = cashAlertRow(); // 未來 60 天有帳戶餘額可能不夠扣款：放最上面
   if (alertRow) rows.push(alertRow);
   if (pending) {
-    rows.push(h('li', null, h('a', { class: 'item', href: '#/recurring', 'data-testid': 'pending-notice' },
-      h('div', { class: 'ico' }, icon('refresh')),
-      h('div', { class: 'grow' }, h('div', { class: 't' }, `${pending} 筆待確認`), h('div', { class: 's' }, '定期交易到期了，請確認金額後入帳')),
+    rows.push(h('li', null, h('a', { class: 'item', href: '#/todo', 'data-testid': 'pending-notice' },
+      h('div', { class: 'ico' }, icon('check')),
+      h('div', { class: 'grow' }, h('div', { class: 't' }, `${pending} 筆待確認`), h('div', { class: 's' }, '到「待辦」確認金額後入帳')),
       h('div', { class: 'amt muted' }, icon('right')))));
   }
   if (ov && ov.nearest && ov.totalDue > 0) {
