@@ -210,3 +210,23 @@ test('持倉損益：台股回傳扣掉預估賣出手續費＋證交稅的 netP
   assert.equal(p('VOO').sellCost, 0, '複委託不扣');
   assert.ok(Math.abs(p('VOO').netPl - p('VOO').totalBase) < 1e-9);
 });
+
+test('新增 GOOGLEFINANCE 標的時「價格」分頁自動放現價公式；改行情代碼會同步；不安全的代碼不寫成公式', () => {
+  const { loadBackend } = require('./helpers/backend.js');
+  const b = loadBackend().setup();
+  const formulaOf = (sym) => {
+    const sh = b.ss.getSheetByName('價格');
+    const vals = sh.getRange(1, 1, sh.getLastRow(), 1).getValues();
+    const i = vals.findIndex((r) => String(r[0]) === sym);
+    return i < 0 ? null : sh.getRange(i + 1, 2).getFormulas()[0][0];
+  };
+  assert.ok(b.call('upsertInstrument', { instrument: { symbol: '2881', name: '富邦金', type: '台股', quote: 'TWD', decimals: 0, priceSource: 'GOOGLEFINANCE', quoteCode: 'TPE:2881', isNew: true } }).ok);
+  assert.equal(formulaOf('2881'), '=GOOGLEFINANCE("TPE:2881")');
+  assert.ok(b.call('upsertInstrument', { instrument: { symbol: 'X1', name: '手動', type: '台股', quote: 'TWD', decimals: 0, priceSource: '手動', isNew: true } }).ok);
+  assert.equal(formulaOf('X1'), '');
+  assert.ok(b.call('upsertInstrument', { instrument: { symbol: 'X2', name: '怪代碼', type: '台股', quote: 'TWD', decimals: 0, priceSource: 'GOOGLEFINANCE', quoteCode: 'A")&IMPORTXML("x', isNew: true } }).ok);
+  assert.equal(formulaOf('X2'), '', '含引號等特殊字元的代碼不寫成公式');
+  const cur = b.call('bootstrap').data.instruments.find((i) => i.symbol === '2881');
+  assert.ok(b.call('upsertInstrument', { instrument: { symbol: '2881', name: '富邦金', type: '台股', quote: 'TWD', decimals: 0, priceSource: 'GOOGLEFINANCE', quoteCode: 'TPE:2881A', isNew: false }, expectedUpdatedAt: cur.updatedAt }).ok);
+  assert.equal(formulaOf('2881'), '=GOOGLEFINANCE("TPE:2881A")');
+});

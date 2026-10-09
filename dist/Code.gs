@@ -141,7 +141,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.18',
+    APP_VERSION: '0.9.19',
   };
   return api;
 })();
@@ -2000,12 +2000,13 @@ var FinRepo = (function () {
   }
 
   /** 單一儲存格寫入（用於不能覆蓋公式的欄位，例如價格表的「現價」旁邊的欄位） */
-  function setCells(tableKey, rowNumber, patch) {
+  function setCells(tableKey, rowNumber, patch, opts) {
+    var allowFormula = !!(opts && opts.allowFormulas);
     var sheet = sheetOf(tableKey);
     var h = headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]);
     Object.keys(patch).forEach(function (k) {
       if (h.idx[k] === undefined || h.idx[k] < 0) return;
-      sheet.getRange(rowNumber, h.idx[k] + 1).setValue(encodeCell(patch[k], FinSchema.colOf(tableKey, k).type));
+      sheet.getRange(rowNumber, h.idx[k] + 1).setValue(encodeCell(patch[k], FinSchema.colOf(tableKey, k).type, allowFormula));
     });
     invalidate();
   }
@@ -3139,14 +3140,22 @@ var FinApi = (function () {
           FinRepo.updateRow('instruments', existing._row, patch);
           out = pub(existing); Object.keys(patch).forEach(function (k) { out[k] = patch[k]; });
           FinRepo.audit('修改', 'instruments', out.symbol, out.name, env.device);
+          // 改了價格來源或行情代碼：同步「價格」分頁的現價公式（GOOGLEFINANCE 才有公式；改成其他來源就清掉公式，上次有效價保留）
+          if (v.priceSource !== existing.priceSource || v.quoteCode !== existing.quoteCode) {
+            try {
+              var pr = FinRepo.findById('prices', out.symbol);
+              if (pr) FinRepo.setCells('prices', pr._row, { price: priceFormulaFor(out), quote: out.quote }, { allowFormulas: true });
+              else FinRepo.append('prices', [{ symbol: out.symbol, price: priceFormulaFor(out), lastValid: '', quote: out.quote, updatedAt: '', status: '尚未更新' }], { allowFormulas: true });
+            } catch (e) { /* 價格表若不存在不影響標的修改 */ }
+          }
         } else {
           out = { symbol: v.symbol, name: v.name, type: v.type, quote: v.quote, decimals: v.decimals, priceSource: v.priceSource, quoteCode: v.quoteCode, active: true, note: v.note, createdAt: now, updatedAt: now };
           FinRepo.append('instruments', [out]);
           FinRepo.audit('新增', 'instruments', out.symbol, out.name, env.device);
-          // 新標的沒有現價，先補一列「價格」，避免持倉估值找不到資料
+          // 新標的先補一列「價格」：價格來源是 GOOGLEFINANCE 就直接放現價公式（例如 =GOOGLEFINANCE("TPE:2881")），其他來源留空等排程更新
           try {
             if (!FinRepo.findById('prices', out.symbol)) {
-              FinRepo.append('prices', [{ symbol: out.symbol, price: '', lastValid: '', quote: out.quote, updatedAt: '', status: '尚未更新' }]);
+              FinRepo.append('prices', [{ symbol: out.symbol, price: priceFormulaFor(out), lastValid: '', quote: out.quote, updatedAt: '', status: '尚未更新' }], { allowFormulas: true });
             }
           } catch (e) { /* 價格表若不存在不影響標的新增 */ }
         }
@@ -3154,6 +3163,13 @@ var FinApi = (function () {
       });
     },
   };
+
+  /** 「價格」分頁的現價公式：只有 GOOGLEFINANCE 且行情代碼是安全的格式（英數、冒號、點、底線、減號）才產生，避免把任意文字寫成公式 */
+  function priceFormulaFor(inst) {
+    var code = String(inst.quoteCode || '').trim();
+    if (inst.priceSource !== 'GOOGLEFINANCE' || !/^[A-Za-z0-9:._\-]{1,30}$/.test(code)) return '';
+    return '=GOOGLEFINANCE("' + code + '")';
+  }
 
   H.setInstrumentActive = {
     fn: function (p, env) {

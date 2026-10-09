@@ -319,12 +319,13 @@ var FinRepo = (function () {
   }
 
   /** 單一儲存格寫入（用於不能覆蓋公式的欄位，例如價格表的「現價」旁邊的欄位） */
-  function setCells(tableKey, rowNumber, patch) {
+  function setCells(tableKey, rowNumber, patch, opts) {
+    var allowFormula = !!(opts && opts.allowFormulas);
     var sheet = sheetOf(tableKey);
     var h = headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]);
     Object.keys(patch).forEach(function (k) {
       if (h.idx[k] === undefined || h.idx[k] < 0) return;
-      sheet.getRange(rowNumber, h.idx[k] + 1).setValue(encodeCell(patch[k], FinSchema.colOf(tableKey, k).type));
+      sheet.getRange(rowNumber, h.idx[k] + 1).setValue(encodeCell(patch[k], FinSchema.colOf(tableKey, k).type, allowFormula));
     });
     invalidate();
   }
