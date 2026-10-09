@@ -94,3 +94,18 @@ test('從實際付款日起算（捷運月票）：到期產生待確認、可�
   const p2 = b.txOf(r2.data.recurring.id)[0];
   assert.equal(b.call('postponePending', { id: p2.id, date: '2026-12-25' }).error.code, 'BAD_STATE');
 });
+
+test('確認待確認的支出時可以換付款帳戶（幣別要一樣、不能選貸款）', () => {
+  const b = fresh('2026-10-10');
+  const card = b.acct('富邦-J卡', '信用卡');
+  const other = b.acct('永豐卡', '信用卡');
+  const loan = b.acct('信貸', '貸款');
+  const r = b.call('upsertRecurring', { recurring: { name: '捷運月票', freq: '每N天', days: [30], holiday: '不調整', startDate: '2026-10-16', type: '支出', srcAccount: card, srcSymbol: 'TWD', srcQty: 399, categoryId: b.cat('大眾運輸'), mode: '提醒確認', anchor: '實際日期' } });
+  assert.ok(r.ok, JSON.stringify(r));
+  run(b, '2026-10-16');
+  const p = b.txOf(r.data.recurring.id)[0];
+  assert.equal(b.call('confirmPending', { id: p.id, trade: { date: '2026-10-17', srcQty: 399, srcAccount: loan } }).error.code, 'VALIDATION');
+  assert.ok(b.call('confirmPending', { id: p.id, trade: { date: '2026-10-17', srcQty: 399, srcAccount: other } }).ok);
+  const t = b.txOf(r.data.recurring.id)[0];
+  assert.deepEqual([t.status, t.date, t.srcAccount, t.srcQty], ['有效', '2026-10-17', other, 399]);
+});

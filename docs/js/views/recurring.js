@@ -182,6 +182,15 @@ function openSimpleConfirm(group) {
     const dateInput = h('input', { type: 'date', value: f.date, onchange: (e) => { f.date = e.target.value; } });
     const parts = [fld('date', first.anchor === '實際日期' ? '實際付款日' : '日期', dateInput,
       first.anchor === '實際日期' ? `下一次會從這天起算 ${first.intervalDays || 'N'} 天` : null)];
+    if (first.type === '收入' || first.type === '支出') {
+      // 可以換成這次實際付款（入帳）的帳戶，預設是範本設定的帳戶
+      const key = first.type === '支出' ? 'srcAccount' : 'dstAccount';
+      const sym = first.type === '支出' ? first.srcSymbol : first.dstSymbol;
+      f[key] = first[key];
+      const opts = (state.data.accounts || []).filter((a) => a.active !== false && (a.id === first[key] || (['銀行', '數位錢包', '現金', '信用卡', '點數'].includes(a.type) && (!a.defaultSymbol || a.defaultSymbol === sym))));
+      parts.push(fld(key, first.type === '支出' ? '付款帳戶' : '入帳帳戶', h('select', { 'data-testid': 'confirm-account', onchange: (e) => { f[key] = e.target.value; } },
+        opts.map((a) => h('option', { value: a.id, selected: a.id === first[key] }, a.name)))));
+    }
     if (first.srcAccount) parts.push(fld('srcQty', `金額（${first.srcSymbol}）`, h('input', { type: 'text', inputmode: 'decimal', value: f.srcQty, oninput: (e) => { f.srcQty = e.target.value; } })));
     if (first.dstAccount) parts.push(fld('dstQty', `金額（${first.dstSymbol}）`, h('input', { type: 'text', inputmode: 'decimal', value: f.dstQty, oninput: (e) => { f.dstQty = e.target.value; } })));
     mount(body, banner, ...parts);
@@ -191,7 +200,7 @@ function openSimpleConfirm(group) {
     await withBusy(e.currentTarget, async () => {
       try {
         const params = { id: first.id, requestId: api.newRequestId() };
-        if (!isGroup) params.trade = { date: f.date, srcQty: f.srcQty === '' ? undefined : f.srcQty, dstQty: f.dstQty === '' ? undefined : f.dstQty };
+        if (!isGroup) params.trade = { date: f.date, srcQty: f.srcQty === '' ? undefined : f.srcQty, dstQty: f.dstQty === '' ? undefined : f.dstQty, srcAccount: f.srcAccount, dstAccount: f.dstAccount };
         await api.call('confirmPending', params);
         sheet.close(); removePendingLocal(group); refreshInBackground(); toast('已確認入帳');
       } catch (err) {

@@ -1482,6 +1482,18 @@ var FinApi = (function () {
               if (!row.relatedSymbol && str(trade.relatedSymbol) && c.instruments[str(trade.relatedSymbol)]) patch.relatedSymbol = str(trade.relatedSymbol);
             }
             if (trade.date && FinDates.isValid(str(trade.date))) patch.date = str(trade.date);
+            // 收入／支出：確認時可以換成實際付款（入帳）的帳戶（例如捷運月票這次用別張卡付）
+            if (row.type === '收入' || row.type === '支出') {
+              var acctKey = row.type === '支出' ? 'srcAccount' : 'dstAccount', symKey = row.type === '支出' ? 'srcSymbol' : 'dstSymbol';
+              var newAcct = str(trade[acctKey]);
+              if (newAcct && newAcct !== row[acctKey]) {
+                var na = c.accounts[newAcct];
+                if (!na || na.active === false) throw FinFail('VALIDATION', '找不到這個帳戶', { errors: [{ field: acctKey, message: '找不到這個帳戶或已停用' }], warnings: [] });
+                if (FinSchema.LIABILITY_TYPES.indexOf(na.type) >= 0 && na.type !== '信用卡') throw FinFail('VALIDATION', '請選擇銀行、電子錢包、現金或信用卡', { errors: [{ field: acctKey, message: '不能選貸款或應付帳戶' }], warnings: [] });
+                if (na.defaultSymbol && na.defaultSymbol !== row[symKey]) throw FinFail('VALIDATION', '這個帳戶的幣別是 ' + na.defaultSymbol + '，跟這筆交易的 ' + row[symKey] + ' 不同', { errors: [{ field: acctKey, message: '幣別不同' }], warnings: [] });
+                patch[acctKey] = newAcct;
+              }
+            }
             if (trade.srcQty !== undefined && trade.srcQty !== null && trade.srcQty !== '' && row.srcAccount) patch.srcQty = Number(trade.srcQty);
             if (row.type !== '股息' && trade.dstQty !== undefined && trade.dstQty !== null && trade.dstQty !== '' && row.dstAccount) patch.dstQty = Number(trade.dstQty);
           }

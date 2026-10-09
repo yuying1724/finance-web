@@ -816,6 +816,19 @@ test('定期「每N天」：表單選每 N 天＋從實際付款日起算，列�
     await page.click('[data-testid=pending-item]:has-text("捷運月票") [data-testid=postpone-pending]');
     await page.waitForSelector('.sheet');
     assert.match(await page.locator('.sheet').innerText(), /預計哪天付款/);
+    await page.click('.sheet button:text-is("取消")'); await page.waitForSelector('.sheet', { state: 'detached' });
+    // 確認時可以換付款帳戶
+    const other = be.call('upsertAccount', { account: { name: '這次用的卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    await page.waitForTimeout(500); // 關閉視窗會用 history.back()，等它跑完再重新整理
+    await page.reload(); await page.waitForSelector('.tabbar a[data-tab=home]'); await a.tab('home'); await a.tab('recurring');
+    await page.click('[data-testid=pending-item]:has-text("捷運月票") [data-testid=confirm-pending]');
+    await page.waitForSelector('.sheet [data-testid=confirm-account]');
+    assert.match(await page.locator('.sheet').innerText(), /實際付款日[\s\S]*下一次會從這天起算 30 天/);
+    await page.selectOption('.sheet [data-testid=confirm-account]', other);
+    await page.click('.sheet [data-testid=confirm-save]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    const t = be.call('listTransactions', { filters: { includeVoid: true }, limit: 200 }).data.items.find((x) => x.recurringId === tpl.id);
+    assert.deepEqual([t.status, t.srcAccount], ['有效', other]);
   });
 });
 
