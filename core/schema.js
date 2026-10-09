@@ -50,7 +50,7 @@ var FinSchema = (function () {
         c('sipFixedFee', '定期定額固定手續費', 'num'), c('sipFeeRate', '定期定額手續費率', 'num'), c('sipFeeCap', '定期定額每筆上限', 'num'),
         c('sipMinAmount', '定期定額最低單筆投入', 'num'), c('taxRateStock', '證交稅率(股票)', 'num'), c('taxRateEtf', '證交稅率(ETF)', 'num'),
         c('buySettleDays', '買入交割天數', 'num'), c('sellSettleDays', '賣出交割天數', 'num'), c('calendar', '交割日曆'),
-        c('settleAccountId', '預設交割帳戶ID'), c('note', '備註')],
+        c('settleAccountId', '預設交割帳戶ID'), c('note', '備註'), c('dividendAccountId', '股息入帳帳戶ID')],
     },
     categories: {
       sheet: '分類', idKey: 'id', idPrefix: 'C', idWidth: 3,
@@ -135,7 +135,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.17',
+    APP_VERSION: '0.9.18',
   };
   return api;
 })();

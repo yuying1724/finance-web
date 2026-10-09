@@ -48,10 +48,11 @@ export function renderRecurring(root) {
   const groups = groupPending(d.pendingConfirmations || []);
 
   const pendingCard = h('div', { class: 'card' },
-    h('div', { class: 'card-title' }, h('h2', null, `待確認（${groups.length}）`)),
+    h('div', { class: 'card-title' }, h('h2', null, `待確認（${groups.length}）`),
+      h('button', { class: 'btn btn-sm', 'data-testid': 'check-dividends', onclick: (e) => checkDividendsNow(e.currentTarget) }, icon('coin'), '檢查股息')),
     groups.length
       ? h('ul', { class: 'list' }, groups.map((g) => h('li', null, pendingRow(g))))
-      : h('div', { class: 'muted', style: { padding: '8px 0' } }, '目前沒有待確認的定期交易'));
+      : h('div', { class: 'muted', style: { padding: '8px 0' } }, '目前沒有待確認的定期交易或股息'));
 
   const templates = (d.recurring || []).slice().sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1));
   const tplCard = h('div', { class: 'card' },
@@ -62,6 +63,22 @@ export function renderRecurring(root) {
       : h('div', { class: 'muted', style: { padding: '8px 0' } }, '還沒有定期範本'));
 
   mount(root, h('div', { class: 'page-head' }, h('h1', null, '定期')), pendingCard, tplCard);
+}
+
+/** 立即檢查股息公告（平常每天早上 7 點自動檢查） */
+async function checkDividendsNow(btn) {
+  await withBusy(btn, async () => {
+    try {
+      const r = await api.call('checkDividends', {});
+      const coming = (r.waiting || []).filter((w) => w.exDate >= state.data.today);
+      const parts = [];
+      parts.push(r.created.length ? `新增 ${r.created.length} 筆待確認股息` : '沒有新的股息');
+      if (coming.length) parts.push('即將除息：' + coming.map((w) => `${w.symbol}（${w.exDate.slice(5).replace('-', '/')}${w.cash ? '，每股 ' + w.cash : ''}）`).join('、'));
+      if (r.errors && r.errors.length) parts.push('部分資料抓不到，明天會再試');
+      toast(parts.join('；'));
+      if (r.created.length) refreshInBackground();
+    } catch (err) { toast(errorText(err), { kind: 'bad' }); }
+  });
 }
 
 function groupPending(list) {
@@ -81,6 +98,7 @@ function legLabel(t) {
     const sym = t.type === '買入' ? t.dstSymbol : t.srcSymbol;
     return `${t.type}　${sym}　預計 ${money(t.srcQty ?? t.dstQty, t.srcSymbol || t.dstSymbol)}`;
   }
+  if (t.type === '股息') return t.dstQty === null || t.dstQty === undefined || t.dstQty === '' ? `股息　${t.relatedSymbol || ''}　金額待填` : `股息　${t.relatedSymbol || ''}　預估實收 ${money(t.dstQty, t.dstSymbol)}`;
   if (t.type === '轉帳' || t.type === '換匯') return `${t.type}　${money(t.srcQty, t.srcSymbol)} → ${money(t.dstQty, t.dstSymbol)}`;
   if (t.dstAccount) return `${t.type}　${money(t.dstQty, t.dstSymbol)}`;
   return `${t.type}　${money(t.srcQty, t.srcSymbol)}`;
@@ -93,7 +111,8 @@ function pendingRow(group) {
     h('div', { class: 'ico' }, icon('refresh')),
     h('div', { class: 'grow' },
       h('div', { class: 't' }, first.templateName || '定期交易', h('span', { class: 'badge', style: { marginLeft: '6px' } }, first.mode || '')),
-      h('div', { class: 's' }, dateLabel(first.date, d.today) + '　' + group.map(legLabel).join('；')),
+      h('div', { class: 's' }, (first.type === '股息' ? '預估發放 ' : '') + dateLabel(first.date, d.today) + '　' + group.map(legLabel).join('；')),
+      first.autoDividend && first.plannedDate ? h('div', { class: 's' }, `除息日 ${first.plannedDate}　稅前 ${money(first.amount, first.dstSymbol)}${first.fee ? '－匯費 ' + money(first.fee, first.dstSymbol) : ''}${first.tax ? '－二代健保 ' + money(first.tax, first.dstSymbol) : ''}`) : null,
       first.suggested && first.suggested.reason ? h('div', { class: 's', style: { color: 'var(--accent, #b3852c)' } }, `建議金額 ${money(first.suggested.amount, first.srcSymbol)}　${first.suggested.reason}`) : null),
     h('div', { class: 'row-flex', style: { gap: '6px' } },
       (group.length === 1 && isManualOrder(first)) ? h('button', { class: 'btn btn-sm', onclick: () => openPostponeDialog(first) }, '延後') : null,
@@ -144,6 +163,7 @@ function openPostponeDialog(item) {
 function openConfirmDialog(group) {
   const first = group[0];
   if (group.length === 1 && (first.type === '買入' || first.type === '賣出')) return openTradeConfirm(first);
+  if (group.length === 1 && first.type === '股息') return openDividendConfirm(first);
   return openSimpleConfirm(group); // 一組多筆（貸款還款）或非投資類型：用簡單確認
 }
 
@@ -179,6 +199,45 @@ function openSimpleConfirm(group) {
     });
   } }, '確認入帳');
   const sheet = openSheet({ title: '確認' + (first.templateName || ''), dismissable: false, body, footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save] });
+}
+
+/** 股息：預估的稅前／匯費／二代健保都可以改；改了前三個會自動重算實收，也可以直接改實收（以實收為準入帳） */
+function openDividendConfirm(item) {
+  const sym = item.dstSymbol || 'TWD';
+  const str = (v) => (v === null || v === undefined ? '' : String(v));
+  const f = { date: item.date, amount: str(item.amount), fee: str(item.fee || (item.amount ? 0 : '')), tax: str(item.tax || (item.amount ? 0 : '')), dstQty: str(item.dstQty) };
+  const { banner, fld, showErr, clearErr } = fieldHelpers();
+  const netInput = h('input', { type: 'text', inputmode: 'decimal', value: f.dstQty, 'data-testid': 'div-net', oninput: (e) => { f.dstQty = e.target.value; } });
+  const recalc = () => {
+    const g = Number(f.amount), fe = Number(f.fee || 0), tx = Number(f.tax || 0);
+    if (f.amount !== '' && isFinite(g) && isFinite(fe) && isFinite(tx)) { f.dstQty = String(Math.round((g - fe - tx) * 100) / 100); netInput.value = f.dstQty; }
+  };
+  const num = (key) => h('input', { type: 'text', inputmode: 'decimal', value: f[key], oninput: (e) => { f[key] = e.target.value; recalc(); } });
+  const intro = item.autoDividend
+    ? `系統依除息日（${item.plannedDate}）前一天的持股估算。等股息實際入帳後，把金額改成存摺／App 上實際收到的就好。`
+    : '把實際收到的股息金額填進來。稅前股息、手續費、預扣稅不知道可以留空。';
+  const body = h('div', null, banner,
+    h('div', { class: 'notice', style: { marginBottom: '12px' } }, intro),
+    fld('date', '入帳日', h('input', { type: 'date', value: f.date, onchange: (e) => { f.date = e.target.value; } })),
+    fld('amount', `稅前股息（${sym}，選填）`, num('amount')),
+    fld('fee', `匯費／手續費（${sym}，選填）`, num('fee')),
+    fld('tax', `二代健保／預扣稅（${sym}，選填）`, num('tax')),
+    fld('dstQty', `實收金額（${sym}）`, netInput, '入帳金額以這個為準'));
+  const save = h('button', { class: 'btn btn-primary', type: 'button', 'data-testid': 'confirm-save', onclick: async (e) => {
+    clearErr();
+    if (f.dstQty === '' || !(Number(f.dstQty) > 0)) { showErr('dstQty', '請輸入實際收到的金額'); return; }
+    await withBusy(e.currentTarget, async () => {
+      try {
+        const trade = { date: f.date, dstQty: f.dstQty, amount: f.amount, fee: f.fee, tax: f.tax };
+        await api.call('confirmPending', { id: item.id, trade, requestId: api.newRequestId() });
+        sheet.close(); removePendingLocal([item]); refreshInBackground(); toast('已確認入帳');
+      } catch (err) {
+        if (err.code === 'VALIDATION' && err.details && err.details.errors) err.details.errors.forEach((x) => showErr(x.field, x.message));
+        else { banner.style.display = ''; mount(banner, errorText(err)); }
+      }
+    });
+  } }, '確認入帳');
+  const sheet = openSheet({ title: '確認' + (item.templateName || '股息'), dismissable: false, body, footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save] });
 }
 
 /** 買入／賣出：填實際成交結果（成交日、股數、成交金額、手續費、稅款、實付／實收金額），交割日自動算出可覆寫 */
@@ -297,7 +356,13 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
       const isIncome = f.type === '收入' || f.type === '股息';
       parts.push(fld(isIncome ? 'dstAccount' : 'srcAccount', isIncome ? '入帳帳戶' : '付款帳戶', accountSel(isIncome ? 'dstAccount' : 'srcAccount', accounts, '請選擇')));
       parts.push(fld(isIncome ? 'dstSymbol' : 'srcSymbol', '幣別', symbolSel(isIncome ? 'dstSymbol' : 'srcSymbol')));
-      parts.push(fld(isIncome ? 'dstQty' : 'srcQty', '預計金額', h('input', { type: 'text', inputmode: 'decimal', value: isIncome ? f.dstQty : f.srcQty, oninput: (e) => { f[isIncome ? 'dstQty' : 'srcQty'] = e.target.value; } })));
+      if (f.type === '股息') {
+        if (!investSymbols.some((i) => i.symbol === f.srcSymbol)) f.srcSymbol = '';
+        parts.push(fld('srcSymbol', '這筆股息屬於哪個標的', h('select', { onchange: (e) => { f.srcSymbol = e.target.value; } },
+          [h('option', { value: '' }, '請選擇')].concat(investSymbols.map((i) => h('option', { value: i.symbol, selected: i.symbol === f.srcSymbol }, `${i.symbol} ${i.name || ''}`)))),
+          '台股／ETF 的現金股息系統會在除息日自動產生，不用設定範本；美股（複委託）這類沒有公開資料的才需要'));
+      }
+      parts.push(fld(isIncome ? 'dstQty' : 'srcQty', f.type === '股息' ? '預計金額（選填，留空等入帳時再填）' : '預計金額', h('input', { type: 'text', inputmode: 'decimal', value: isIncome ? f.dstQty : f.srcQty, oninput: (e) => { f[isIncome ? 'dstQty' : 'srcQty'] = e.target.value; } })));
       if (f.type === '收入' || f.type === '支出') parts.push(fld('categoryId', '分類', categorySel()));
     } else if (f.type === '轉帳' || f.type === '換匯') {
       parts.push(

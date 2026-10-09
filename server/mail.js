@@ -69,6 +69,17 @@ var FinMail = (function () {
     };
   }
 
+  function dividendDetected(items) {
+    // items: [{symbol, name, exDate, payDate, net, accountName}]
+    var lines = items.map(function (it) {
+      return '・' + it.symbol + (it.name ? ' ' + it.name : '') + '　除息日 ' + it.exDate + '　預估 ' + it.net + ' 元入 ' + it.accountName + '（預估 ' + it.payDate + ' 發放）';
+    });
+    return {
+      subject: '［財務系統］偵測到股息（' + items.length + ' 筆）',
+      body: '以下持股今天除息，系統已經產生「待確認」的股息：\n\n' + lines.join('\n') + '\n\n等股息實際入帳後，到「財務管理」App 的「定期 → 待確認」按確認就好；實收金額不一樣的話直接改成實際收到的。\n\n（此信由財務系統排程自動寄出）',
+    };
+  }
+
   // ---------- 實際寄送 ----------
   function send(subject, body) {
     try {
@@ -90,7 +101,7 @@ var FinMail = (function () {
 
   return {
     fundingReminder: fundingReminder, manualOrderToday: manualOrderToday, settlementReminder: settlementReminder,
-    stalePending: stalePending, cardDueReminder: cardDueReminder, shortfallReminder: shortfallReminder, send: send, sendIfAny: sendIfAny,
+    stalePending: stalePending, cardDueReminder: cardDueReminder, shortfallReminder: shortfallReminder, dividendDetected: dividendDetected, send: send, sendIfAny: sendIfAny,
   };
 })();
 //#ifnode

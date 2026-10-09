@@ -150,6 +150,11 @@ var FinApi = (function () {
       var o = pub(t);
       o.templateName = tpl ? tpl.name : '';
       o.mode = tpl ? tpl.mode : '';
+      if (t.type === '股息') {
+        var di = c.instruments[t.relatedSymbol];
+        o.relatedName = di ? di.name : '';
+        if (!tpl) { o.templateName = '股息　' + t.relatedSymbol + (di ? ' ' + di.name : ''); o.mode = '自動偵測'; o.autoDividend = true; }
+      }
       if (tpl && tpl.mode === '手動下單' && t.type === '買入' && t.dstSymbol && t.srcQty) {
         var cur = c.prices[t.dstSymbol];
         var ref = referencePriceFor(c, t.dstAccount, t.dstSymbol);
@@ -291,7 +296,7 @@ var FinApi = (function () {
       occ.forEach(function (o) {
         var generated = c.txRows.some(function (t) { return t.recurringId === tpl.id && t.plannedDate === o.planned; });
         if (generated) return;
-        var isIncome = tpl.type === '收入';
+        var isIncome = tpl.type === '收入' || tpl.type === '股息';
         var amount = tpl.type === '貸款還款' ? null : (isIncome ? tpl.dstQty : tpl.srcQty);
         var symbol = isIncome ? tpl.dstSymbol : tpl.srcSymbol;
         if (tpl.type === '貸款還款') {
@@ -380,6 +385,21 @@ var FinApi = (function () {
       if (!inst || inst.type !== '法幣' || !(Number(qty) > 0)) return;
       rows.push({ date: t.settleDate, kind: '交割', name: (isBuy ? '買入 ' + t.dstSymbol : '賣出 ' + t.srcSymbol) + ' 交割', amount: Number(qty), symbol: sym,
         direction: isBuy ? 'out' : 'in', overdue: false, estimated: false, txId: t.id, fundingAccountId: acct || '' });
+    });
+    // 已產生、還沒確認的收入／支出／股息（例如自動偵測的股息、提醒確認的帳單）：日期已過的當作今天
+    c.txRows.forEach(function (t) {
+      if (t.status !== '待確認' || (t.type !== '收入' && t.type !== '支出' && t.type !== '股息') || t.groupId) return;
+      var isIn = t.type !== '支出';
+      var acct = isIn ? t.dstAccount : t.srcAccount, sym = isIn ? t.dstSymbol : t.srcSymbol, qty = isIn ? t.dstQty : t.srcQty;
+      var inst = c.instruments[sym];
+      if (!acct || !inst || inst.type !== '法幣') return;
+      var d = t.date < c.today ? c.today : t.date;
+      if (d > to) return;
+      var tpl = tplById[t.recurringId];
+      var name = t.type === '股息' ? '股息 ' + t.relatedSymbol + (c.instruments[t.relatedSymbol] ? ' ' + c.instruments[t.relatedSymbol].name : '') + '（待確認）'
+        : (tpl ? tpl.name : (t.note || t.type)) + '（待確認）';
+      rows.push({ date: d, kind: '待確認', name: name, amount: Number(qty) > 0 ? Number(qty) : null, symbol: sym, direction: isIn ? 'in' : 'out',
+        overdue: false, estimated: true, txId: t.id, fundingAccountId: acct });
     });
     rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.direction === b.direction ? 0 : a.direction === 'in' ? -1 : 1); });
 
@@ -839,8 +859,10 @@ var FinApi = (function () {
       sipMinAmount: num('sipMinAmount', '定期定額最低單筆投入', 0), taxRateStock: num('taxRateStock', '證交稅率(股票)', market === '複委託' ? 0 : 0.003),
       taxRateEtf: num('taxRateEtf', '證交稅率(ETF)', market === '複委託' ? 0 : 0.001), buySettleDays: num('buySettleDays', '買入交割天數', market === '複委託' ? 1 : 2),
       sellSettleDays: num('sellSettleDays', '賣出交割天數', 2), calendar: calendar, settleAccountId: str(a.settleAccountId), note: FinValidate.safeText(str(a.note)),
+      dividendAccountId: str(a.dividendAccountId),
     };
     if (value.settleAccountId && !c.accounts[value.settleAccountId]) errors.push({ field: 'settleAccountId', message: '找不到預設交割帳戶' });
+    if (value.dividendAccountId && !c.accounts[value.dividendAccountId]) errors.push({ field: 'dividendAccountId', message: '找不到股息入帳帳戶' });
     return { errors: errors, value: value };
   }
 
@@ -1248,6 +1270,12 @@ var FinApi = (function () {
     checkSymbol('srcSymbol', srcSymbol, '來源'); checkSymbol('dstSymbol', dstSymbol, '目的');
 
     if (type === '收入' || type === '股息') { if (!dstAccount || !dstSymbol) err('dstAccount', '請填目的帳戶與標的'); }
+    if (type === '股息') {
+      // 股息範本：「來源標的」用來記這筆股息屬於哪個標的（例如 VOO），沒有來源帳戶與數量
+      srcAccount = ''; srcQty = null;
+      if (!srcSymbol) err('srcSymbol', '請選擇這筆股息屬於哪個標的');
+      else if (c.instruments[srcSymbol] && c.instruments[srcSymbol].type === '法幣') err('srcSymbol', '請選擇股票／ETF 等投資標的');
+    }
     else if (type === '支出') { if (!srcAccount || !srcSymbol) err('srcAccount', '請填來源帳戶與標的'); }
     else if (type === '轉帳' || type === '換匯') {
       if (!srcAccount || !srcSymbol) err('srcAccount', '請填來源帳戶與標的');
@@ -1345,6 +1373,17 @@ var FinApi = (function () {
     fn: function (p, env) { return FinRecurringJob.runDaily(env.now); },
   };
 
+  /** 立即檢查股息公告（正常由每日排程自動執行） */
+  H.checkDividends = {
+    fn: function (p, env) {
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var r = FinDividends.run(c, env);
+        return { created: r.created.map(pub), waiting: r.waiting, skipped: r.skipped, errors: r.errors };
+      });
+    },
+  };
+
   function numOrThrow(v, label) {
     var n = Number(v);
     if (v === undefined || v === null || v === '' || !isFinite(n)) throw FinFail('VALIDATION', '請輸入' + label);
@@ -1402,12 +1441,26 @@ var FinApi = (function () {
               patch.settleDate = row.settleDate || FinRecurring.computeSettleDate(newTradeDate, settleDays, markets, holidaySetOf(c));
             }
           } else {
+            if (row.type === '股息') {
+              // 股息：實收金額必填；稅前股息／匯費／二代健保（或預扣稅）可一起改，沒帶就維持原本的預估
+              patch.dstQty = numOrThrow(trade.dstQty, '實收金額');
+              if (!(patch.dstQty > 0)) throw FinFail('VALIDATION', '實收金額必須大於 0', { errors: [{ field: 'dstQty', message: '實收金額必須大於 0' }], warnings: [] });
+              ['amount', 'fee', 'tax'].forEach(function (k) {
+                if (!Object.prototype.hasOwnProperty.call(trade, k)) return;
+                var v = trade[k];
+                if (v === null || v === '' || v === undefined) { patch[k] = k === 'amount' ? null : 0; return; }
+                var n = Number(v);
+                if (!isFinite(n) || n < 0) throw FinFail('VALIDATION', '金額格式不正確', { errors: [{ field: k, message: '請輸入不小於 0 的數字' }], warnings: [] });
+                patch[k] = n;
+              });
+              if (!row.relatedSymbol && str(trade.relatedSymbol) && c.instruments[str(trade.relatedSymbol)]) patch.relatedSymbol = str(trade.relatedSymbol);
+            }
             if (trade.date && FinDates.isValid(str(trade.date))) patch.date = str(trade.date);
             if (trade.srcQty !== undefined && trade.srcQty !== null && trade.srcQty !== '' && row.srcAccount) patch.srcQty = Number(trade.srcQty);
-            if (trade.dstQty !== undefined && trade.dstQty !== null && trade.dstQty !== '' && row.dstAccount) patch.dstQty = Number(trade.dstQty);
+            if (row.type !== '股息' && trade.dstQty !== undefined && trade.dstQty !== null && trade.dstQty !== '' && row.dstAccount) patch.dstQty = Number(trade.dstQty);
           }
           FinRepo.updateRow('transactions', row._row, patch);
-          FinRepo.audit('確認', 'transactions', row.id, '定期確認入帳：' + summarizeTx(row), env.device);
+          FinRepo.audit('確認', 'transactions', row.id, (row.recurringId ? '定期確認入帳：' : '確認入帳：') + summarizeTx(row), env.device);
           var oo = pub(row); Object.keys(patch).forEach(function (k) { oo[k] = patch[k]; }); out.push(oo);
         }
         var res = { transactions: out };

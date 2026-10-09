@@ -56,7 +56,7 @@ var FinSchema = (function () {
         c('sipFixedFee', '定期定額固定手續費', 'num'), c('sipFeeRate', '定期定額手續費率', 'num'), c('sipFeeCap', '定期定額每筆上限', 'num'),
         c('sipMinAmount', '定期定額最低單筆投入', 'num'), c('taxRateStock', '證交稅率(股票)', 'num'), c('taxRateEtf', '證交稅率(ETF)', 'num'),
         c('buySettleDays', '買入交割天數', 'num'), c('sellSettleDays', '賣出交割天數', 'num'), c('calendar', '交割日曆'),
-        c('settleAccountId', '預設交割帳戶ID'), c('note', '備註')],
+        c('settleAccountId', '預設交割帳戶ID'), c('note', '備註'), c('dividendAccountId', '股息入帳帳戶ID')],
     },
     categories: {
       sheet: '分類', idKey: 'id', idPrefix: 'C', idWidth: 3,
@@ -141,7 +141,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.17',
+    APP_VERSION: '0.9.18',
   };
   return api;
 })();
@@ -2297,6 +2297,17 @@ var FinMail = (function () {
     };
   }
 
+  function dividendDetected(items) {
+    // items: [{symbol, name, exDate, payDate, net, accountName}]
+    var lines = items.map(function (it) {
+      return '・' + it.symbol + (it.name ? ' ' + it.name : '') + '　除息日 ' + it.exDate + '　預估 ' + it.net + ' 元入 ' + it.accountName + '（預估 ' + it.payDate + ' 發放）';
+    });
+    return {
+      subject: '［財務系統］偵測到股息（' + items.length + ' 筆）',
+      body: '以下持股今天除息，系統已經產生「待確認」的股息：\n\n' + lines.join('\n') + '\n\n等股息實際入帳後，到「財務管理」App 的「定期 → 待確認」按確認就好；實收金額不一樣的話直接改成實際收到的。\n\n（此信由財務系統排程自動寄出）',
+    };
+  }
+
   // ---------- 實際寄送 ----------
   function send(subject, body) {
     try {
@@ -2318,7 +2329,7 @@ var FinMail = (function () {
 
   return {
     fundingReminder: fundingReminder, manualOrderToday: manualOrderToday, settlementReminder: settlementReminder,
-    stalePending: stalePending, cardDueReminder: cardDueReminder, shortfallReminder: shortfallReminder, send: send, sendIfAny: sendIfAny,
+    stalePending: stalePending, cardDueReminder: cardDueReminder, shortfallReminder: shortfallReminder, dividendDetected: dividendDetected, send: send, sendIfAny: sendIfAny,
   };
 })();
 
@@ -2475,6 +2486,11 @@ var FinApi = (function () {
       var o = pub(t);
       o.templateName = tpl ? tpl.name : '';
       o.mode = tpl ? tpl.mode : '';
+      if (t.type === '股息') {
+        var di = c.instruments[t.relatedSymbol];
+        o.relatedName = di ? di.name : '';
+        if (!tpl) { o.templateName = '股息　' + t.relatedSymbol + (di ? ' ' + di.name : ''); o.mode = '自動偵測'; o.autoDividend = true; }
+      }
       if (tpl && tpl.mode === '手動下單' && t.type === '買入' && t.dstSymbol && t.srcQty) {
         var cur = c.prices[t.dstSymbol];
         var ref = referencePriceFor(c, t.dstAccount, t.dstSymbol);
@@ -2616,7 +2632,7 @@ var FinApi = (function () {
       occ.forEach(function (o) {
         var generated = c.txRows.some(function (t) { return t.recurringId === tpl.id && t.plannedDate === o.planned; });
         if (generated) return;
-        var isIncome = tpl.type === '收入';
+        var isIncome = tpl.type === '收入' || tpl.type === '股息';
         var amount = tpl.type === '貸款還款' ? null : (isIncome ? tpl.dstQty : tpl.srcQty);
         var symbol = isIncome ? tpl.dstSymbol : tpl.srcSymbol;
         if (tpl.type === '貸款還款') {
@@ -2705,6 +2721,21 @@ var FinApi = (function () {
       if (!inst || inst.type !== '法幣' || !(Number(qty) > 0)) return;
       rows.push({ date: t.settleDate, kind: '交割', name: (isBuy ? '買入 ' + t.dstSymbol : '賣出 ' + t.srcSymbol) + ' 交割', amount: Number(qty), symbol: sym,
         direction: isBuy ? 'out' : 'in', overdue: false, estimated: false, txId: t.id, fundingAccountId: acct || '' });
+    });
+    // 已產生、還沒確認的收入／支出／股息（例如自動偵測的股息、提醒確認的帳單）：日期已過的當作今天
+    c.txRows.forEach(function (t) {
+      if (t.status !== '待確認' || (t.type !== '收入' && t.type !== '支出' && t.type !== '股息') || t.groupId) return;
+      var isIn = t.type !== '支出';
+      var acct = isIn ? t.dstAccount : t.srcAccount, sym = isIn ? t.dstSymbol : t.srcSymbol, qty = isIn ? t.dstQty : t.srcQty;
+      var inst = c.instruments[sym];
+      if (!acct || !inst || inst.type !== '法幣') return;
+      var d = t.date < c.today ? c.today : t.date;
+      if (d > to) return;
+      var tpl = tplById[t.recurringId];
+      var name = t.type === '股息' ? '股息 ' + t.relatedSymbol + (c.instruments[t.relatedSymbol] ? ' ' + c.instruments[t.relatedSymbol].name : '') + '（待確認）'
+        : (tpl ? tpl.name : (t.note || t.type)) + '（待確認）';
+      rows.push({ date: d, kind: '待確認', name: name, amount: Number(qty) > 0 ? Number(qty) : null, symbol: sym, direction: isIn ? 'in' : 'out',
+        overdue: false, estimated: true, txId: t.id, fundingAccountId: acct });
     });
     rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.direction === b.direction ? 0 : a.direction === 'in' ? -1 : 1); });
 
@@ -3164,8 +3195,10 @@ var FinApi = (function () {
       sipMinAmount: num('sipMinAmount', '定期定額最低單筆投入', 0), taxRateStock: num('taxRateStock', '證交稅率(股票)', market === '複委託' ? 0 : 0.003),
       taxRateEtf: num('taxRateEtf', '證交稅率(ETF)', market === '複委託' ? 0 : 0.001), buySettleDays: num('buySettleDays', '買入交割天數', market === '複委託' ? 1 : 2),
       sellSettleDays: num('sellSettleDays', '賣出交割天數', 2), calendar: calendar, settleAccountId: str(a.settleAccountId), note: FinValidate.safeText(str(a.note)),
+      dividendAccountId: str(a.dividendAccountId),
     };
     if (value.settleAccountId && !c.accounts[value.settleAccountId]) errors.push({ field: 'settleAccountId', message: '找不到預設交割帳戶' });
+    if (value.dividendAccountId && !c.accounts[value.dividendAccountId]) errors.push({ field: 'dividendAccountId', message: '找不到股息入帳帳戶' });
     return { errors: errors, value: value };
   }
 
@@ -3573,6 +3606,12 @@ var FinApi = (function () {
     checkSymbol('srcSymbol', srcSymbol, '來源'); checkSymbol('dstSymbol', dstSymbol, '目的');
 
     if (type === '收入' || type === '股息') { if (!dstAccount || !dstSymbol) err('dstAccount', '請填目的帳戶與標的'); }
+    if (type === '股息') {
+      // 股息範本：「來源標的」用來記這筆股息屬於哪個標的（例如 VOO），沒有來源帳戶與數量
+      srcAccount = ''; srcQty = null;
+      if (!srcSymbol) err('srcSymbol', '請選擇這筆股息屬於哪個標的');
+      else if (c.instruments[srcSymbol] && c.instruments[srcSymbol].type === '法幣') err('srcSymbol', '請選擇股票／ETF 等投資標的');
+    }
     else if (type === '支出') { if (!srcAccount || !srcSymbol) err('srcAccount', '請填來源帳戶與標的'); }
     else if (type === '轉帳' || type === '換匯') {
       if (!srcAccount || !srcSymbol) err('srcAccount', '請填來源帳戶與標的');
@@ -3670,6 +3709,17 @@ var FinApi = (function () {
     fn: function (p, env) { return FinRecurringJob.runDaily(env.now); },
   };
 
+  /** 立即檢查股息公告（正常由每日排程自動執行） */
+  H.checkDividends = {
+    fn: function (p, env) {
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var r = FinDividends.run(c, env);
+        return { created: r.created.map(pub), waiting: r.waiting, skipped: r.skipped, errors: r.errors };
+      });
+    },
+  };
+
   function numOrThrow(v, label) {
     var n = Number(v);
     if (v === undefined || v === null || v === '' || !isFinite(n)) throw FinFail('VALIDATION', '請輸入' + label);
@@ -3727,12 +3777,26 @@ var FinApi = (function () {
               patch.settleDate = row.settleDate || FinRecurring.computeSettleDate(newTradeDate, settleDays, markets, holidaySetOf(c));
             }
           } else {
+            if (row.type === '股息') {
+              // 股息：實收金額必填；稅前股息／匯費／二代健保（或預扣稅）可一起改，沒帶就維持原本的預估
+              patch.dstQty = numOrThrow(trade.dstQty, '實收金額');
+              if (!(patch.dstQty > 0)) throw FinFail('VALIDATION', '實收金額必須大於 0', { errors: [{ field: 'dstQty', message: '實收金額必須大於 0' }], warnings: [] });
+              ['amount', 'fee', 'tax'].forEach(function (k) {
+                if (!Object.prototype.hasOwnProperty.call(trade, k)) return;
+                var v = trade[k];
+                if (v === null || v === '' || v === undefined) { patch[k] = k === 'amount' ? null : 0; return; }
+                var n = Number(v);
+                if (!isFinite(n) || n < 0) throw FinFail('VALIDATION', '金額格式不正確', { errors: [{ field: k, message: '請輸入不小於 0 的數字' }], warnings: [] });
+                patch[k] = n;
+              });
+              if (!row.relatedSymbol && str(trade.relatedSymbol) && c.instruments[str(trade.relatedSymbol)]) patch.relatedSymbol = str(trade.relatedSymbol);
+            }
             if (trade.date && FinDates.isValid(str(trade.date))) patch.date = str(trade.date);
             if (trade.srcQty !== undefined && trade.srcQty !== null && trade.srcQty !== '' && row.srcAccount) patch.srcQty = Number(trade.srcQty);
-            if (trade.dstQty !== undefined && trade.dstQty !== null && trade.dstQty !== '' && row.dstAccount) patch.dstQty = Number(trade.dstQty);
+            if (row.type !== '股息' && trade.dstQty !== undefined && trade.dstQty !== null && trade.dstQty !== '' && row.dstAccount) patch.dstQty = Number(trade.dstQty);
           }
           FinRepo.updateRow('transactions', row._row, patch);
-          FinRepo.audit('確認', 'transactions', row.id, '定期確認入帳：' + summarizeTx(row), env.device);
+          FinRepo.audit('確認', 'transactions', row.id, (row.recurringId ? '定期確認入帳：' : '確認入帳：') + summarizeTx(row), env.device);
           var oo = pub(row); Object.keys(patch).forEach(function (k) { oo[k] = patch[k]; }); out.push(oo);
         }
         var res = { transactions: out };
@@ -3902,6 +3966,218 @@ var FinApi = (function () {
   return { handle: handle, actions: Object.keys(H), loadContext: loadContext, computeAll: computeAll, installmentSchedules: installmentSchedules, cashflow: cashflow };
 })();
 
+// ==================== server/dividends.js ====================
+/**
+ * 台股／ETF 現金股息自動偵測：每天排程（dailyJob → FinRecurringJob.runDaily）呼叫一次。
+ *  1. 抓證交所「除權除息預告表」與櫃買中心「除權除息預告」（免費、不用金鑰），只留下你有持有的台股／ETF。
+ *     公告會在除息日前後從預告表消失，所以看到的公告先存在 ScriptProperties（DIV_SEEN），之後就算預告表拿掉了也還記得。
+ *  2. 到了除息日（含當天）：用「除息日前一天」的持股股數 × 每股現金股利算出稅前股息，扣掉匯費與二代健保（單筆 ≥ 門檻才扣），
+ *     產生一筆「待確認」的股息交易，日期＝預估發放日（除息日＋1 個月，公告不含發放日），計畫日期＝除息日。
+ *     實際入帳後你只要到「待確認」確認（金額不同就改成實際收到的）。
+ *  去重：同一標的、同一除息日只產生一次（不管之後是確認、略過還是作廢）；如果你已經自己記過這筆股息（除息日後 75 天內有同標的的股息），也不再產生。
+ *  入帳帳戶：證券帳戶設定的「股息入帳帳戶」→ 沒填就用「預設交割帳戶」→ 都沒有就不產生（寫進 Logger）。
+ *  費用（可在「設定」分頁加這幾個鍵覆寫）：股息匯費（預設 10）、二代健保費率（預設 0.0211）、二代健保門檻（預設 20000）。
+ *  只處理現金股利；配股（股票股利）不會自動產生，仍請手動記「股數調整」。
+ */
+var FinDividends = (function () {
+  var TWSE_URL = 'https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL';
+  var TPEX_URL = 'https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost';
+  var PROP_KEY = 'DIV_SEEN';
+  var KEEP_DAYS = 45; // 除息日過了這麼多天的公告就從記憶中移除
+  var LATE_DAYS = 20; // 除息日過了這麼多天還沒產生（例如剛上線、排程停了），就不再補產生
+  var MANUAL_WINDOW = 75; // 除息日後幾天內已有手動記錄的同標的股息，就視為已記過
+  var DEFAULTS = { fee: 10, nhiRate: 0.0211, nhiThreshold: 20000 };
+
+  function ts(ms) { return FinDates.timestamp(ms); }
+
+  /** 民國日期（1151008、115/10/08、115-10-08）→ 2026-10-08；看不懂回傳 '' */
+  function rocToIso(v) {
+    var s = String(v === undefined || v === null ? '' : v).trim();
+    if (/^(19|20)\d{6}$/.test(s)) { var ad = FinDates.format(+s.slice(0, 4), +s.slice(4, 6), +s.slice(6, 8)); return FinDates.isValid(ad) ? ad : ''; } // 西元 yyyyMMdd
+    var m = s.match(/^(\d{2,3})[\/\-.]?(\d{1,2})[\/\-.]?(\d{1,2})$/);
+    if (!m) return '';
+    if (s.indexOf('/') < 0 && s.indexOf('-') < 0 && s.indexOf('.') < 0) {
+      // 純數字：最後 4 碼是月日
+      if (s.length < 6) return '';
+      m = [s, s.slice(0, s.length - 4), s.slice(-4, -2), s.slice(-2)];
+    }
+    var y = Number(m[1]) + 1911, mo = Number(m[2]), d = Number(m[3]);
+    var iso = FinDates.format(y, mo, d);
+    return FinDates.isValid(iso) ? iso : '';
+  }
+  function num(v) {
+    var n = Number(String(v === undefined || v === null ? '' : v).replace(/,/g, '').trim());
+    return isFinite(n) ? n : 0;
+  }
+  /** 公告裡的除權息類型是否含現金股利（息、權息、除息、除權息） */
+  function hasCash(kind) { return String(kind || '').indexOf('息') >= 0; }
+
+  function fetchJson(url) {
+    var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) throw new Error('HTTP ' + res.getResponseCode());
+    return JSON.parse(res.getContentText());
+  }
+
+  /** 解析兩個來源 → [{symbol, exDate, cash(每股現金股利，0＝還沒公告), name, source}]；單一來源失敗不影響另一個 */
+  function fetchAnnouncements() {
+    var out = [], errors = [];
+    try {
+      (fetchJson(TWSE_URL) || []).forEach(function (it) {
+        if (!hasCash(it.Exdividend)) return;
+        var exDate = rocToIso(it.Date), symbol = String(it.Code || '').trim();
+        if (exDate && symbol) out.push({ symbol: symbol, exDate: exDate, cash: num(it.CashDividend), name: String(it.Name || '').trim(), source: '證交所' });
+      });
+    } catch (e) { errors.push('證交所：' + (e && e.message ? e.message : e)); }
+    try {
+      (fetchJson(TPEX_URL) || []).forEach(function (it) {
+        if (!hasCash(it.ExRrightsExDividend)) return;
+        var exDate = rocToIso(it.ExRrightsExDividendDate), symbol = String(it.SecuritiesCompanyCode || '').trim();
+        if (exDate && symbol) out.push({ symbol: symbol, exDate: exDate, cash: num(it.CashDividend), name: String(it.CompanyName || '').trim(), source: '櫃買中心' });
+      });
+    } catch (e) { errors.push('櫃買中心：' + (e && e.message ? e.message : e)); }
+    return { items: out, errors: errors };
+  }
+
+  function loadSeen() {
+    try { var v = PropertiesService.getScriptProperties().getProperty(PROP_KEY); return v ? JSON.parse(v) || {} : {}; } catch (e) { return {}; }
+  }
+  function saveSeen(seen) {
+    try { PropertiesService.getScriptProperties().setProperty(PROP_KEY, JSON.stringify(seen)); } catch (e) { try { Logger.log('股息公告暫存失敗：' + e.message); } catch (x) { /* ignore */ } }
+  }
+
+  /** 會發台幣現金股息的標的：台股／ETF、以台幣計價 */
+  function isTwEquity(inst) { return !!inst && (inst.type === '台股' || inst.type === 'ETF') && (inst.quote || 'TWD') === 'TWD'; }
+
+  /** 除息日前一天，各證券帳戶持有該標的的股數：[{accountId, qty}]（只列正數） */
+  function holdersAsOf(c, symbol, asOf) {
+    var inst = c.instruments[symbol];
+    var txs = c.txRows.filter(function (t) { return t.srcSymbol === symbol || t.dstSymbol === symbol; });
+    var bal = FinLedger.computeBalances(txs, c.instruments, { asOf: asOf }).units;
+    var out = [];
+    Object.keys(bal).forEach(function (k) {
+      var parts = k.split('|');
+      if (parts[1] !== symbol) return;
+      var acct = c.accounts[parts[0]];
+      if (!acct || acct.type !== '證券') return;
+      var qty = FinMoney.fromUnits(bal[k], inst.decimals);
+      if (qty > 0) out.push({ accountId: acct.id, qty: qty });
+    });
+    out.sort(function (a, b) { return b.qty - a.qty; });
+    return out;
+  }
+
+  function settingNum(c, key, dflt) {
+    var v = c.settings ? c.settings[key] : undefined;
+    if (v === undefined || v === null || v === '') return dflt;
+    var n = Number(v);
+    return isFinite(n) && n >= 0 ? n : dflt;
+  }
+
+  /** 稅前 → {gross, fee, tax, net}（台幣，元以下捨去；二代健保四捨五入） */
+  function estimate(c, shares, cashPerShare) {
+    var gross = Math.floor(shares * cashPerShare + 1e-9);
+    var fee = settingNum(c, '股息匯費', DEFAULTS.fee);
+    var threshold = settingNum(c, '二代健保門檻', DEFAULTS.nhiThreshold);
+    var rate = settingNum(c, '二代健保費率', DEFAULTS.nhiRate);
+    var tax = gross >= threshold ? Math.round(gross * rate) : 0;
+    if (fee >= gross) fee = 0; // 金額太小時不扣匯費（避免變成負數）
+    return { gross: gross, fee: fee, tax: tax, net: gross - fee - tax };
+  }
+
+  function dividendAccountFor(c, brokerAccountId) {
+    var bs = c.brokerByAccount[brokerAccountId] || {};
+    var id = bs.dividendAccountId || bs.settleAccountId || '';
+    return id && c.accounts[id] ? id : '';
+  }
+
+  /** 日期加 n 個月（月底自動調整，例如 1/31 → 2/28） */
+  function addMonthsToDate(d, n) {
+    var ym = FinDates.addMonths(FinDates.ymOf(d), n);
+    var last = FinDates.monthRange(ym).to;
+    var day = d.slice(8, 10);
+    var cand = ym + '-' + day;
+    return cand > last ? last : cand;
+  }
+
+  function alreadyRecorded(c, symbol, exDate) {
+    var until = FinDates.addDays(exDate, MANUAL_WINDOW);
+    return c.txRows.some(function (t) {
+      if (t.type !== '股息' || t.relatedSymbol !== symbol) return false;
+      if (t.plannedDate === exDate) return true; // 自動產生過（任何狀態）
+      return t.status !== '作廢' && t.status !== '已略過' && t.date >= exDate && t.date <= until; // 你自己記過
+    });
+  }
+
+  /**
+   * 把公告併入記憶，並為到了除息日的持股產生待確認股息。
+   * announcements 省略時自己去抓。回傳 {created:[交易], waiting:[...], skipped:[...], errors:[...]}
+   */
+  function run(c, env, announcements) {
+    var fetched = announcements ? { items: announcements, errors: [] } : fetchAnnouncements();
+    var seen = loadSeen();
+    var today = c.today;
+    // 1. 只記住你有建立標的的台股／ETF 公告（避免把全市場幾百筆都存起來）
+    fetched.items.forEach(function (a) {
+      if (!isTwEquity(c.instruments[a.symbol])) return;
+      var key = a.symbol + '|' + a.exDate;
+      var prev = seen[key];
+      if (!prev || (a.cash > 0 && prev.cash !== a.cash)) seen[key] = { symbol: a.symbol, exDate: a.exDate, cash: a.cash > 0 ? a.cash : (prev ? prev.cash : 0), name: a.name, source: a.source };
+    });
+    // 2. 到了除息日就產生
+    var created = [], waiting = [], skipped = [];
+    var catRow = c.categoryRows.filter(function (x) { return x.type === '系統' && x.name === '股息'; })[0];
+    var now = ts(env.now);
+    Object.keys(seen).sort().forEach(function (key) {
+      var a = seen[key];
+      if (FinDates.addDays(a.exDate, KEEP_DAYS) < today) { delete seen[key]; return; }
+      if (a.done) return;
+      if (a.exDate > today) { waiting.push({ symbol: a.symbol, exDate: a.exDate, cash: a.cash }); return; }
+      if (!(a.cash > 0)) { waiting.push({ symbol: a.symbol, exDate: a.exDate, cash: 0 }); return; } // 已除息但每股金額還沒公告：等下次
+      if (FinDates.addDays(a.exDate, LATE_DAYS) < today) { a.done = true; skipped.push({ symbol: a.symbol, exDate: a.exDate, reason: '除息日已過太久' }); return; }
+      if (alreadyRecorded(c, a.symbol, a.exDate)) { a.done = true; return; }
+      var holders = holdersAsOf(c, a.symbol, FinDates.addDays(a.exDate, -1));
+      if (!holders.length) { a.done = true; return; } // 除息日前沒有持股
+      var shares = 0; holders.forEach(function (hh) { shares += hh.qty; });
+      var dst = '';
+      for (var i = 0; i < holders.length && !dst; i++) dst = dividendAccountFor(c, holders[i].accountId);
+      if (!dst) { skipped.push({ symbol: a.symbol, exDate: a.exDate, reason: '證券帳戶沒有設定股息入帳帳戶或預設交割帳戶' }); return; }
+      var e = estimate(c, shares, a.cash);
+      if (!(e.net > 0)) { a.done = true; return; }
+      var dstAcct = c.accounts[dst];
+      var inst = c.instruments[a.symbol];
+      var parts = ['稅前 ' + e.gross];
+      if (e.fee) parts.push('匯費 ' + e.fee);
+      if (e.tax) parts.push('二代健保 ' + e.tax);
+      var row = {
+        date: addMonthsToDate(a.exDate, 1), settleDate: '', type: '股息',
+        srcAccount: '', srcSymbol: '', srcQty: null,
+        dstAccount: dst, dstSymbol: (dstAcct && dstAcct.defaultSymbol) || 'TWD', dstQty: e.net,
+        categoryId: catRow ? catRow.id : '', amount: e.gross, fee: e.fee, tax: e.tax,
+        relatedSymbol: a.symbol, groupId: '', relatedTxId: '', recurringId: '', plannedDate: a.exDate,
+        note: '自動股息：' + ((inst && inst.name) || a.name || a.symbol) + '　除息日 ' + a.exDate + '，每股 ' + a.cash + ' 元 × ' + shares + ' 股（' + parts.join('－') + '，發放日為預估，入帳後請確認金額）',
+        status: '待確認', createdAt: now, updatedAt: now,
+      };
+      row.id = FinRepo.nextIds('transactions', 1)[0];
+      FinRepo.append('transactions', [row]);
+      c.txRows.push(row);
+      FinRepo.audit('新增', 'transactions', row.id, '股息自動產生：' + a.symbol + '（除息日 ' + a.exDate + '，預估 ' + e.net + '）', env.device || 'scheduler');
+      a.done = true;
+      created.push(row);
+    });
+    saveSeen(seen);
+    if (created.length) {
+      FinMail.sendIfAny(created.map(function (r) {
+        var inst = c.instruments[r.relatedSymbol];
+        return { symbol: r.relatedSymbol, name: inst ? inst.name : '', exDate: r.plannedDate, payDate: r.date, net: r.dstQty, accountName: (c.accounts[r.dstAccount] || {}).name || r.dstAccount };
+      }), FinMail.dividendDetected);
+    }
+    if (fetched.errors.length) { try { Logger.log('股息公告抓取失敗：' + fetched.errors.join('；')); } catch (x) { /* ignore */ } }
+    return { created: created, waiting: waiting, skipped: skipped, errors: fetched.errors };
+  }
+
+  return { run: run, fetchAnnouncements: fetchAnnouncements, rocToIso: rocToIso, estimate: estimate, addMonthsToDate: addMonthsToDate, holdersAsOf: holdersAsOf, PROP_KEY: PROP_KEY };
+})();
+
 // ==================== server/recurring.js ====================
 /**
  * 定期交易排程：每天執行一次（與既有的每日排程共用同一個時間觸發器，見 server/main.js 的 dailyJob）。
@@ -3952,6 +4228,13 @@ var FinRecurringJob = (function () {
       relatedSymbol: '', groupId: '', relatedTxId: '', recurringId: tpl.id, plannedDate: occ.planned,
       note: '定期：' + tpl.name, status: status, createdAt: now, updatedAt: now,
     };
+    if (tpl.type === '股息') {
+      // 股息範本：來源標的＝這筆股息屬於哪個標的；金額（目的數量）沒填代表等入帳再填
+      var divCat = c.categoryRows.filter(function (x) { return x.type === '系統' && x.name === '股息'; })[0];
+      row.relatedSymbol = tpl.srcSymbol || ''; row.srcAccount = ''; row.srcSymbol = ''; row.srcQty = null;
+      row.categoryId = divCat ? divCat.id : '';
+      if (status === '有效' && !(Number(row.dstQty) > 0)) status = row.status = '待確認'; // 沒有金額不能自動入帳
+    }
     if (isInvest) {
       // 到期時股數／成交金額都還不知道（要等券商成交或你自己下單），只有「來源」的預計投入金額是已知的
       row.dstQty = tpl.type === '買入' ? null : tpl.dstQty; // 買入：股數未知；賣出模式較少見，維持範本預設股數
@@ -4166,6 +4449,7 @@ var FinRecurringJob = (function () {
     var c = FinApi.loadContext(now);
     var gen = generateDue(c, env);
     var summary = { created: gen.created.length, skipped: gen.skipped.length };
+    try { var dv = FinDividends.run(c, env); summary.dividends = dv.created.length; if (dv.errors.length) summary.dividendErrors = dv.errors; } catch (e) { summary.dividendsError = e.message; }
     try { summary.fundingReminders = sendFundingReminders(c, env); } catch (e) { summary.fundingRemindersError = e.message; }
     try { summary.settlementReminders = sendSettlementReminders(c, env); } catch (e) { summary.settlementRemindersError = e.message; }
     try { summary.staleReminders = sendStalePendingReminders(c, env); } catch (e) { summary.staleRemindersError = e.message; }

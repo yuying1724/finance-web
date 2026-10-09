@@ -743,6 +743,42 @@ test('未來扣款日曆：首頁提醒餘額不足的帳戶；打開日曆依�
   });
 });
 
+test('股息：除息日自動產生待確認，定期頁顯示預估明細；確認時改稅前／匯費自動重算實收，入帳後餘額更新；可手動檢查股息', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const day = (n) => be.ctx.FinDates.addDays(today, n);
+    const roc = (d) => String(Number(d.slice(0, 4)) - 1911) + d.slice(5, 7) + d.slice(8, 10);
+    const broker = be.call('upsertAccount', { account: { name: '股息證券', type: '證券', defaultSymbol: 'TWD' } }).data.account.id;
+    const cma = be.call('upsertAccount', { account: { name: '股息入帳戶', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('upsertBrokerSettings', { broker: { accountId: broker, market: '台股', feeCurrency: 'TWD', calendar: '台灣', dividendAccountId: cma } }).ok);
+    assert.ok(be.call('upsertInstrument', { instrument: { symbol: '00919', name: '群益台灣精選高息', type: 'ETF', quote: 'TWD', decimals: 0, priceSource: '手動', isNew: true } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '調整', date: day(-30), dstAccount: broker, dstSymbol: '00919', dstQty: 2000, categoryId: '' } }).ok);
+    be.state.urlFetch.handler = (url) => (/TWT48U_ALL/.test(url) ? { body: [{ Date: roc(today), Code: '00919', Name: '群益台灣精選高息', Exdividend: '息', CashDividend: '0.72' }] } : { body: [] });
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('recurring');
+    await page.click('[data-testid=check-dividends]');
+    await page.waitForSelector('[data-testid=pending-item]');
+    const row = await page.locator('[data-testid=pending-item]').first().innerText();
+    assert.match(row, /股息　00919 群益台灣精選高息/);
+    assert.match(row, /預估實收 NT\$1,430/); // 2,000 × 0.72 = 1,440 − 匯費 10
+    assert.match(row, new RegExp(`除息日 ${today}　稅前 NT\\$1,440－匯費 NT\\$10`));
+    await page.click('[data-testid=confirm-pending]');
+    await page.waitForSelector('.sheet [data-testid=div-net]');
+    assert.equal(await page.locator('.sheet [data-testid=div-net]').inputValue(), '1430');
+    // 實際沒扣匯費：把匯費改成 0 → 實收自動變 1,440
+    const feeInput = page.locator('.sheet label.field:has-text("匯費") input');
+    await feeInput.fill('0');
+    assert.equal(await page.locator('.sheet [data-testid=div-net]').inputValue(), '1440');
+    await page.click('.sheet [data-testid=confirm-save]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    await page.waitForSelector('[data-testid=pending-item]', { state: 'detached' });
+    const t = be.call('listTransactions', { filters: { type: '股息' } }).data.items[0];
+    assert.deepEqual([t.status, t.dstQty, t.fee, t.relatedSymbol], ['有效', 1440, 0, '00919']);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

@@ -47,6 +47,13 @@ var FinRecurringJob = (function () {
       relatedSymbol: '', groupId: '', relatedTxId: '', recurringId: tpl.id, plannedDate: occ.planned,
       note: '定期：' + tpl.name, status: status, createdAt: now, updatedAt: now,
     };
+    if (tpl.type === '股息') {
+      // 股息範本：來源標的＝這筆股息屬於哪個標的；金額（目的數量）沒填代表等入帳再填
+      var divCat = c.categoryRows.filter(function (x) { return x.type === '系統' && x.name === '股息'; })[0];
+      row.relatedSymbol = tpl.srcSymbol || ''; row.srcAccount = ''; row.srcSymbol = ''; row.srcQty = null;
+      row.categoryId = divCat ? divCat.id : '';
+      if (status === '有效' && !(Number(row.dstQty) > 0)) status = row.status = '待確認'; // 沒有金額不能自動入帳
+    }
     if (isInvest) {
       // 到期時股數／成交金額都還不知道（要等券商成交或你自己下單），只有「來源」的預計投入金額是已知的
       row.dstQty = tpl.type === '買入' ? null : tpl.dstQty; // 買入：股數未知；賣出模式較少見，維持範本預設股數
@@ -261,6 +268,7 @@ var FinRecurringJob = (function () {
     var c = FinApi.loadContext(now);
     var gen = generateDue(c, env);
     var summary = { created: gen.created.length, skipped: gen.skipped.length };
+    try { var dv = FinDividends.run(c, env); summary.dividends = dv.created.length; if (dv.errors.length) summary.dividendErrors = dv.errors; } catch (e) { summary.dividendsError = e.message; }
     try { summary.fundingReminders = sendFundingReminders(c, env); } catch (e) { summary.fundingRemindersError = e.message; }
     try { summary.settlementReminders = sendSettlementReminders(c, env); } catch (e) { summary.settlementRemindersError = e.message; }
     try { summary.staleReminders = sendStalePendingReminders(c, env); } catch (e) { summary.staleRemindersError = e.message; }

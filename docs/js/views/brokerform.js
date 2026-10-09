@@ -12,7 +12,7 @@ export function openBrokerForm({ account, broker = null, onDone } = {}) {
   const f = broker ? { ...broker } : {
     market: account.type === '加密交易所' ? '' : '台股', feeRate: '', feeDiscount: '1', feeCurrency: 'TWD', minFee: '', oddLotMinFee: '',
     sipFixedFee: '', sipFeeRate: '', sipFeeCap: '', sipMinAmount: '', taxRateStock: '', taxRateEtf: '',
-    buySettleDays: '2', sellSettleDays: '2', calendar: '台灣', settleAccountId: '', note: '',
+    buySettleDays: '2', sellSettleDays: '2', calendar: '台灣', settleAccountId: '', dividendAccountId: '', note: '',
   };
   Object.keys(f).forEach((k) => { if (f[k] === null || f[k] === undefined) f[k] = ''; else f[k] = String(f[k]); });
   const msgs = {};
@@ -40,6 +40,9 @@ export function openBrokerForm({ account, broker = null, onDone } = {}) {
   const settleAcctSel = h('select', { onchange: (e) => { f.settleAccountId = e.target.value; } },
     [h('option', { value: '' }, '（不指定）')].concat(cashAccounts.map((a) => h('option', { value: a.id, selected: a.id === f.settleAccountId }, a.name))));
 
+  const divAcctSel = h('select', { onchange: (e) => { f.dividendAccountId = e.target.value; } },
+    [h('option', { value: '' }, '（同預設交割帳戶）')].concat(cashAccounts.map((a) => h('option', { value: a.id, selected: a.id === f.dividendAccountId }, a.name))));
+
   const body = h('div');
   function draw() {
     mount(body, banner,
@@ -49,6 +52,7 @@ export function openBrokerForm({ account, broker = null, onDone } = {}) {
       fld('buySettleDays', '買入交割天數（T+N）', numInput('buySettleDays')),
       fld('sellSettleDays', '賣出交割天數（T+N）', numInput('sellSettleDays')),
       fld('settleAccountId', '預設交割帳戶（選填）', settleAcctSel),
+      f.market === '複委託' ? null : fld('dividendAccountId', '股息入帳帳戶（選填）', divAcctSel, '台股／ETF 除息當天，系統會自動產生一筆「待確認」的股息，入這個帳戶'),
       fld('feeRate', '手續費率', numInput('feeRate', null, '例如 0.001425')),
       fld('feeDiscount', '手續費折扣', numInput('feeDiscount', null, '例如 0.6（六折），不打折填 1'), '成交金額 × 手續費率 × 折扣'),
       fld('feeCurrency', '手續費幣別', feeCurSel),

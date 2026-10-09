@@ -7,13 +7,13 @@ import { openSheet, errorText } from '../ui.js';
 
 /**
  * 未來扣款日曆：未來 N 天每個帳戶會被扣（或入帳）多少、餘額夠不夠。
- * 資料來自後端 getCashflow（見 server/api.js cashflow()）：定期扣款、信用卡上期帳單與本期預估、貸款、交割款。
+ * 資料來自後端 getCashflow（見 server/api.js cashflow()）：定期扣款、信用卡上期帳單與本期預估、貸款、交割款、還沒確認的收入／支出／股息。
  * 兩種看法：依帳戶（每個帳戶從今天的餘額往下累計，不足的標紅）／依日期（全部排成一條時間軸）。
  */
 const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
 function md(d) { const t = new Date(d + 'T00:00:00Z'); return `${t.getUTCMonth() + 1}/${t.getUTCDate()}（${WEEK[t.getUTCDay()]}）`; }
 
-const KIND_ICON = { 定期: 'refresh', 信用卡: 'card', 貸款: 'percent', 交割: 'graphUp' };
+const KIND_ICON = { 定期: 'refresh', 信用卡: 'card', 貸款: 'percent', 交割: 'graphUp', 待確認: 'coin' };
 
 function itemRow(r, opts = {}) {
   const sign = r.direction === 'in' ? '+' : '-';
