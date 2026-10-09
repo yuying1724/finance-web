@@ -1439,7 +1439,7 @@ var FinApi = (function () {
       if (h.auth !== false) sess = FinAuth.verifySession(body.session, now);
       var env = { device: sess ? sess.deviceName : '', session: sess, now: now };
       var data = h.fn(body.params && typeof body.params === 'object' ? body.params : {}, env);
-      var out = { ok: true, data: data };
+      var out = { ok: true, action: body.action, data: data }; // 回傳 action：前端用來確認這是「這次操作」的結果，而不是被轉址成 GET 的 doGet 訊息
       if (sess) { var ns = FinAuth.refreshIfNeeded(sess, now); if (ns) out.session = ns; }
       return out;
     } catch (e) {

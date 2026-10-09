@@ -9,7 +9,8 @@ function jsonOut_(obj) {
 }
 
 function doGet() {
-  return jsonOut_({ ok: true, data: { name: 'finance-web', version: FinSchema.APP_VERSION, message: '後端運作中。請用網頁版登入使用。' } });
+  // via: 'GET'：前端的 POST 如果被 Google 轉址成 GET 就會收到這個回應，前端看到它就知道操作沒有被執行、會自動重送
+  return jsonOut_({ ok: true, via: 'GET', data: { name: 'finance-web', version: FinSchema.APP_VERSION, message: '後端運作中。請用網頁版登入使用。' } });
 }
 
 function doPost(e) {

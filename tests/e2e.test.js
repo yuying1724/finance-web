@@ -376,6 +376,58 @@ test('投資頁持倉：第二次進來先顯示上次的結果（不再「載�
   });
 });
 
+test('後端回應被轉址成 GET（回「後端運作中」）時自動重送；不完整的舊快取不會畫出來；連續失敗會還原並提示沒有寫入', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page } = a;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.waitForFunction(() => /更新於/.test(document.body.innerText));
+    const before = digits(await a.networth());
+    // 1) 快取被寫成不完整的資料（沒有 accounts）：重新整理後不能出現「畫面發生錯誤」
+    await page.evaluate(() => { const c = JSON.parse(localStorage.getItem('fin.cache')); c.data = { name: 'finance-web', version: '0.9.0', message: '後端運作中。請用網頁版登入使用。' }; localStorage.setItem('fin.cache', JSON.stringify(c)); });
+    // 2) 第一次 bootstrap 回舊版 doGet 訊息（沒有 via）、第二次回新版（via:'GET'）、第一次記帳也回 via:'GET'：都代表後端沒有執行
+    const oldStyle = JSON.stringify({ ok: true, data: { name: 'finance-web', version: '0.9.0', message: '後端運作中。請用網頁版登入使用。' } });
+    const newStyle = JSON.stringify({ ok: true, via: 'GET', data: { name: 'finance-web', version: '0.9.15', message: '後端運作中。請用網頁版登入使用。' } });
+    const queue = { bootstrap: [oldStyle, newStyle], addTransaction: [newStyle] };
+    await page.route('**/api', async (route) => {
+      const body = JSON.parse(route.request().postData() || '{}');
+      const q = queue[body.action];
+      if (q && q.length) return route.fulfill({ status: 200, contentType: 'application/json', body: q.shift() });
+      return route.continue();
+    });
+    await page.reload();
+    await page.waitForSelector('[data-testid=networth]');
+    assert.doesNotMatch(await page.locator('body').innerText(), /畫面發生錯誤/);
+    assert.equal(digits(await a.networth()), before);
+    assert.equal(queue.bootstrap.length, 0, '被轉址的 bootstrap 有自動重送');
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '120');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '錢包現金' });
+    await a.pickCategory('飲食', '午餐');
+    await a.save();
+    await page.waitForFunction((b) => Number(document.querySelector('[data-testid=networth]').innerText.replace(/[^\d-]/g, '')) === b - 120, before);
+    const countOf = (n) => a.s.backend.call('listTransactions', { filters: {}, limit: 200 }).data.items.filter((t) => Number(t.srcQty) === n).length;
+    for (let i = 0; i < 50 && countOf(120) === 0; i++) await page.waitForTimeout(100);
+    await page.waitForTimeout(1500); // 等重送與背景重新整理都結束
+    assert.equal(queue.addTransaction.length, 0);
+    assert.equal(countOf(120), 1, '重送後只記了一筆');
+    assert.doesNotMatch(await page.locator('body').innerText(), /儲存失敗/);
+    assert.ok(await page.evaluate(() => Array.isArray(JSON.parse(localStorage.getItem('fin.cache')).data.accounts)), '快取已換成完整資料');
+
+    // 3) 連續 3 次都被轉址：不能假裝成功，要還原並提示「沒有寫入」，可以按重試
+    queue.addTransaction = [newStyle, newStyle, newStyle];
+    const mid = digits(await a.networth());
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '77');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '錢包現金' });
+    await a.pickCategory('飲食', '午餐');
+    await a.save();
+    await page.waitForFunction(() => /儲存失敗，已還原.*沒有寫入/.test(document.body.innerText), null, { timeout: 15000 });
+    await page.waitForFunction((b) => Number(document.querySelector('[data-testid=networth]').innerText.replace(/[^\d-]/g, '')) === b, mid);
+    assert.equal(countOf(77), 0, '後端沒有這筆');
+    await page.unroute('**/api');
+  });
+});
+
 test('信用卡總覽：帳戶頁依類型分區可收合；同銀行合併帳單只顯示一列；總覽頁看待繳與繳款日；一鍵記繳款', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page, s } = a;

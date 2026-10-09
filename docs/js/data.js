@@ -10,12 +10,16 @@ function sessionDevice() { const s = prefs.session; return s && s.session ? Stri
 export function loadCache() {
   try {
     const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-    if (!c || !c.data || c.device !== sessionDevice()) return null;
+    if (!c || !isBootstrapData(c.data) || c.device !== sessionDevice()) return null; // 格式不對的舊快取直接丟掉，改等後端
     return { data: c.data, loadedAt: new Date(c.loadedAt) };
   } catch (e) { return null; }
 }
 function saveCache() {
   try { localStorage.setItem(CACHE_KEY, JSON.stringify({ device: sessionDevice(), loadedAt: state.loadedAt, data: state.data })); } catch (e) { /* 空間不足或被封鎖就算了，不影響功能 */ }
+}
+/** 確認是完整的首頁資料（避免把不完整的回應畫出來或存進快取） */
+export function isBootstrapData(d) {
+  return !!d && typeof d === 'object' && Array.isArray(d.accounts) && Array.isArray(d.balances) && !!d.netWorth && Array.isArray(d.recent);
 }
 export function clearCache() { try { localStorage.removeItem(CACHE_KEY); } catch (e) { /* 忽略 */ } }
 
@@ -24,7 +28,9 @@ export async function refresh() {
   state.refreshing = true;
   notify();
   try {
-    state.data = await api.call('bootstrap');
+    const data = await api.call('bootstrap');
+    if (!isBootstrapData(data)) throw new api.ApiError('BAD_RESPONSE', '後端回傳的資料不完整，請稍後再按重新整理');
+    state.data = data;
     state.loadedAt = new Date();
     saveCache();
   } finally {
@@ -55,7 +61,7 @@ export async function write(action, params, opts = {}) {
     if (undo) { try { undo(); } catch (e2) { console.error(e2); } notify(); }
     if (e.code === 'AUTH_REQUIRED') return null;
     if (e.code === 'CONFLICT') refresh().catch(() => { /* 忽略 */ });
-    const retryable = !!opts.retry && ['NETWORK', 'TIMEOUT', 'BUSY'].includes(e.code);
+    const retryable = !!opts.retry && ['NETWORK', 'TIMEOUT', 'BUSY', 'NOT_EXECUTED'].includes(e.code);
     toast((opts.failPrefix === undefined ? '儲存失敗，已還原：' : opts.failPrefix) + errorText(e),
       { kind: 'bad', ms: retryable ? 10000 : undefined, action: retryable ? { label: '重試', fn: opts.retry } : undefined });
     if (opts.onError) opts.onError(e);

@@ -141,7 +141,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.14',
+    APP_VERSION: '0.9.15',
   };
   return api;
 })();
@@ -3753,7 +3753,7 @@ var FinApi = (function () {
       if (h.auth !== false) sess = FinAuth.verifySession(body.session, now);
       var env = { device: sess ? sess.deviceName : '', session: sess, now: now };
       var data = h.fn(body.params && typeof body.params === 'object' ? body.params : {}, env);
-      var out = { ok: true, data: data };
+      var out = { ok: true, action: body.action, data: data }; // 回傳 action：前端用來確認這是「這次操作」的結果，而不是被轉址成 GET 的 doGet 訊息
       if (sess) { var ns = FinAuth.refreshIfNeeded(sess, now); if (ns) out.session = ns; }
       return out;
     } catch (e) {
@@ -4275,7 +4275,8 @@ function jsonOut_(obj) {
 }
 
 function doGet() {
-  return jsonOut_({ ok: true, data: { name: 'finance-web', version: FinSchema.APP_VERSION, message: '後端運作中。請用網頁版登入使用。' } });
+  // via: 'GET'：前端的 POST 如果被 Google 轉址成 GET 就會收到這個回應，前端看到它就知道操作沒有被執行、會自動重送
+  return jsonOut_({ ok: true, via: 'GET', data: { name: 'finance-web', version: FinSchema.APP_VERSION, message: '後端運作中。請用網頁版登入使用。' } });
 }
 
 function doPost(e) {
