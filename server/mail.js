@@ -58,6 +58,17 @@ var FinMail = (function () {
     };
   }
 
+  function shortfallReminder(items) {
+    // items: [{accountName, shortDate, shortfall, symbol, firstItem}]
+    var lines = items.map(function (it) {
+      return '・' + it.accountName + '　' + it.shortDate + ' 起可能不足，還差約 ' + it.shortfall + ' ' + it.symbol + (it.firstItem ? '（' + it.firstItem + '）' : '');
+    });
+    return {
+      subject: '［財務系統］帳戶餘額可能不夠扣款（' + items.length + ' 個帳戶）',
+      body: '依未來扣款日曆試算，以下帳戶的餘額可能不夠接下來的扣款，請提早轉入款項：\n\n' + lines.join('\n') + '\n\n可以到「財務管理」App 首頁的「未來扣款日曆」看明細。\n\n（此信由財務系統排程自動寄出）',
+    };
+  }
+
   // ---------- 實際寄送 ----------
   function send(subject, body) {
     try {
@@ -79,7 +90,7 @@ var FinMail = (function () {
 
   return {
     fundingReminder: fundingReminder, manualOrderToday: manualOrderToday, settlementReminder: settlementReminder,
-    stalePending: stalePending, cardDueReminder: cardDueReminder, send: send, sendIfAny: sendIfAny,
+    stalePending: stalePending, cardDueReminder: cardDueReminder, shortfallReminder: shortfallReminder, send: send, sendIfAny: sendIfAny,
   };
 })();
 //#ifnode

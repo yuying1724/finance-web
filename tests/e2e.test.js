@@ -705,6 +705,44 @@ test('首頁淨資產走勢：只有今天時顯示說明；有過去的快照�
   });
 });
 
+test('未來扣款日曆：首頁提醒餘額不足的帳戶；打開日曆依帳戶看累計餘額、切換依日期；沒指定扣款帳戶的另外列出', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const day = (n) => be.ctx.FinDates.addDays(today, n);
+    const dom = (d) => Number(d.slice(8, 10));
+    const bank = be.call('upsertAccount', { account: { name: '扣款小帳戶', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const card = be.call('upsertAccount', { account: { name: '日曆測試卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    const card2 = be.call('upsertAccount', { account: { name: '沒設繳款帳戶卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('addTransaction', { tx: { type: '調整', date: day(-10), dstAccount: bank, dstSymbol: 'TWD', dstQty: 1000, categoryId: '' } }).ok);
+    // 結帳日＝5 天前、繳款日＝10 天後：上期帳單已出、還沒到繳款日
+    for (const id of [card, card2]) assert.ok(be.call('upsertCardSettings', { card: { accountId: id, statementDay: dom(day(-5)), dueDay: dom(day(10)), limit: 50000, payAccountId: id === card ? bank : '' } }).ok);
+    const food = be.call('bootstrap').data.categories.find((c) => c.name === '午餐' && c.type === '支出').id;
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: day(-12), srcAccount: card, srcSymbol: 'TWD', srcQty: 3000, categoryId: food } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: day(-12), srcAccount: card2, srcSymbol: 'TWD', srcQty: 400, categoryId: food } }).ok);
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.waitForSelector('[data-testid=cash-alert]');
+    assert.match(await page.locator('[data-testid=cash-alert]').innerText(), /帳戶餘額可能不夠扣款[\s\S]*扣款小帳戶[\s\S]*還差 NT\$2,000/);
+    await page.click('[data-testid=cash-alert]');
+    await page.waitForSelector('[data-testid=cf-account][data-account="扣款小帳戶"]');
+    const blk = await page.locator('[data-testid=cf-account][data-account="扣款小帳戶"]').innerText();
+    assert.match(blk, /不足/); assert.match(blk, /目前 NT\$1,000/); assert.match(blk, /日曆測試卡 上期帳單/); assert.match(blk, /餘額 -NT\$2,000/);
+    assert.match(await page.locator('[data-testid=cf-short]').first().innerText(), /最多還差 NT\$2,000/);
+    assert.match(await page.locator('[data-testid=cf-unassigned]').innerText(), /1 筆不知道從哪個帳戶扣款/);
+    assert.match(await page.locator('.sheet').innerText(), /未指定扣款帳戶[\s\S]*沒設繳款帳戶卡/);
+    await page.click('.sheet .chip >> text=依日期');
+    await page.waitForSelector('.sheet .chip.on >> text=依日期');
+    assert.ok(await page.locator('.sheet [data-testid=cf-item]').count() >= 2);
+    assert.match(await page.locator('.sheet').innerText(), /扣款小帳戶/);
+    await page.click('.sheet [aria-label="關閉"]'); await page.waitForSelector('.sheet', { state: 'detached' });
+    // 待辦卡底下的連結也能打開
+    await page.click('[data-testid=open-cashflow]');
+    await page.waitForSelector('.sheet [data-testid=cf-item]'); // 記得上次選的「依日期」
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

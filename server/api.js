@@ -328,6 +328,91 @@ var FinApi = (function () {
     return { from: from, to: to, days: days || 30, items: items, totalOut: FinMoney.round(totalOut, 0), totalIn: FinMoney.round(totalIn, 0), hasForeign: foreign };
   }
 
+  /**
+   * 未來扣款日曆：未來 days 天會從哪個帳戶扣多少（或入帳多少），並預估各帳戶餘額夠不夠。
+   * 來源：upcoming() 的定期／信用卡上期待繳／貸款，再加上「信用卡本期預估」（本期到目前為止刷的金額，繳款日在範圍內才列）
+   * 與「交割款」（已成交、交割日還沒到的買賣）。每一筆找出實際扣款（或入帳）的帳戶：
+   *   定期＝來源帳戶（收入／賣出＝目的帳戶；貸款還款＝貸款設定的扣款帳戶）、信用卡＝信用卡設定的「預設繳款帳戶」、貸款＝貸款設定的扣款帳戶。
+   * 找不到扣款帳戶的放在 unassigned。每個帳戶從今天的餘額開始依日期累計，最低點低於 0 就標示「可能不足」。
+   */
+  function cashflow(c, days, cardOv, calc) {
+    days = Math.max(7, Math.min(120, Math.floor(Number(days) || 60)));
+    cardOv = cardOv || cardOverview(c, c.today);
+    var up = upcoming(c, days, cardOv);
+    var to = up.to;
+    var tplById = mapBy(c.recurringRows, 'id');
+    var rows = [];
+    up.items.forEach(function (x) {
+      var r = { date: x.date, kind: x.kind, name: x.name, amount: x.amount, symbol: x.symbol, direction: x.direction, overdue: !!x.overdue, estimated: false, fundingAccountId: '' };
+      if (x.kind === '定期') {
+        var tpl = tplById[x.recurringId];
+        r.recurringId = x.recurringId;
+        if (tpl) {
+          if (tpl.type === '貸款還款') { var ls = c.loanByAccount[tpl.dstAccount || tpl.srcAccount]; r.fundingAccountId = (ls && ls.payAccountId) || tpl.srcAccount || ''; }
+          else if (x.direction === 'in' || tpl.type === '賣出' || tpl.type === '股息') { r.fundingAccountId = tpl.dstAccount || ''; r.direction = 'in'; if (tpl.type === '賣出') { r.amount = null; r.symbol = tpl.dstSymbol || r.symbol; } }
+          else { r.fundingAccountId = tpl.srcAccount || ''; r.symbol = tpl.srcSymbol || r.symbol; }
+          if (tpl.mode === '手動下單' || tpl.mode === '提醒確認') r.estimated = true;
+        }
+      } else if (x.kind === '信用卡') {
+        var ci = cardOv.items.filter(function (k) { return k.key === x.cardKey; })[0];
+        r.cardKey = x.cardKey; r.fundingAccountId = ci && ci.payAccountId ? ci.payAccountId : '';
+        r.name = x.name + ' 上期帳單';
+      } else if (x.kind === '貸款') {
+        var ls2 = c.loanByAccount[x.accountId]; r.fundingAccountId = (ls2 && ls2.payAccountId) || '';
+      }
+      rows.push(r);
+    });
+    // 信用卡本期預估：本期到目前為止刷的（含結帳日前刷、可能列入下期的那幾筆），這期帳單的繳款日落在範圍內才列
+    cardOv.items.forEach(function (k) {
+      if (!k.hasSettings || !k.chargeTodayDueDate || k.chargeTodayDueDate > to) return;
+      var amt = Number(k.currentSpend) || 0;
+      if (k.dueLikelyNextPeriod && k.nearCloseUnposted) amt += Number(k.nearCloseUnposted.amount) || 0;
+      if (!(amt > 0)) return;
+      rows.push({ date: k.chargeTodayDueDate, kind: '信用卡', name: k.name + (k.isGroup ? '（合併帳單）' : '') + ' 本期（預估）', amount: FinMoney.round(amt, 0), symbol: k.symbol,
+        direction: 'out', overdue: false, estimated: true, cardKey: k.key, fundingAccountId: k.payAccountId || '' });
+    });
+    // 交割款：已成交、交割日還沒到的買賣（現金那一端在交割日才扣／入）
+    c.txRows.forEach(function (t) {
+      if (t.status !== '有效' || (t.type !== '買入' && t.type !== '賣出') || !t.settleDate || t.date > c.today || t.settleDate <= c.today || t.settleDate > to) return;
+      var isBuy = t.type === '買入';
+      var acct = isBuy ? t.srcAccount : t.dstAccount, sym = isBuy ? t.srcSymbol : t.dstSymbol, qty = isBuy ? t.srcQty : t.dstQty;
+      var inst = c.instruments[sym];
+      if (!inst || inst.type !== '法幣' || !(Number(qty) > 0)) return;
+      rows.push({ date: t.settleDate, kind: '交割', name: (isBuy ? '買入 ' + t.dstSymbol : '賣出 ' + t.srcSymbol) + ' 交割', amount: Number(qty), symbol: sym,
+        direction: isBuy ? 'out' : 'in', overdue: false, estimated: false, txId: t.id, fundingAccountId: acct || '' });
+    });
+    rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.direction === b.direction ? 0 : a.direction === 'in' ? -1 : 1); });
+
+    var all = calc || computeAll(c);
+    var balOf = {};
+    all.balances.forEach(function (b) { balOf[b.accountId + '|' + b.symbol] = Number(b.qty) || 0; });
+    var groups = {}, order = [], unassigned = [];
+    rows.forEach(function (r) {
+      var a = r.fundingAccountId && c.accounts[r.fundingAccountId];
+      if (!a) { r.fundingAccountId = ''; unassigned.push(r); return; }
+      var key = a.id + '|' + r.symbol;
+      if (!groups[key]) { groups[key] = { accountId: a.id, name: a.name, type: a.type, symbol: r.symbol, balance: FinMoney.round(balOf[key] || 0, 2), items: [] }; order.push(key); }
+      groups[key].items.push(r);
+    });
+    var accounts = order.map(function (key) {
+      var g = groups[key], run = g.balance, min = run, minDate = null, firstShort = null, outSum = 0, inSum = 0;
+      g.items.forEach(function (r) {
+        if (r.amount === null || r.amount === undefined) { r.balanceAfter = FinMoney.round(run, 2); return; }
+        run += r.direction === 'in' ? r.amount : -r.amount;
+        if (r.direction === 'in') inSum += r.amount; else outSum += r.amount;
+        r.balanceAfter = FinMoney.round(run, 2);
+        if (run < min) { min = run; minDate = r.date; }
+        if (run < 0 && !firstShort) firstShort = r.date;
+      });
+      return { accountId: g.accountId, name: g.name, type: g.type, symbol: g.symbol, balance: g.balance, items: g.items,
+        totalOut: FinMoney.round(outSum, 2), totalIn: FinMoney.round(inSum, 2), endBalance: FinMoney.round(run, 2),
+        minBalance: FinMoney.round(min, 2), minDate: minDate, shortDate: firstShort, shortfall: min < 0 ? FinMoney.round(-min, 2) : 0 };
+    });
+    accounts.sort(function (a, b) { return (b.shortfall > 0) - (a.shortfall > 0) || (a.items[0].date < b.items[0].date ? -1 : 1); });
+    return { from: up.from, to: to, days: days, items: rows, accounts: accounts, unassigned: unassigned,
+      shortCount: accounts.filter(function (a) { return a.shortfall > 0; }).length };
+  }
+
   /** 出現次數最多的前 n 個非空字串（商家／標籤的自動完成清單） */
   function topValues(list, n) {
     var count = {};
@@ -368,6 +453,7 @@ var FinApi = (function () {
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
         brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
         cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub), cardOverview: cardOv, upcoming: upcoming(c, 30, cardOv),
+        cashAlert: cashAlert(cashflow(c, 60, cardOv, calc)),
         installments: installmentList(c),
         recurring: c.recurringRows.map(pub), pendingConfirmations: pendingConfirmations(c),
         prices: c.priceInfo,
@@ -932,6 +1018,19 @@ var FinApi = (function () {
     },
   };
 
+  /** 首頁提醒用的摘要：未來 60 天可能不足的帳戶、還沒指定扣款帳戶的筆數 */
+  function cashAlert(cf) {
+    return { days: cf.days, unassigned: cf.unassigned.length,
+      short: cf.accounts.filter(function (a) { return a.shortfall > 0; }).map(function (a) { return { accountId: a.accountId, name: a.name, symbol: a.symbol, shortDate: a.shortDate, shortfall: a.shortfall }; }) };
+  }
+
+  H.getCashflow = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      return cashflow(c, p.days);
+    },
+  };
+
   H.getCardOverview = {
     fn: function (p, env) {
       var c = loadContext(env.now);
@@ -1475,5 +1574,5 @@ var FinApi = (function () {
     }
   }
 
-  return { handle: handle, actions: Object.keys(H), loadContext: loadContext, computeAll: computeAll, installmentSchedules: installmentSchedules };
+  return { handle: handle, actions: Object.keys(H), loadContext: loadContext, computeAll: computeAll, installmentSchedules: installmentSchedules, cashflow: cashflow };
 })();

@@ -6,6 +6,7 @@ import { openSheet } from '../ui.js';
 import { openTxForm } from './txform.js';
 import { openCardStatement, openCardSettingsForm } from './liability.js';
 import { installmentListBlock } from './installments.js';
+import { openCashflow, cashAlertRow } from './cashflow.js';
 
 /**
  * 信用卡總覽：參考 MOZE 的「主帳戶／合併帳單」與麻布記帳「依銀行看帳單」的做法——
@@ -138,6 +139,8 @@ export function todoCard() {
   const ov = d.cardOverview, up = d.upcoming;
   const pending = (d.pendingConfirmations || []).length;
   const rows = [];
+  const alertRow = cashAlertRow(); // 未來 60 天有帳戶餘額可能不夠扣款：放最上面
+  if (alertRow) rows.push(alertRow);
   if (pending) {
     rows.push(h('li', null, h('a', { class: 'item', href: '#/recurring', 'data-testid': 'pending-notice' },
       h('div', { class: 'ico' }, icon('refresh')),
@@ -162,11 +165,14 @@ export function todoCard() {
       h('div', { class: 'grow' }, h('div', { class: 't' }, x.name), h('div', { class: 's' }, `${mmdd(x.date)}　${x.kind}${x.mode ? '・' + x.mode : ''}`)),
       h('div', { class: 'amt' + (x.direction === 'in' ? ' amt-pos' : '') }, x.amount === null || x.amount === undefined ? '' : (x.direction === 'in' ? '+' : '-') + money(x.amount, x.symbol)))));
   });
-  if (!rows.length) return null;
+  if (!rows.length && !(d.accounts || []).length) return null;
+  if (!rows.length) rows.push(h('li', null, h('div', { class: 'item muted small' }, '未來 30 天沒有待辦或預計扣款')));
   const head = h('div', { class: 'card-title' }, h('h2', null, '待辦與未來 30 天'),
     up ? h('span', { class: 'muted small' }, `預計支出 ${money(up.totalOut, d.base)}${up.totalIn ? `　收入 ${money(up.totalIn, d.base)}` : ''}${up.hasForeign ? '（外幣未計）' : ''}`) : null);
   return h('div', { class: 'card', 'data-testid': 'todo-card' }, head, h('ul', { class: 'list' }, rows),
-    upItems.length > shown.length ? h('div', { class: 'small', style: { padding: '6px 2px 0' } }, h('a', { href: '#/recurring' }, `還有 ${upItems.length - shown.length} 筆，到「定期」查看`)) : null);
+    h('div', { class: 'row-flex wrap', style: { padding: '8px 2px 0', justifyContent: 'space-between' } },
+      upItems.length > shown.length ? h('a', { class: 'small', href: '#/recurring' }, `還有 ${upItems.length - shown.length} 筆，到「定期」查看`) : h('span'),
+      h('button', { class: 'link-btn', type: 'button', 'data-testid': 'open-cashflow', onclick: () => openCashflow() }, '未來扣款日曆（各帳戶夠不夠扣）')));
 }
 
 // 記住帳戶頁各分區的收合狀態（純本機偏好）

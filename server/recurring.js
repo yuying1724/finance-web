@@ -236,6 +236,24 @@ var FinRecurringJob = (function () {
     return items.length;
   }
 
+  /**
+   * 餘額不足提醒：依未來扣款日曆，帳戶餘額「第一次變成負數」的日子剛好是 3 天後或明天時寄信（同一件事最多提醒兩次）。
+   * 用 7 天的範圍算就夠（只關心最近的不足），金額未定的扣款不計入。
+   */
+  var SHORT_REMIND_DAYS = [3, 1];
+  function sendShortfallReminders(c, env) {
+    var cf = FinApi.cashflow(c, 7);
+    var items = [];
+    cf.accounts.forEach(function (a) {
+      if (!(a.shortfall > 0) || !a.shortDate) return;
+      if (SHORT_REMIND_DAYS.indexOf(daysBetween(c.today, a.shortDate)) < 0) return;
+      var first = a.items.filter(function (r) { return r.date === a.shortDate; })[0];
+      items.push({ accountName: a.name, shortDate: a.shortDate, shortfall: a.shortfall, symbol: a.symbol, firstItem: first ? first.name : '' });
+    });
+    FinMail.sendIfAny(items, FinMail.shortfallReminder);
+    return items.length;
+  }
+
   /** 每天排程的進入點：先產生到期交易，再寄各種提醒信。任何一種提醒信失敗都不影響其他步驟。 */
   function runDaily(now) {
     FinRepo.reset();
@@ -247,8 +265,9 @@ var FinRecurringJob = (function () {
     try { summary.settlementReminders = sendSettlementReminders(c, env); } catch (e) { summary.settlementRemindersError = e.message; }
     try { summary.staleReminders = sendStalePendingReminders(c, env); } catch (e) { summary.staleRemindersError = e.message; }
     try { summary.cardReminders = sendCardDueReminders(c, env); } catch (e) { summary.cardRemindersError = e.message; }
+    try { FinRepo.reset(); summary.shortfallReminders = sendShortfallReminders(FinApi.loadContext(now), env); } catch (e) { summary.shortfallRemindersError = e.message; }
     return summary;
   }
 
-  return { runDaily: runDaily, generateDue: generateDue, sendFundingReminders: sendFundingReminders, sendSettlementReminders: sendSettlementReminders, sendStalePendingReminders: sendStalePendingReminders, sendCardDueReminders: sendCardDueReminders };
+  return { runDaily: runDaily, generateDue: generateDue, sendFundingReminders: sendFundingReminders, sendSettlementReminders: sendSettlementReminders, sendStalePendingReminders: sendStalePendingReminders, sendCardDueReminders: sendCardDueReminders, sendShortfallReminders: sendShortfallReminders };
 })();
