@@ -134,3 +134,24 @@ test('固定每期金額較高時提前還清：之後不再有還款期', () =>
   assert.deepEqual(sched.map((r) => r.payment), [3000, 3000, 3000, 1000]);
   assert.equal(sched[sched.length - 1].balance, 0);
 });
+
+test('中途開帳：已繳 36 期、剩 588,907 → 期別從第 37 期起算、日期接續原貸款，摘要的已繳期數／總期數跟銀行一樣', () => {
+  const settings = { principal: 1000000, rate: 2.07, terms: 84, startDate: '2023-09-14', payDay: 14, method: '本息平均攤還', payment: 12793, openTerm: 36, openBalance: 588907 };
+  const sched = FinLoan.schedule(settings, 0);
+  assert.equal(sched.length, 48);
+  assert.equal(sched[0].period, 37);
+  assert.equal(sched[0].date, '2026-10-14');
+  assert.equal(sched[0].interest, 1016);
+  assert.equal(sched[0].principal, 11777);
+  assert.equal(sched[47].period, 84);
+  assert.equal(sched[47].date, '2030-09-14');
+  assert.equal(sched[47].balance, 0);
+  assert.equal(sched.reduce((s, r) => s + r.principal, 0), 588907);
+  const sum = FinLoan.summarize(sched, '2026-10-09');
+  assert.equal(sum.terms, 84);
+  assert.equal(sum.paidCount, 36);
+  assert.equal(sum.currentPeriod.period, 37);
+  assert.equal(sum.remainingBalance, 588907);
+  // 沒填開帳資料：跟以前一樣從第 1 期列起
+  assert.equal(FinLoan.schedule(Object.assign({}, settings, { openTerm: null, openBalance: null, payment: null }), 0)[0].period, 1);
+});

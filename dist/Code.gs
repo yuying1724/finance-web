@@ -47,7 +47,7 @@ var FinSchema = (function () {
       sheet: '貸款設定', idKey: 'accountId',
       cols: [c('accountId', '帳戶ID'), c('principal', '貸款金額', 'num'), c('rate', '年利率', 'num'), c('terms', '期數', 'num'),
         c('startDate', '起貸日', 'date'), c('payDay', '每月還款日', 'num'), c('method', '還款方式'), c('payAccountId', '預設扣款帳戶ID'),
-        c('payment', '每期還款金額', 'num', true)],
+        c('payment', '每期還款金額', 'num', true), c('openTerm', '開帳前已繳期數', 'num', true), c('openBalance', '開帳時剩餘本金', 'num', true)],
     },
     brokerSettings: {
       sheet: '證券帳戶設定', idKey: 'accountId',
@@ -141,7 +141,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.13',
+    APP_VERSION: '0.9.14',
   };
   return api;
 })();
@@ -983,7 +983,9 @@ var FinLoan = (function () {
   }
 
   /**
-   * settings: { principal, rate(年利率，百分比數字，例如 2.5 代表 2.5%), terms(期數), startDate, payDay, method, payment(選填) }
+   * settings: { principal, rate(年利率，百分比數字，例如 2.5 代表 2.5%), terms(期數), startDate, payDay, method, payment(選填), openTerm／openBalance(選填) }
+   * openTerm／openBalance：貸款中途才開始記帳時，「開帳前已繳幾期」與「當時剩下的本金」。有填就只列出之後的各期，
+   *   期別跟銀行一樣從 openTerm＋1 起算（例如第 37 期），本金從 openBalance 開始攤還；principal／terms／startDate 仍是原始貸款資料。
    * payment：銀行固定的每期還款金額（本息平均攤還才用）。有填就照這個金額攤還（利息照餘額算、其餘還本金），
    *   最後一期把剩下的本金一次還清；沒填才用公式從利率算出每期金額。
    * decimals: 該貸款幣別的小數位數（預設 0，例如 TWD）
@@ -991,19 +993,23 @@ var FinLoan = (function () {
    */
   function schedule(settings, decimals) {
     decimals = decimals === undefined || decimals === null ? 0 : decimals;
-    var n = Math.max(1, Math.floor(Number(settings.terms) || 0));
+    var totalTerms = Math.max(1, Math.floor(Number(settings.terms) || 0));
+    var openTerm = Math.floor(Number(settings.openTerm) || 0), openBalance = Number(settings.openBalance) || 0;
+    var offset = openTerm > 0 && openTerm < totalTerms && openBalance > 0 ? openTerm : 0; // 開帳前已繳的期數（不列出）
+    var n = totalTerms - offset; // 要列出（攤還）的期數
     var method = settings.method;
     var rate = Number(settings.rate) || 0;
     var monthlyRate = rate / 100 / 12;
-    var balanceUnits = FinMoney.toUnits(settings.principal, decimals);
+    var startPrincipal = offset ? openBalance : Number(settings.principal);
+    var balanceUnits = FinMoney.toUnits(startPrincipal, decimals);
 
     var levelPaymentUnits = 0; // 本息平均攤還：每期固定還款金額（最後一期仍可能因捨入微調）
     var levelPrincipalUnits = 0; // 本金平均攤還：每期固定本金（最後一期吸收尾差）
     if (method === '本息平均攤還') {
       var paymentNatural;
       if (Number(settings.payment) > 0) paymentNatural = Number(settings.payment);
-      else if (monthlyRate === 0) paymentNatural = settings.principal / n;
-      else paymentNatural = (settings.principal * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -n));
+      else if (monthlyRate === 0) paymentNatural = startPrincipal / n;
+      else paymentNatural = (startPrincipal * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -n));
       levelPaymentUnits = FinMoney.toUnits(paymentNatural, decimals);
     } else if (method === '本金平均攤還') {
       levelPrincipalUnits = Math.floor(balanceUnits / n);
@@ -1026,8 +1032,8 @@ var FinLoan = (function () {
       var paymentUnits = principalUnits + interestUnits;
       balanceUnits -= principalUnits;
       rows.push({
-        period: i,
-        date: paymentDateForPeriod(settings, i),
+        period: offset + i,
+        date: paymentDateForPeriod(settings, offset + i),
         payment: FinMoney.fromUnits(paymentUnits, decimals),
         principal: FinMoney.fromUnits(principalUnits, decimals),
         interest: FinMoney.fromUnits(interestUnits, decimals),
@@ -1047,11 +1053,12 @@ var FinLoan = (function () {
   /** 摘要：目前應繳期別、已繳期數、剩餘本金、下一次繳款日與金額 */
   function summarize(sched, asOfDate) {
     var current = findPeriod(sched, asOfDate);
-    var paidCount = sched.filter(function (r) { return r.date < asOfDate; }).length;
+    var offset = sched.length ? sched[0].period - 1 : 0; // 開帳前已繳的期數
+    var paidCount = offset + sched.filter(function (r) { return r.date < asOfDate; }).length;
     var totalInterest = sched.reduce(function (s, r) { return s + r.interest; }, 0);
     var last = sched[sched.length - 1];
     return {
-      terms: sched.length, paidCount: paidCount, settled: current === null,
+      terms: sched.length ? sched[sched.length - 1].period : 0, paidCount: paidCount, settled: current === null,
       currentPeriod: current, remainingBalance: current ? (current.balance + current.principal) : 0,
       totalInterest: totalInterest, finalDate: last ? last.date : null,
     };
@@ -3321,8 +3328,16 @@ var FinApi = (function () {
     var payment = a.payment === undefined || a.payment === null || a.payment === '' ? null : Number(a.payment);
     if (payment !== null && (!isFinite(payment) || payment <= 0)) errors.push({ field: 'payment', message: '每期還款金額必須大於 0（不填就依利率自動計算）' });
     else if (payment !== null && method && method !== '本息平均攤還') errors.push({ field: 'payment', message: '固定每期還款金額只適用「本息平均攤還」' });
-    else if (payment !== null && isFinite(principal) && isFinite(rate) && payment <= principal * rate / 100 / 12) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
-    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment };
+    var optNum = function (v) { return v === undefined || v === null || v === '' ? null : Number(v); };
+    var openTerm = optNum(a.openTerm), openBalance = optNum(a.openBalance);
+    if ((openTerm === null) !== (openBalance === null)) errors.push({ field: openTerm === null ? 'openTerm' : 'openBalance', message: '「開帳前已繳期數」和「開帳時剩餘本金」要一起填（或都不填）' });
+    else if (openTerm !== null) {
+      if (!isFinite(openTerm) || openTerm < 1 || Math.floor(openTerm) !== openTerm || (isFinite(terms) && openTerm >= terms)) errors.push({ field: 'openTerm', message: '開帳前已繳期數請填 1 到「期數−1」的整數' });
+      if (!isFinite(openBalance) || openBalance <= 0 || (isFinite(principal) && openBalance > principal)) errors.push({ field: 'openBalance', message: '開帳時剩餘本金必須大於 0、且不超過貸款金額' });
+    }
+    var basePrincipal = openBalance !== null && isFinite(openBalance) ? openBalance : principal;
+    if (payment !== null && isFinite(payment) && payment > 0 && isFinite(basePrincipal) && isFinite(rate) && payment <= basePrincipal * rate / 100 / 12) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
+    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment, openTerm: openTerm, openBalance: openBalance };
     return { errors: errors, value: value };
   }
 
@@ -3378,7 +3393,7 @@ var FinApi = (function () {
         var inst = c.instruments[symbol];
         if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
         var sched = FinLoan.schedule(ls, FinMoney.billingDecimals(symbol, inst.decimals));
-        var row = p.period ? sched[Number(p.period) - 1] : FinLoan.findPeriod(sched, c.today);
+        var row = p.period ? sched.filter(function (x) { return x.period === Number(p.period); })[0] : FinLoan.findPeriod(sched, c.today);
         if (!row) throw FinFail('VALIDATION', '找不到這一期的還款資料（貸款可能已繳清，或期別超出範圍）');
         var date = FinDates.isValid(str(p.date)) ? str(p.date) : row.date;
         var legs = [];

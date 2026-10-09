@@ -1014,8 +1014,16 @@ var FinApi = (function () {
     var payment = a.payment === undefined || a.payment === null || a.payment === '' ? null : Number(a.payment);
     if (payment !== null && (!isFinite(payment) || payment <= 0)) errors.push({ field: 'payment', message: '每期還款金額必須大於 0（不填就依利率自動計算）' });
     else if (payment !== null && method && method !== '本息平均攤還') errors.push({ field: 'payment', message: '固定每期還款金額只適用「本息平均攤還」' });
-    else if (payment !== null && isFinite(principal) && isFinite(rate) && payment <= principal * rate / 100 / 12) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
-    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment };
+    var optNum = function (v) { return v === undefined || v === null || v === '' ? null : Number(v); };
+    var openTerm = optNum(a.openTerm), openBalance = optNum(a.openBalance);
+    if ((openTerm === null) !== (openBalance === null)) errors.push({ field: openTerm === null ? 'openTerm' : 'openBalance', message: '「開帳前已繳期數」和「開帳時剩餘本金」要一起填（或都不填）' });
+    else if (openTerm !== null) {
+      if (!isFinite(openTerm) || openTerm < 1 || Math.floor(openTerm) !== openTerm || (isFinite(terms) && openTerm >= terms)) errors.push({ field: 'openTerm', message: '開帳前已繳期數請填 1 到「期數−1」的整數' });
+      if (!isFinite(openBalance) || openBalance <= 0 || (isFinite(principal) && openBalance > principal)) errors.push({ field: 'openBalance', message: '開帳時剩餘本金必須大於 0、且不超過貸款金額' });
+    }
+    var basePrincipal = openBalance !== null && isFinite(openBalance) ? openBalance : principal;
+    if (payment !== null && isFinite(payment) && payment > 0 && isFinite(basePrincipal) && isFinite(rate) && payment <= basePrincipal * rate / 100 / 12) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
+    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment, openTerm: openTerm, openBalance: openBalance };
     return { errors: errors, value: value };
   }
 
@@ -1071,7 +1079,7 @@ var FinApi = (function () {
         var inst = c.instruments[symbol];
         if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
         var sched = FinLoan.schedule(ls, FinMoney.billingDecimals(symbol, inst.decimals));
-        var row = p.period ? sched[Number(p.period) - 1] : FinLoan.findPeriod(sched, c.today);
+        var row = p.period ? sched.filter(function (x) { return x.period === Number(p.period); })[0] : FinLoan.findPeriod(sched, c.today);
         if (!row) throw FinFail('VALIDATION', '找不到這一期的還款資料（貸款可能已繳清，或期別超出範圍）');
         var date = FinDates.isValid(str(p.date)) ? str(p.date) : row.date;
         var legs = [];
