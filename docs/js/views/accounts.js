@@ -65,7 +65,7 @@ export function renderAccounts(root, route) {
       chevron.classList.toggle('closed', now);
       head.setAttribute('aria-expanded', String(!now));
       setSectionCollapsed(sec.key, now);
-    } }, chevron, h('h2', null, sec.label, h('span', { class: 'muted small', style: { marginLeft: '6px', fontWeight: 400 } }, `${items.length}`)), h('span', { class: 'amt' + (subtotal < 0 ? ' amt-due' : '') }, money(subtotal, d.base)));
+    } }, chevron, h('h2', null, sec.label, h('span', { class: 'muted small', style: { marginLeft: '6px', fontWeight: 400 } }, `${items.length}`)), h('span', { class: 'amt' + (subtotal < 0 ? ' amt-due' : '') }, money(subtotal, d.base, { whole: d.balances.some((b) => b.symbol !== d.base && items.some((x) => x.id === b.accountId)) })));
     body.push(h('div', { class: 'card' }, head, content));
   }
   if (!list.length) body.push(h('div', { class: 'card empty' }, h('div', { class: 'big' }, icon('wallet')), '還沒有帳戶。按右上角「＋」新增。'));
@@ -108,7 +108,7 @@ function accountItem(a) {
   return h('button', { class: 'item', onclick: () => openAccountDetail(a), 'data-account': a.name },
     h('div', { class: 'ico' }, icon(ACCOUNT_ICON[a.type] || 'briefcase')),
     h('div', { class: 'grow' }, h('div', { class: 't' }, a.name, a.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')), h('div', { class: 's' }, `${a.type} · ${sub}`)),
-    h('div', { class: 'amt' }, total === undefined ? '' : money(total, d.base)));
+    h('div', { class: 'amt' }, total === undefined ? '' : money(total, d.base, { whole: holdings.some((b) => b.symbol !== d.base) })));
 }
 
 function openAccountDetail(a) {

@@ -77,7 +77,7 @@ var FinApi = (function () {
       var acct = c.accounts[t.srcAccount];
       if (!cs || !acct || acct.type !== '信用卡') return;
       var inst = c.instruments[t.srcSymbol];
-      var s = FinCreditCard.expandInstallment(r, t, cs.statementDay, inst ? inst.decimals : 0);
+      var s = FinCreditCard.expandInstallment(r, t, cs.statementDay, inst ? inst.decimals : 0, FinMoney.billingDecimals(t.srcSymbol, inst ? inst.decimals : 0));
       if (s) { s.row = r; s.tx = t; out.push(s); }
     });
     c.__instSched = out;
@@ -295,7 +295,7 @@ var FinApi = (function () {
         var symbol = isIncome ? tpl.dstSymbol : tpl.srcSymbol;
         if (tpl.type === '貸款還款') {
           var la = c.accounts[tpl.dstAccount || tpl.srcAccount], ls = la && c.loanByAccount[la.id];
-          if (la && ls) { var li = c.instruments[la.defaultSymbol]; var sc = FinLoan.schedule(ls, li ? li.decimals : 0); var per = FinLoan.findPeriod(sc, o.due); if (per) { amount = per.payment; symbol = la.defaultSymbol; } }
+          if (la && ls) { var li = c.instruments[la.defaultSymbol]; var sc = FinLoan.schedule(ls, FinMoney.billingDecimals(la.defaultSymbol, li ? li.decimals : 0)); var per = FinLoan.findPeriod(sc, o.due); if (per) { amount = per.payment; symbol = la.defaultSymbol; } }
         }
         items.push({ date: o.due, kind: '定期', name: tpl.name, type: tpl.type, mode: tpl.mode, amount: amount, symbol: symbol || c.base, direction: isIncome ? 'in' : 'out', recurringId: tpl.id, accountId: tpl.srcAccount || tpl.dstAccount });
       });
@@ -309,7 +309,7 @@ var FinApi = (function () {
       var acct = c.accounts[ls.accountId];
       if (!acct || acct.type !== '貸款' || !acct.active) return;
       var inst = c.instruments[acct.defaultSymbol];
-      var sched = FinLoan.schedule(ls, inst ? inst.decimals : 0);
+      var sched = FinLoan.schedule(ls, FinMoney.billingDecimals(acct.defaultSymbol, inst ? inst.decimals : 0));
       var cur = FinLoan.findPeriod(sched, from);
       if (!cur || cur.date > to) return;
       // 這期已經記過還款（同期別的轉帳進貸款帳戶）就不列
@@ -1041,7 +1041,7 @@ var FinApi = (function () {
       var symbol = acct.defaultSymbol;
       var inst = c.instruments[symbol];
       if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
-      var sched = FinLoan.schedule(ls, inst.decimals);
+      var sched = FinLoan.schedule(ls, FinMoney.billingDecimals(symbol, inst.decimals));
       var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
       var sum = FinLoan.summarize(sched, asOf);
       return { accountId: accountId, symbol: symbol, loanSettings: pub(ls), schedule: sched, summary: sum };
@@ -1065,7 +1065,7 @@ var FinApi = (function () {
         var symbol = acct.defaultSymbol;
         var inst = c.instruments[symbol];
         if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
-        var sched = FinLoan.schedule(ls, inst.decimals);
+        var sched = FinLoan.schedule(ls, FinMoney.billingDecimals(symbol, inst.decimals));
         var row = p.period ? sched[Number(p.period) - 1] : FinLoan.findPeriod(sched, c.today);
         if (!row) throw FinFail('VALIDATION', '找不到這一期的還款資料（貸款可能已繳清，或期別超出範圍）');
         var date = FinDates.isValid(str(p.date)) ? str(p.date) : row.date;

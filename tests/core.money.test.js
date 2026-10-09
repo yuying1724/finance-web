@@ -52,3 +52,14 @@ test('顯示格式：千分位、固定小數、正負號', () => {
   assert.equal(M.format(1000, 2, { trim: true }), '1,000');
   assert.equal(M.format(-0.4, 0), '0');
 });
+
+test('台幣可記到角分：整數不顯示 .00、有角分才顯示；帳單位數台幣／日圓／韓元是 0', () => {
+  assert.equal(M.format(1140, 2, { trimWhole: true }), '1,140');
+  assert.equal(M.format(537.75, 2, { trimWhole: true }), '537.75');
+  assert.equal(M.format(537.5, 2, { trimWhole: true }), '537.50');
+  assert.equal(M.format(-20, 2, { trimWhole: true, sign: true }), '-20');
+  assert.equal(M.billingDecimals('TWD', 2), 0);
+  assert.equal(M.billingDecimals('TWD', 0), 0);
+  assert.equal(M.billingDecimals('JPY', 0), 0);
+  assert.equal(M.billingDecimals('USD', 2), 2);
+});

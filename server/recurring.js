@@ -74,7 +74,7 @@ var FinRecurringJob = (function () {
     if (!acct || acct.type !== '貸款' || !ls) return { rows: [], skipped: '找不到貸款帳戶或貸款設定（' + loanAccountId + '）' };
     var inst = c.instruments[acct.defaultSymbol];
     var decimals = inst ? inst.decimals : 0;
-    var sched = FinLoan.schedule(ls, decimals);
+    var sched = FinLoan.schedule(ls, FinMoney.billingDecimals(acct.defaultSymbol, decimals));
     var period = FinLoan.findPeriod(sched, occ.due) || sched[sched.length - 1];
     if (!period) return { rows: [], skipped: '貸款已繳清' };
     var fromAccount = ls.payAccountId || tpl.srcAccount;

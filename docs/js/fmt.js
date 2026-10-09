@@ -33,12 +33,17 @@ export function holdingText(qty, symbol) {
   return isCrypto(symbol) ? shares(qty, { mask: true, symbol }) : `${symbol} ${shares(qty, { mask: true })}`;
 }
 
-/** 金額顯示：NT$1,234／US$100.25／0.3 BTC。opts.sign 顯示正負號；opts.plain 不加幣別符號；opts.noMask 不受隱私遮蔽影響 */
+/**
+ * 金額顯示：NT$1,234／NT$537.75／US$100.25／0.3 BTC。opts.sign 顯示正負號；opts.plain 不加幣別符號；opts.noMask 不受隱私遮蔽影響。
+ * 台幣可以記到角分（電子支付餘額），但整數金額不顯示 .00；opts.whole 用在估值、市值、總額等換算出來的數字，一律顯示到整數元。
+ */
 export function money(amount, symbol, opts = {}) {
   if (prefs.mask && !opts.noMask) return MASK;
   if (amount === null || amount === undefined || amount === '') return '—';
   const dec = decimalsOf(symbol);
-  const body = FinMoney.format(amount, dec, { sign: opts.sign, trim: dec > 2 });
+  const bill = FinMoney.billingDecimals(symbol, dec);
+  const showDec = opts.whole && bill < dec ? bill : dec;
+  const body = FinMoney.format(amount, showDec, { sign: opts.sign, trim: showDec > 2, trimWhole: bill < showDec });
   if (opts.plain) return body;
   const sym = SYMBOLS[symbol];
   if (sym) return body.startsWith('-') || body.startsWith('+') ? body[0] + sym + body.slice(1) : sym + body;

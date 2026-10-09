@@ -169,3 +169,15 @@ test('summary 含分期：待繳只算已輪到的各期、本期消費只算當
   assert.equal(s3.statementAmountDue, 5800);
   assert.equal(s3.installmentRemaining, 15000, '第 4～6 期');
 });
+
+test('expandInstallment：台幣記到角分時，每期仍以整數元分期，零頭（含角分）放首期／末期', () => {
+  const t = { id: 'T9', date: '2026-03-05', type: '支出', srcAccount: 'A1', srcSymbol: 'TWD', srcQty: 1000.5, status: '有效' };
+  const s = FinCreditCard.expandInstallment({ terms: 3, remainderOn: '首期' }, t, 12, 2, 0);
+  assert.deepEqual(s.periods.map((p) => p.amount), [334.5, 333, 333]);
+  assert.deepEqual(s.periods.map((p) => p.units), [33450, 33300, 33300]);
+  const s2 = FinCreditCard.expandInstallment({ terms: 7, remainderOn: '末期' }, Object.assign({}, t, { srcQty: 30000 }), 12, 2, 0);
+  assert.deepEqual(s2.periods.map((p) => p.amount), [4285, 4285, 4285, 4285, 4285, 4285, 4290]);
+  // 沒給帳單位數時維持原本行為（以帳戶幣別最小單位分期）
+  const s3 = FinCreditCard.expandInstallment({ terms: 3 }, Object.assign({}, t, { srcQty: 1000 }), 12, 2);
+  assert.deepEqual(s3.periods.map((p) => p.amount), [333.34, 333.33, 333.33]);
+});

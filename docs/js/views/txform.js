@@ -213,8 +213,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     const paintPreview = () => {
       const amt = parseAmount(f.amount), n = Math.floor(Number(f.instTerms));
       if (!amt.n || !(n >= 2)) { preview.textContent = ''; return; }
-      const dec = decimalsOf(f.sym), unit = Math.pow(10, dec);
-      const total = Math.round(amt.n * unit), base = Math.floor(total / n), rem = total - base * n;
+      const dec = decimalsOf(f.sym), unit = Math.pow(10, dec), step = Math.pow(10, dec - FinMoney.billingDecimals(f.sym, dec)); // 台幣每期以整數元計（同 core/creditcard.js）
+      const total = Math.round(amt.n * unit), base = Math.floor(total / n / step) * step, rem = total - base * n;
       const first = (f.instRemainder === '末期' ? base : base + rem) / unit, other = base / unit, last = (f.instRemainder === '末期' ? base + rem : base) / unit;
       preview.textContent = rem ? `每期 ${money(other, f.sym, { noMask: true })}，${f.instRemainder === '末期' ? '最後一期 ' + money(last, f.sym, { noMask: true }) : '第 1 期 ' + money(first, f.sym, { noMask: true })}（含零頭）；今天記全額，帳單每期只算一份`
         : `每期 ${money(other, f.sym, { noMask: true })}；今天記全額，帳單每期只算一份`;
@@ -320,7 +320,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
           if (a.empty || a.bad) { diffBox.textContent = `目前系統餘額 ${money(balanceOf(f.acct, f.sym), f.sym, { noMask: false })}`; return; }
           const dec = decimalsOf(f.sym);
           const diff = FinMoney.toUnits(a.n, dec) - FinMoney.toUnits(balanceOf(f.acct, f.sym), dec);
-          diffBox.textContent = `目前系統餘額 ${money(balanceOf(f.acct, f.sym), f.sym)}，` + (diff === 0 ? '與輸入相同，不需要調整' : `將調整 ${diff > 0 ? '+' : '-'}${FinMoney.format(FinMoney.fromUnits(Math.abs(diff), dec), dec, { trim: dec > 2 })} ${f.sym}`);
+          diffBox.textContent = `目前系統餘額 ${money(balanceOf(f.acct, f.sym), f.sym)}，` + (diff === 0 ? '與輸入相同，不需要調整' : `將調整 ${diff > 0 ? '+' : '-'}${FinMoney.format(FinMoney.fromUnits(Math.abs(diff), dec), dec, { trim: dec > 2, trimWhole: FinMoney.billingDecimals(f.sym, dec) < dec })} ${f.sym}`);
         };
         const input = h('input', { type: 'text', inputmode: 'decimal', class: 'amount-input', autocomplete: 'off', placeholder: '0', value: f.actual, 'aria-label': '實際餘額', oninput: (e) => { f.actual = e.target.value; paintDiff(); } });
         if (wantFocus) { wantFocus = false; setTimeout(() => input.focus(), 60); }

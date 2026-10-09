@@ -34,8 +34,8 @@ export function renderHome(root) {
 
   children.push(h('div', { class: 'card hero' },
     h('div', { class: 'label' }, '淨資產'),
-    h('div', { class: 'big', 'data-testid': 'networth' }, money(nw.total, base)),
-    h('div', { class: 'muted small' }, `資產 ${money(nw.assets, base)}　負債 ${money(nw.liabilities, base)}`)));
+    h('div', { class: 'big', 'data-testid': 'networth' }, money(nw.total, base, { whole: true })),
+    h('div', { class: 'muted small' }, `資產 ${money(nw.assets, base, { whole: true })}　負債 ${money(nw.liabilities, base, { whole: true })}`)));
 
   if (nw.missing.length) {
     children.push(h('div', { class: 'notice' }, icon('alert'), h('div', null,
@@ -56,9 +56,9 @@ export function renderHome(root) {
   children.push(h('div', { class: 'card' },
     h('div', { class: 'card-title' }, h('h2', null, monthLabel(m.ym)), h('a', { class: 'link-btn', href: '#/tx' }, '看明細')),
     h('div', { class: 'stats' },
-      stat('收入', money(m.income, base), 'pos'),
-      stat('支出', money(m.expense, base)),
-      stat('結餘', money(m.net, base, { sign: true }), m.net > 0 ? 'pos' : ''))));
+      stat('收入', money(m.income, base, { whole: true }), 'pos'),
+      stat('支出', money(m.expense, base, { whole: true })),
+      stat('結餘', money(m.net, base, { sign: true, whole: true }), m.net > 0 ? 'pos' : ''))));
 
   // 帳戶
   const active = d.accounts.filter((a) => a.active || d.netWorth.byAccount[a.id]);
@@ -100,5 +100,5 @@ export function accountRow(a, d) {
   return h('li', null, h('a', { class: 'item', href: '#/tx?acct=' + a.id, style: { textDecoration: 'none', color: 'inherit' } },
     h('div', { class: 'ico' }, icon(ACCOUNT_ICON[a.type] || 'briefcase')),
     h('div', { class: 'grow' }, h('div', { class: 't' }, a.name, a.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')), sub ? h('div', { class: 's' }, sub) : null),
-    h('div', { class: amountClass('') }, money(total, d.base))));
+    h('div', { class: amountClass('') }, money(total, d.base, { whole: foreign.length > 0 }))));
 }

@@ -38,7 +38,14 @@ var FinMoney = (function () {
     return intStr.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
-  /** 顯示用：千分位、固定小數位數。opts.sign 顯示正號；opts.trim 去掉多餘的尾端 0（保留至少 minDecimals 位） */
+  /**
+   * 帳單／分期／貸款用的位數：台幣、日圓、韓元的銀行帳單習慣以「整數元」計算，
+   * 即使帳戶允許記到小數（例如電子支付餘額 537.75），分期每期金額與貸款利息仍算到整數元。
+   */
+  var WHOLE_CURRENCIES = { TWD: true, JPY: true, KRW: true };
+  function billingDecimals(symbol, decimals) { return WHOLE_CURRENCIES[symbol] ? Math.min(0, decimals) : decimals; }
+
+  /** 顯示用：千分位、固定小數位數。opts.sign 顯示正號；opts.trim 去掉多餘的尾端 0；opts.trimWhole 小數全是 0 時整段不顯示 */
   function format(amount, decimals, opts) {
     opts = opts || {};
     var n = Number(amount);
@@ -49,6 +56,7 @@ var FinMoney = (function () {
     var parts = s.split('.');
     var frac = parts[1] || '';
     if (opts.trim) frac = frac.replace(/0+$/, '');
+    if (opts.trimWhole && /^0*$/.test(frac)) frac = ''; // 整數金額不顯示 .00（例如台幣 1,140；有角分時才顯示 537.75）
     var out = groupDigits(parts[0]) + (frac ? '.' + frac : '');
     if (neg) out = '-' + out;
     else if (opts.sign && units > 0) out = '+' + out;
@@ -58,6 +66,6 @@ var FinMoney = (function () {
   /** 換算：某標的數量 × 匯率（或價格）→ 另一個標的的自然單位數字（不四捨五入，彙總後再取整） */
   function mul(qty, rate) { return Number(qty) * Number(rate); }
 
-  var api = { toUnits: toUnits, fromUnits: fromUnits, fitsDecimals: fitsDecimals, round: round, format: format, mul: mul };
+  var api = { toUnits: toUnits, fromUnits: fromUnits, fitsDecimals: fitsDecimals, round: round, format: format, mul: mul, billingDecimals: billingDecimals };
   return api;
 })();

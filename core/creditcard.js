@@ -86,11 +86,13 @@ var FinCreditCard = (function () {
    * 第 1 期落在刷卡日所在週期的結帳日，之後每個結帳日一期；除不盡的零頭預設放第 1 期。
    * 提前清償：清償日所在週期之後的各期，全部改到清償日所在週期的結帳日。回傳 null 表示不成立（交易不存在／作廢／不是支出）。
    */
-  function expandInstallment(inst, tx, statementDay, decimals) {
+  function expandInstallment(inst, tx, statementDay, decimals, billDecimals) {
     if (!inst || !tx || tx.status !== '有效' || tx.type !== '支出' || !tx.srcAccount || !(Number(tx.srcQty) > 0)) return null;
     var terms = Math.max(1, Math.floor(Number(inst.terms) || 1));
     var totalUnits = FinMoney.toUnits(tx.srcQty, decimals);
-    var base = Math.floor(totalUnits / terms), rem = totalUnits - base * terms;
+    // 每期金額以「帳單位數」為單位（台幣是整數元），零頭（含角分）都放在首期／末期；單位仍用帳戶幣別的最小單位
+    var step = billDecimals !== undefined && billDecimals !== null && billDecimals < decimals ? Math.pow(10, decimals - billDecimals) : 1;
+    var base = Math.floor(totalUnits / terms / step) * step, rem = totalUnits - base * terms;
     var close = periodContaining(statementDay, tx.date).end;
     var payoffClose = inst.payoffDate ? periodContaining(statementDay, inst.payoffDate < tx.date ? tx.date : inst.payoffDate).end : null;
     var periods = [];

@@ -2,7 +2,10 @@ import { h, mount, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { state, prefs, instrumentBySymbol, accountById } from '../store.js';
 import * as api from '../api.js';
-import { money, amountClass, shares } from '../fmt.js';
+import { money as rawMoney, amountClass, shares } from '../fmt.js';
+
+// 持股的成本、市值、損益都是換算或估算出來的數字，台幣一律顯示到整數元（跟券商 app 一致）
+const money = (n, symbol, opts = {}) => rawMoney(n, symbol, { ...opts, whole: true });
 import { openSheet, errorText, toast } from '../ui.js';
 import { refreshInBackground } from '../data.js';
 
