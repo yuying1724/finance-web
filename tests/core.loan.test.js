@@ -112,3 +112,25 @@ test('USD 貸款（2 位小數）：本息平均攤還一樣不出現浮點誤�
   assert.ok(Math.abs(sum - 10000) < 1e-9, 'sum=' + sum);
   assert.equal(sched[23].balance, 0);
 });
+
+test('固定每期還款金額：照銀行的 12,793 攤還，利息依餘額計算，最後一期補差額、餘額剛好歸零', () => {
+  const settings = { principal: 588907, rate: 2.07, terms: 48, startDate: '2026-09-14', payDay: 14, method: '本息平均攤還', payment: 12793 };
+  const sched = FinLoan.schedule(settings, 0);
+  assert.equal(sched.length, 48);
+  assert.equal(sched[0].date, '2026-10-14');
+  assert.equal(sched[0].payment, 12793);
+  assert.equal(sched[0].interest, 1016); // 588,907 × 2.07% ÷ 12 ≈ 1,015.86
+  assert.equal(sched[0].principal, 11777);
+  assert.ok(sched.slice(0, 47).every((r) => r.payment === 12793));
+  assert.equal(sched[47].balance, 0);
+  assert.equal(sched.reduce((s, r) => s + r.principal, 0), 588907);
+  // 沒填 payment：照公式（12,794），行為不變
+  const auto = FinLoan.schedule(Object.assign({}, settings, { payment: null }), 0);
+  assert.equal(auto[0].payment, 12794);
+});
+
+test('固定每期金額較高時提前還清：之後不再有還款期', () => {
+  const sched = FinLoan.schedule({ principal: 10000, rate: 0, terms: 12, startDate: '2026-01-01', payDay: 1, method: '本息平均攤還', payment: 3000 }, 0);
+  assert.deepEqual(sched.map((r) => r.payment), [3000, 3000, 3000, 1000]);
+  assert.equal(sched[sched.length - 1].balance, 0);
+});

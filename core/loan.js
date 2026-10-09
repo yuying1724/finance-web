@@ -22,7 +22,9 @@ var FinLoan = (function () {
   }
 
   /**
-   * settings: { principal, rate(年利率，百分比數字，例如 2.5 代表 2.5%), terms(期數), startDate, payDay, method }
+   * settings: { principal, rate(年利率，百分比數字，例如 2.5 代表 2.5%), terms(期數), startDate, payDay, method, payment(選填) }
+   * payment：銀行固定的每期還款金額（本息平均攤還才用）。有填就照這個金額攤還（利息照餘額算、其餘還本金），
+   *   最後一期把剩下的本金一次還清；沒填才用公式從利率算出每期金額。
    * decimals: 該貸款幣別的小數位數（預設 0，例如 TWD）
    * 回傳 [{period, date, payment, principal, interest, balance}]（皆為自然單位數字）
    */
@@ -38,7 +40,8 @@ var FinLoan = (function () {
     var levelPrincipalUnits = 0; // 本金平均攤還：每期固定本金（最後一期吸收尾差）
     if (method === '本息平均攤還') {
       var paymentNatural;
-      if (monthlyRate === 0) paymentNatural = settings.principal / n;
+      if (Number(settings.payment) > 0) paymentNatural = Number(settings.payment);
+      else if (monthlyRate === 0) paymentNatural = settings.principal / n;
       else paymentNatural = (settings.principal * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -n));
       levelPaymentUnits = FinMoney.toUnits(paymentNatural, decimals);
     } else if (method === '本金平均攤還') {
@@ -69,6 +72,7 @@ var FinLoan = (function () {
         interest: FinMoney.fromUnits(interestUnits, decimals),
         balance: FinMoney.fromUnits(balanceUnits, decimals),
       });
+      if (balanceUnits <= 0) break; // 固定每期金額較高時可能提前還清：之後不再有還款期
     }
     return rows;
   }

@@ -1011,7 +1011,11 @@ var FinApi = (function () {
     if (FinLoan.METHODS.indexOf(method) < 0) errors.push({ field: 'method', message: '還款方式請選擇：' + FinLoan.METHODS.join('、') });
     var payAccountId = str(a.payAccountId);
     if (payAccountId && !c.accounts[payAccountId]) errors.push({ field: 'payAccountId', message: '找不到預設扣款帳戶' });
-    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId };
+    var payment = a.payment === undefined || a.payment === null || a.payment === '' ? null : Number(a.payment);
+    if (payment !== null && (!isFinite(payment) || payment <= 0)) errors.push({ field: 'payment', message: '每期還款金額必須大於 0（不填就依利率自動計算）' });
+    else if (payment !== null && method && method !== '本息平均攤還') errors.push({ field: 'payment', message: '固定每期還款金額只適用「本息平均攤還」' });
+    else if (payment !== null && isFinite(principal) && isFinite(rate) && payment <= principal * rate / 100 / 12) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
+    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment };
     return { errors: errors, value: value };
   }
 

@@ -83,7 +83,7 @@ export function openCardSettingsForm({ account, card, onDone } = {}) {
 // ---------- 貸款設定 ----------
 export function openLoanSettingsForm({ account, loan, onDone } = {}) {
   const editing = !!loan;
-  const f = loan ? { ...loan } : { principal: '', rate: '', terms: '', startDate: new Date().toISOString().slice(0, 10), payDay: '15', method: LOAN_METHODS[0], payAccountId: '' };
+  const f = loan ? { ...loan } : { principal: '', rate: '', terms: '', startDate: new Date().toISOString().slice(0, 10), payDay: '15', method: LOAN_METHODS[0], payAccountId: '', payment: '' };
   Object.keys(f).forEach((k) => { if (f[k] === null || f[k] === undefined) f[k] = ''; else f[k] = String(f[k]); });
   const { banner, fld, showErr, clearErr } = fieldHelpers();
 
@@ -101,7 +101,7 @@ export function openLoanSettingsForm({ account, loan, onDone } = {}) {
     }
     await withBusy(e.currentTarget, async () => {
       try {
-        const r = await api.call('upsertLoanSettings', { loan: { accountId: account.id, principal: f.principal, rate: f.rate, terms: f.terms, startDate: f.startDate, payDay: f.payDay, method: f.method, payAccountId: f.payAccountId } });
+        const r = await api.call('upsertLoanSettings', { loan: { accountId: account.id, principal: f.principal, rate: f.rate, terms: f.terms, startDate: f.startDate, payDay: f.payDay, method: f.method, payAccountId: f.payAccountId, payment: f.payment } });
         sheet.close();
         mergeRow('loanSettings', 'accountId', r.loan); refreshInBackground();
         if (onDone) await onDone();
@@ -123,6 +123,7 @@ export function openLoanSettingsForm({ account, loan, onDone } = {}) {
       fld('startDate', '起貸日', dateInput),
       fld('payDay', '每月還款日', numInput('payDay', '1～31')),
       fld('method', '還款方式', methodSel),
+      fld('payment', '每期還款金額（選填）', numInput('payment', '例如 12793'), '銀行每月固定扣款的金額。填了就照這個金額攤還，最後一期再補差額；留空就依利率自動計算（只適用本息平均攤還）'),
       fld('payAccountId', '預設扣款帳戶（選填）', payAcctSel)),
     footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save],
   });

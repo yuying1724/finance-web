@@ -40,7 +40,8 @@ var FinSchema = (function () {
     loanSettings: {
       sheet: '貸款設定', idKey: 'accountId',
       cols: [c('accountId', '帳戶ID'), c('principal', '貸款金額', 'num'), c('rate', '年利率', 'num'), c('terms', '期數', 'num'),
-        c('startDate', '起貸日', 'date'), c('payDay', '每月還款日', 'num'), c('method', '還款方式'), c('payAccountId', '預設扣款帳戶ID')],
+        c('startDate', '起貸日', 'date'), c('payDay', '每月還款日', 'num'), c('method', '還款方式'), c('payAccountId', '預設扣款帳戶ID'),
+        c('payment', '每期還款金額', 'num', true)],
     },
     brokerSettings: {
       sheet: '證券帳戶設定', idKey: 'accountId',
@@ -134,7 +135,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.12',
+    APP_VERSION: '0.9.13',
   };
   return api;
 })();

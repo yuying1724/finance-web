@@ -46,7 +46,8 @@ var FinSchema = (function () {
     loanSettings: {
       sheet: '貸款設定', idKey: 'accountId',
       cols: [c('accountId', '帳戶ID'), c('principal', '貸款金額', 'num'), c('rate', '年利率', 'num'), c('terms', '期數', 'num'),
-        c('startDate', '起貸日', 'date'), c('payDay', '每月還款日', 'num'), c('method', '還款方式'), c('payAccountId', '預設扣款帳戶ID')],
+        c('startDate', '起貸日', 'date'), c('payDay', '每月還款日', 'num'), c('method', '還款方式'), c('payAccountId', '預設扣款帳戶ID'),
+        c('payment', '每期還款金額', 'num', true)],
     },
     brokerSettings: {
       sheet: '證券帳戶設定', idKey: 'accountId',
@@ -140,7 +141,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.12',
+    APP_VERSION: '0.9.13',
   };
   return api;
 })();
@@ -982,7 +983,9 @@ var FinLoan = (function () {
   }
 
   /**
-   * settings: { principal, rate(年利率，百分比數字，例如 2.5 代表 2.5%), terms(期數), startDate, payDay, method }
+   * settings: { principal, rate(年利率，百分比數字，例如 2.5 代表 2.5%), terms(期數), startDate, payDay, method, payment(選填) }
+   * payment：銀行固定的每期還款金額（本息平均攤還才用）。有填就照這個金額攤還（利息照餘額算、其餘還本金），
+   *   最後一期把剩下的本金一次還清；沒填才用公式從利率算出每期金額。
    * decimals: 該貸款幣別的小數位數（預設 0，例如 TWD）
    * 回傳 [{period, date, payment, principal, interest, balance}]（皆為自然單位數字）
    */
@@ -998,7 +1001,8 @@ var FinLoan = (function () {
     var levelPrincipalUnits = 0; // 本金平均攤還：每期固定本金（最後一期吸收尾差）
     if (method === '本息平均攤還') {
       var paymentNatural;
-      if (monthlyRate === 0) paymentNatural = settings.principal / n;
+      if (Number(settings.payment) > 0) paymentNatural = Number(settings.payment);
+      else if (monthlyRate === 0) paymentNatural = settings.principal / n;
       else paymentNatural = (settings.principal * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -n));
       levelPaymentUnits = FinMoney.toUnits(paymentNatural, decimals);
     } else if (method === '本金平均攤還') {
@@ -1029,6 +1033,7 @@ var FinLoan = (function () {
         interest: FinMoney.fromUnits(interestUnits, decimals),
         balance: FinMoney.fromUnits(balanceUnits, decimals),
       });
+      if (balanceUnits <= 0) break; // 固定每期金額較高時可能提前還清：之後不再有還款期
     }
     return rows;
   }
@@ -3313,7 +3318,11 @@ var FinApi = (function () {
     if (FinLoan.METHODS.indexOf(method) < 0) errors.push({ field: 'method', message: '還款方式請選擇：' + FinLoan.METHODS.join('、') });
     var payAccountId = str(a.payAccountId);
     if (payAccountId && !c.accounts[payAccountId]) errors.push({ field: 'payAccountId', message: '找不到預設扣款帳戶' });
-    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId };
+    var payment = a.payment === undefined || a.payment === null || a.payment === '' ? null : Number(a.payment);
+    if (payment !== null && (!isFinite(payment) || payment <= 0)) errors.push({ field: 'payment', message: '每期還款金額必須大於 0（不填就依利率自動計算）' });
+    else if (payment !== null && method && method !== '本息平均攤還') errors.push({ field: 'payment', message: '固定每期還款金額只適用「本息平均攤還」' });
+    else if (payment !== null && isFinite(principal) && isFinite(rate) && payment <= principal * rate / 100 / 12) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
+    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment };
     return { errors: errors, value: value };
   }
 
