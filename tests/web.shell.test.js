@@ -40,3 +40,17 @@ test('前端沒有直接寫入 innerHTML（避免備註等文字被當成 HTML �
     assert.ok(!/\.innerHTML\s*=|insertAdjacentHTML|document\.write/.test(src), f + ' 使用了 innerHTML／insertAdjacentHTML');
   }
 });
+
+test('版本號一致：網頁 WEB_VERSION、sw.js 快取名稱、後端 APP_VERSION', () => {
+  const store = fs.readFileSync(path.join(DOCS, 'js', 'store.js'), 'utf8');
+  const web = /WEB_VERSION = '([^']+)'/.exec(store)[1];
+  const swVer = /const VERSION = 'fin-v([^']+)'/.exec(sw)[1];
+  const app = require('../core/schema.js').APP_VERSION;
+  assert.equal(web, app, 'docs/js/store.js 的 WEB_VERSION 要跟 core/schema.js 的 APP_VERSION 一樣');
+  assert.equal(swVer, app, 'docs/sw.js 的 VERSION 要跟 APP_VERSION 一樣（不然手機不會更新快取）');
+});
+
+test('sw.js 向網路要檔案時帶 no-cache（避免 GitHub Pages 的 10 分鐘快取讓手機看到舊版）', () => {
+  assert.match(sw, /cache: 'no-cache'/);
+  assert.match(sw, /cache: 'reload'/);
+});

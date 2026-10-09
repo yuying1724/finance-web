@@ -1,6 +1,6 @@
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
-import { prefs, state, notify } from '../store.js';
+import { prefs, state, notify, WEB_VERSION } from '../store.js';
 import * as api from '../api.js';
 import { money } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
@@ -41,7 +41,7 @@ export function renderSettings(root) {
         issues.length ? h('ul', { class: 'list' }, issues) : h('div', { class: 'muted small' }, '沒有發現問題 ✓')),
       h('div', { class: 'card' }, h('h2', null, '關於'),
         h('dl', { class: 'kv' },
-          h('dt', null, '版本'), h('dd', null, d.version),
+          h('dt', null, '版本'), h('dd', { 'data-testid': 'app-versions' }, `網頁 ${WEB_VERSION}／後端 ${d.version}`, WEB_VERSION !== d.version ? h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '版本不一致，請按下方「清除快取並重新載入」') : null),
           h('dt', null, '後端'), h('dd', { class: 'mono' }, prefs.apiUrl.replace(/^https?:\/\//, '').slice(0, 60) + (prefs.apiUrl.length > 68 ? '…' : ''))),
         h('button', { class: 'btn btn-sm', style: { marginTop: '12px' }, onclick: reloadApp }, icon('refresh'), '清除快取並重新載入'))));
 }
@@ -79,8 +79,9 @@ function backupBlock() {
 
 async function reloadApp() {
   try {
-    if ('serviceWorker' in navigator) (await navigator.serviceWorker.getRegistrations()).forEach((r) => r.unregister());
-    if (window.caches) (await caches.keys()).forEach((k) => caches.delete(k));
+    if (window.caches) await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+    // 不解除 Service Worker：先叫它檢查新版，新版會用 no-cache 重新向伺服器要檔案（解除的話，瀏覽器自己的快取可能還是給舊檔）
+    if ('serviceWorker' in navigator) { const reg = await navigator.serviceWorker.getRegistration(); if (reg) await reg.update(); }
   } catch (e) { /* 忽略 */ }
   location.reload();
 }

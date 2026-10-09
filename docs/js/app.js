@@ -131,7 +131,19 @@ document.addEventListener('visibilitychange', () => {
 });
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // 已經有舊版在控制頁面時，新版接手（controllerchange）就自動重新整理一次，手機不用自己清快取；有視窗開著就先不打斷
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded) return;
+    if (document.querySelector('.sheet')) return;
+    reloaded = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    // App 從背景切回來時檢查有沒有新版（手機上的 PWA 常常好幾天不會真的重開）
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
 }
 window.addEventListener('unhandledrejection', (e) => { console.error(e.reason); });
 
