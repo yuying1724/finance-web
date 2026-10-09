@@ -106,7 +106,7 @@ test('第一次設定精靈：依序初始化、設 PIN、產生裝置授權碼�
   const devs = b.ctx.FinAuth.listDevices();
   assert.equal(devs.length, 1);
   assert.equal(devs[0].name, '我的手機');
-  assert.deepEqual(b.state.triggers.map((t) => t.getHandlerFunction()).sort(), ['afternoonPriceJob', 'dailyJob']);
+  assert.deepEqual(b.state.triggers.map((t) => t.getHandlerFunction()).sort(), ['afternoonPriceJob', 'dailyJob', 'weeklyBackupJob']);
   const tokenAlert = b.state.ui.log.find((l) => l.kind === 'alert' && l.title.includes('授權碼'));
   assert.match(tokenAlert.msg, /[A-Z2-9]{5}-[A-Z2-9]{5}-[A-Z2-9]{5}-[A-Z2-9]{5}/);
   // 拿畫面上顯示的授權碼實際登入
@@ -129,14 +129,17 @@ test('設定 PIN：太短、全同字元、兩次不一致都會被擋（最多�
   assert.equal(b.ctx.FinAuth.checkPin('135791'), false);
 });
 
-test('每日排程：重複安裝只會留下早上、傍晚各一個；dailyJob 更新價格', () => {
+test('排程：重複安裝只會留下早上、傍晚、每週備份各一個；dailyJob 更新價格', () => {
   const b = loadBackend().setup();
   b.ctx.FinSetup.installDailyTrigger();
   b.ctx.FinSetup.installDailyTrigger();
-  assert.equal(b.state.triggers.length, 2);
+  assert.equal(b.state.triggers.length, 3);
   const byFn = Object.fromEntries(b.state.triggers.map((t) => [t.getHandlerFunction(), t.spec]));
   assert.equal(byFn.dailyJob.hour, 7);
   assert.equal(byFn.afternoonPriceJob.hour, 18);
+  assert.equal(byFn.weeklyBackupJob.weekDay, 'SUNDAY');
+  assert.equal(byFn.weeklyBackupJob.hour, 4);
+  assert.equal(b.ctx.FinSetup.status().backupTriggers, 1);
   assert.equal(b.ctx.FinSetup.status().afternoonTriggers, 1);
   const price = b.ss.sheet('價格');
   price.formulaResults['2,2'] = 32.5; // USD 的現價公式算出 32.5
@@ -148,4 +151,55 @@ test('每日排程：重複安裝只會留下早上、傍晚各一個；dailyJob
   price.formulaResults['3,2'] = 0.21; b.ctx.dailyJob();
   price.formulaResults['3,2'] = '#N/A'; b.ctx.dailyJob();
   assert.equal(price.dump()[2][2], 0.21); assert.equal(price.dump()[2][5], '沿用舊值'); // 出錯時保留上一次的有效值
+});
+
+
+test('備份：複製整份試算表到「財務管理系統備份」資料夾，只保留最近 8 份；10 分鐘內不能重複手動備份；沒授權時給清楚的提示', () => {
+  const b = loadBackend().setup();
+  b.ctx.PropertiesService.getScriptProperties().setProperty('SHEET_ID', 'SS_MAIN');
+  for (let i = 0; i < 10; i++) { b.ctx.weeklyBackupJob(); b.advance(7 * 24 * 3600 * 1000); }
+  const live = b.state.drive.files.filter((f) => !f.trashed);
+  assert.equal(live.length, 8);
+  assert.equal(b.state.drive.files.filter((f) => f.trashed).length, 2);
+  assert.equal(b.state.drive.folders.length, 1);
+  assert.equal(b.state.drive.folders[0].name, '財務管理系統備份');
+  assert.ok(live.every((f) => /^財務管理系統備份 \d{4}-\d{2}-\d{2} \d{4}$/.test(f.name)));
+  b.login();
+  const st = b.call('getBackupStatus').data;
+  assert.equal(st.keep, 8);
+  assert.match(st.last.name, /^財務管理系統備份 /);
+  assert.equal(st.last.reason, '每週自動');
+  const r1 = b.call('backupNow');
+  assert.ok(r1.ok, JSON.stringify(r1));
+  assert.match(r1.data.backup.reason, /手動/);
+  const r2 = b.call('backupNow');
+  assert.equal(r2.ok, false); assert.equal(r2.error.code, 'BUSY');
+  b.advance(11 * 60000);
+  b.state.drive.fail = 'You do not have permission to call DriveApp.getFolderById. Required permissions: https://www.googleapis.com/auth/drive';
+  const r3 = b.call('backupNow');
+  assert.equal(r3.ok, false); assert.equal(r3.error.code, 'NOT_AUTHORIZED');
+  assert.match(r3.error.message, /授權/);
+});
+
+test('淨資產快照：dailyJob 每天記一筆、同一天重複執行只更新；走勢回傳過去的快照＋今天的即時數字', () => {
+  const b = loadBackend().setup();
+  const cash = b.call('upsertAccount', { account: { name: '測試活存', type: '銀行', defaultSymbol: 'TWD' } }).data.account;
+  assert.ok(b.call('addTransaction', { tx: { type: '調整', date: b.ctx.FinDates.today(b.state.clock.now), dstAccount: cash.id, dstSymbol: 'TWD', dstQty: 50000, categoryId: '' } }).ok);
+  const boot = b.call('bootstrap').data;
+  const food = boot.categories.find((c) => c.type === '支出' && !c.parentId);
+  b.ctx.FinMaint.snapshot(b.state.clock.now);
+  b.ctx.FinMaint.snapshot(b.state.clock.now);
+  let rows = b.ctx.FinRepo.goodRows('snapshots');
+  assert.equal(rows.length, 1, '同一天只有一列');
+  const day0 = rows[0];
+  assert.equal(day0.netWorth, Math.round(boot.netWorth.total));
+  b.advance(24 * 3600 * 1000);
+  b.login();
+  assert.ok(b.call('addTransaction', { tx: { type: '支出', date: b.ctx.FinDates.today(b.state.clock.now), srcAccount: cash.id, srcSymbol: cash.defaultSymbol, srcQty: 1000, categoryId: food.id } }).ok);
+  const h = b.call('getNetWorthHistory').data;
+  assert.equal(h.rows.length, 2);
+  assert.equal(h.rows[0].date, day0.date);
+  assert.equal(h.rows[1].live, true);
+  assert.equal(h.rows[1].netWorth, day0.netWorth - 1000);
+  assert.ok(h.rows[1].date > h.rows[0].date);
 });

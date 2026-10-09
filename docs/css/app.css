@@ -246,3 +246,14 @@ details.adv summary { cursor: pointer; padding: 6px 0; }
 .amt-due { color: var(--bad); }
 
 a.item { color: inherit; text-decoration: none; }
+
+/* 首頁淨資產走勢（docs/js/views/nwchart.js）：單一數列折線＋淡色面積，十字線提示 */
+.chip-sm { padding: 4px 10px; font-size: 12.5px; }
+.nw-chart { display: block; width: 100%; height: auto; margin-top: 6px; touch-action: pan-y; cursor: crosshair; }
+.nw-line { fill: none; stroke: var(--accent-strong); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.nw-area { fill: var(--accent); opacity: .16; stroke: none; }
+.nw-axis { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.nw-cross { stroke: var(--sub); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.nw-dot { fill: var(--accent-strong); stroke: var(--card); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.nw-tick { fill: var(--sub); font-size: 9px; }
+.nw-tip { min-height: 2.8em; margin-top: 2px; white-space: pre-line; }

@@ -28,11 +28,24 @@ function doPost(e) {
 function dailyJob() {
   FinJobs.refreshPrices();
   try { FinRecurringJob.runDaily(FinClock.now()); } catch (e) { try { Logger.log('定期排程失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
+  try { FinMaint.snapshot(FinClock.now()); } catch (e) { try { Logger.log('淨資產快照失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
 }
 
-/** 下午收盤後的價格更新（只更新價格，不跑定期交易、不寄信） */
+/** 下午收盤後的價格更新（只更新價格，不跑定期交易、不寄信）；再把今天的淨資產快照更新成收盤後的數字 */
 function afternoonPriceJob() {
   FinJobs.refreshPrices();
+  try { FinMaint.snapshot(FinClock.now()); } catch (e) { try { Logger.log('淨資產快照失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
+}
+
+/** 每週日清晨：備份整份試算表到雲端硬碟 */
+function weeklyBackupJob() {
+  try { FinMaint.backup(FinClock.now(), '每週自動'); } catch (e) { try { Logger.log('備份失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
+}
+
+/** 試算表選單／Apps Script 編輯器：立即備份（第一次執行會跳出雲端硬碟授權畫面） */
+function menuBackupNow() {
+  var info = FinMaint.backup(FinClock.now(), '手動（試算表選單）');
+  try { alert_('備份完成', '已備份為「' + info.name + '」，放在雲端硬碟的「' + FinMaint.BACKUP_FOLDER + '」資料夾（保留最近 ' + FinMaint.KEEP + ' 份）。'); } catch (e) { Logger.log('備份完成：' + info.name); }
 }
 
 // ---------- 試算表選單 ----------
@@ -45,7 +58,8 @@ function onOpen() {
     .addItem('新增裝置授權碼', 'menuAddDevice')
     .addItem('查看或撤銷裝置', 'menuManageDevices')
     .addItem('登出所有裝置', 'menuSignOutAll')
-    .addItem('安裝每日排程（匯率、定期交易、提醒信）', 'menuInstallTriggers')
+    .addItem('安裝排程（匯率、定期交易、提醒信、每週備份）', 'menuInstallTriggers')
+    .addItem('立即備份到雲端硬碟', 'menuBackupNow')
     .addItem('檢查目前狀態', 'menuStatus')
     .addToUi();
 }
@@ -122,7 +136,7 @@ function menuSignOutAll() {
 
 function menuInstallTriggers() {
   FinSetup.installDailyTrigger();
-  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信；傍晚 6 點會再更新一次股價（上櫃股票用當天收盤價）。' +
+  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信；傍晚 6 點會再更新一次股價（上櫃股票用當天收盤價）；每天記一筆淨資產；每週日清晨 4 點備份整份試算表到雲端硬碟。' +
     '第一次安裝、或第一次寄信時 Google 可能會要求你另外授權（寄信需要的 script.send_mail 權限），請按允許。');
 }
 
@@ -132,7 +146,7 @@ function menuStatus() {
     '已初始化：' + (s.initialized ? '是' : '否'),
     'PIN：' + (s.pin ? '已設定' : '尚未設定'),
     '裝置：' + (s.devices.length ? s.devices.map(function (d) { return d.name; }).join('、') : '無'),
-    '每日排程：' + (s.triggers ? '已安裝' : '尚未安裝') + '；傍晚價格更新：' + (s.afternoonTriggers ? '已安裝' : '尚未安裝（請按「安裝每日排程」）'),
+    '每日排程：' + (s.triggers ? '已安裝' : '尚未安裝') + '；傍晚價格更新：' + (s.afternoonTriggers ? '已安裝' : '尚未安裝（請按「安裝排程」）') + '；每週備份：' + (s.backupTriggers ? '已安裝' : '尚未安裝（請按「安裝排程」）'),
   ];
   lines.push(s.problems.length ? '資料問題（' + s.problems.length + '）：\n' + s.problems.slice(0, 15).join('\n') : '資料檢查：沒有發現問題');
   alert_('目前狀態', lines.join('\n'));

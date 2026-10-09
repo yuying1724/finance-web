@@ -670,6 +670,41 @@ test('信用卡入帳日：結帳日前刷、還沒填入帳日 → 顯示「可
   });
 });
 
+test('首頁淨資產走勢：只有今天時顯示說明；有過去的快照後畫出走勢與變化；設定頁可以立即備份', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.waitForSelector('[data-testid=nw-trend]');
+    await page.waitForFunction(() => /明天起就能看到走勢/.test(document.querySelector('[data-testid=nw-trend]').innerText));
+    // 補 3 天前、1 天前的快照（模擬每天排程記錄），重新整理首頁後畫出走勢
+    const now = be.state.clock.now;
+    const today = be.ctx.FinDates.today(now);
+    const nwToday = Math.round(be.call('bootstrap').data.netWorth.total);
+    be.ctx.FinRepo.reset();
+    be.ctx.FinRepo.append('snapshots', [
+      { date: be.ctx.FinDates.addDays(today, -3), netWorth: nwToday - 5000, assets: nwToday, liabilities: 5000 },
+      { date: be.ctx.FinDates.addDays(today, -1), netWorth: nwToday - 2000, assets: nwToday, liabilities: 2000 },
+    ]);
+    await page.click('button[aria-label="重新整理"]');
+    await page.waitForSelector('[data-testid=nw-trend] svg.nw-chart');
+    assert.match(await page.locator('[data-testid=nw-trend-diff]').innerText(), /\+NT\$5,000/);
+    await page.click('[data-testid=nw-trend] .chip >> text=全部');
+    await page.waitForSelector('[data-testid=nw-trend] .chip.on >> text=全部');
+    const box = await page.locator('[data-testid=nw-trend] svg').boundingBox();
+    await page.mouse.move(box.x + 5, box.y + box.height / 2);
+    await page.waitForFunction(() => /淨資產 NT\$/.test(document.querySelector('.nw-tip').innerText));
+    // 設定頁：立即備份
+    await a.tab('settings');
+    await page.waitForSelector('[data-testid=backup-block]');
+    await page.waitForFunction(() => /還沒有備份過/.test(document.querySelector('[data-testid=backup-block]').innerText));
+    await page.click('[data-testid=backup-now]');
+    await page.waitForFunction(() => /已備份：財務管理系統備份/.test(document.body.innerText));
+    await page.waitForFunction(() => /上次備份/.test(document.querySelector('[data-testid=backup-block]').innerText));
+    assert.equal(be.state.drive.files.filter((f) => !f.trashed).length, 1);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

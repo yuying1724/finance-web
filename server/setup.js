@@ -86,13 +86,14 @@ var FinSetup = (function () {
   }
 
   // 每天兩個排程：早上 7 點 dailyJob（價格＋定期交易＋提醒信）、傍晚 6 點 afternoonPriceJob（只更新價格；櫃買中心當日收盤行情下午 3 點多還沒出來，所以排在 6 點）
-  var JOB_FUNCTIONS = ['dailyJob', 'afternoonPriceJob'];
+  var JOB_FUNCTIONS = ['dailyJob', 'afternoonPriceJob', 'weeklyBackupJob'];
   function installDailyTrigger() {
     ScriptApp.getProjectTriggers().forEach(function (t) {
       if (JOB_FUNCTIONS.indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t);
     });
     ScriptApp.newTrigger('dailyJob').timeBased().everyDays(1).atHour(7).create();
     ScriptApp.newTrigger('afternoonPriceJob').timeBased().everyDays(1).atHour(18).create();
+    ScriptApp.newTrigger('weeklyBackupJob').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(4).create();
   }
 
   /** 檢查目前狀態，回傳給選單顯示 */
@@ -101,6 +102,7 @@ var FinSetup = (function () {
     var out = { initialized: !!props.getProperty('SHEET_ID'), pin: FinAuth.hasPin(), devices: FinAuth.listDevices(), triggers: 0, problems: [] };
     out.triggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'dailyJob'; }).length;
     out.afternoonTriggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'afternoonPriceJob'; }).length;
+    out.backupTriggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'weeklyBackupJob'; }).length;
     if (out.initialized) {
       try {
         FinRepo.reset();

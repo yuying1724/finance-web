@@ -141,7 +141,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.15',
+    APP_VERSION: '0.9.16',
   };
   return api;
 })();
@@ -3722,6 +3722,34 @@ var FinApi = (function () {
     },
   };
 
+  // ---------- 備份與淨資產走勢（見 server/maintenance.js） ----------
+  H.getBackupStatus = {
+    fn: function () { return { last: FinMaint.lastBackup(), keep: FinMaint.KEEP, folderName: FinMaint.BACKUP_FOLDER, schedule: '每週日清晨 4 點' }; },
+  };
+  H.backupNow = {
+    fn: function (p, env) {
+      var last = Number(cacheGet('backupNow:last') || 0);
+      if (last && env.now - last < 10 * 60000) throw FinFail('BUSY', '剛剛才備份過，請 ' + Math.ceil((10 * 60000 - (env.now - last)) / 60000) + ' 分鐘後再試');
+      var info;
+      try { info = FinMaint.backup(env.now, '手動（' + (env.device || '網頁') + '）'); }
+      catch (e) {
+        if (e && e.code) throw e;
+        var msg = String(e && e.message || e);
+        if (/permission|權限|authoriz|授權/i.test(msg)) throw FinFail('NOT_AUTHORIZED', '備份需要雲端硬碟的授權：請到 Apps Script 編輯器執行一次「menuBackupNow」並按「允許」');
+        throw FinFail('BACKUP_FAILED', '備份失敗：' + msg);
+      }
+      cachePut('backupNow:last', String(env.now), 900);
+      FinRepo.audit('備份', 'backup', '', info.name, env.device);
+      return { backup: info };
+    },
+  };
+  H.getNetWorthHistory = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      return { base: c.base, rows: FinMaint.history(c) };
+    },
+  };
+
   H.changePin = {
     fn: function (p, env) {
       if (!FinAuth.checkPin(p.oldPin)) throw FinFail('AUTH_FAILED', '目前的 PIN 不正確');
@@ -4109,13 +4137,14 @@ var FinSetup = (function () {
   }
 
   // 每天兩個排程：早上 7 點 dailyJob（價格＋定期交易＋提醒信）、傍晚 6 點 afternoonPriceJob（只更新價格；櫃買中心當日收盤行情下午 3 點多還沒出來，所以排在 6 點）
-  var JOB_FUNCTIONS = ['dailyJob', 'afternoonPriceJob'];
+  var JOB_FUNCTIONS = ['dailyJob', 'afternoonPriceJob', 'weeklyBackupJob'];
   function installDailyTrigger() {
     ScriptApp.getProjectTriggers().forEach(function (t) {
       if (JOB_FUNCTIONS.indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t);
     });
     ScriptApp.newTrigger('dailyJob').timeBased().everyDays(1).atHour(7).create();
     ScriptApp.newTrigger('afternoonPriceJob').timeBased().everyDays(1).atHour(18).create();
+    ScriptApp.newTrigger('weeklyBackupJob').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(4).create();
   }
 
   /** 檢查目前狀態，回傳給選單顯示 */
@@ -4124,6 +4153,7 @@ var FinSetup = (function () {
     var out = { initialized: !!props.getProperty('SHEET_ID'), pin: FinAuth.hasPin(), devices: FinAuth.listDevices(), triggers: 0, problems: [] };
     out.triggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'dailyJob'; }).length;
     out.afternoonTriggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'afternoonPriceJob'; }).length;
+    out.backupTriggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'weeklyBackupJob'; }).length;
     if (out.initialized) {
       try {
         FinRepo.reset();
@@ -4263,6 +4293,110 @@ var FinJobs = (function () {
   return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_, fetchBitoProMap_: fetchBitoProMap_ };
 })();
 
+// ==================== server/maintenance.js ====================
+/**
+ * 資料保全與趨勢：
+ *  1. 備份：把整份試算表複製一份到雲端硬碟「財務管理系統備份」資料夾，只保留最近 8 份（較舊的移到垃圾桶，30 天內還救得回來）。
+ *     每週日清晨排程自動執行，也可以從網頁「設定」或試算表選單手動執行。需要 appsscript.json 的 drive 授權範圍。
+ *  2. 淨資產快照：每天記一筆（資產、負債、淨值與各類別），寫在「快照」分頁，給首頁的淨資產走勢圖用。
+ *     同一天重複執行只會更新當天那一列（早上排程記一次、傍晚收盤後價格更新再覆寫一次）。
+ */
+var FinMaint = (function () {
+  var BACKUP_FOLDER = '財務管理系統備份';
+  var BACKUP_PREFIX = '財務管理系統備份 ';
+  var KEEP = 8;
+  var PROP_LAST = 'BACKUP_LAST';
+  var PROP_FOLDER = 'BACKUP_FOLDER_ID';
+
+  function props() { return PropertiesService.getScriptProperties(); }
+
+  function folder_() {
+    var p = props(), id = p.getProperty(PROP_FOLDER);
+    if (id) {
+      try { var f = DriveApp.getFolderById(id); if (!f.isTrashed()) return f; } catch (e) { /* 資料夾被刪掉了：重新找或建立 */ }
+    }
+    var it = DriveApp.getFoldersByName(BACKUP_FOLDER);
+    var folder = it.hasNext() ? it.next() : DriveApp.createFolder(BACKUP_FOLDER);
+    p.setProperty(PROP_FOLDER, folder.getId());
+    return folder;
+  }
+
+  /** 立即備份一份；回傳 {at, name, url, folderUrl, kept, trashed, reason} */
+  function backup(nowMs, reason) {
+    var id = props().getProperty('SHEET_ID');
+    if (!id) throw FinFail('NOT_READY', '系統尚未初始化');
+    var folder = folder_();
+    var stamp = Utilities.formatDate(new Date(nowMs), 'Asia/Taipei', 'yyyy-MM-dd HHmm');
+    var copy = DriveApp.getFileById(id).makeCopy(BACKUP_PREFIX + stamp, folder);
+    // 只保留最近 KEEP 份（檔名的日期時間可以直接排序，新的在前）
+    var files = [], it = folder.getFiles();
+    while (it.hasNext()) {
+      var f = it.next();
+      if (String(f.getName()).indexOf(BACKUP_PREFIX) === 0 && !f.isTrashed()) files.push(f);
+    }
+    files.sort(function (a, b) { return a.getName() < b.getName() ? 1 : a.getName() > b.getName() ? -1 : 0; });
+    var trashed = 0;
+    files.slice(KEEP).forEach(function (f) { f.setTrashed(true); trashed++; });
+    var info = { at: FinDates.timestamp(nowMs), name: copy.getName(), url: copy.getUrl(), folderUrl: folder.getUrl(),
+      kept: Math.min(files.length, KEEP), trashed: trashed, reason: reason || '' };
+    props().setProperty(PROP_LAST, JSON.stringify(info));
+    return info;
+  }
+
+  function lastBackup() {
+    try { return JSON.parse(props().getProperty(PROP_LAST) || 'null'); } catch (e) { return null; }
+  }
+
+  // ---------- 淨資產快照 ----------
+  var SNAP_KEYS = ['cash', 'fxCash', 'stocks', 'crypto', 'receivable', 'cardDebt', 'loanDebt', 'payable', 'assets', 'liabilities', 'netWorth'];
+
+  /** 依目前的餘額與價格算出一列快照（金額四捨五入到整數元） */
+  function snapshotOf(c) {
+    var nw = FinApi.computeAll(c).netWorth;
+    var s = { cash: 0, fxCash: 0, stocks: 0, crypto: 0, receivable: 0, cardDebt: 0, loanDebt: 0, payable: 0 };
+    nw.rows.forEach(function (r) {
+      if (r.value === null || r.value === undefined) return;
+      var acct = c.accounts[r.accountId], at = acct ? acct.type : '', v = r.value;
+      if (at === '信用卡') { if (v < 0) s.cardDebt += -v; else s.cash += v; return; }
+      if (at === '貸款') { if (v < 0) s.loanDebt += -v; else s.cash += v; return; }
+      if (at === '應收' || at === '應付') { if (v < 0) s.payable += -v; else s.receivable += v; return; }
+      var inst = c.instruments[r.symbol], it = inst ? inst.type : '';
+      if (it === '法幣') { if (r.symbol === c.base) s.cash += v; else s.fxCash += v; }
+      else if (it === '加密') s.crypto += v;
+      else s.stocks += v;
+    });
+    s.assets = nw.assets; s.liabilities = nw.liabilities; s.netWorth = nw.total;
+    var out = { date: c.today };
+    SNAP_KEYS.forEach(function (k) { out[k] = Math.round(Number(s[k]) || 0); });
+    return out;
+  }
+
+  /** 記下（或更新）今天的快照 */
+  function snapshot(nowMs) {
+    FinRepo.reset();
+    var c = FinApi.loadContext(nowMs);
+    var row = snapshotOf(c);
+    var existing = FinRepo.goodRows('snapshots').filter(function (r) { return r.date === row.date; })[0];
+    if (existing) FinRepo.updateRow('snapshots', existing._row, row);
+    else FinRepo.append('snapshots', [row]);
+    return row;
+  }
+
+  /** 走勢資料：已記錄的每日快照（不含今天）＋今天的即時數字 */
+  function history(c) {
+    var rows = FinRepo.goodRows('snapshots').filter(function (r) { return r.date && r.date < c.today; })
+      .map(function (r) { var o = { date: r.date }; SNAP_KEYS.forEach(function (k) { o[k] = Number(r[k]) || 0; }); return o; });
+    // 同一天如果有重複列（手動改試算表造成），以最後一列為準
+    var byDate = {};
+    rows.forEach(function (r) { byDate[r.date] = r; });
+    var list = Object.keys(byDate).sort().map(function (d) { return byDate[d]; });
+    list.push(Object.assign(snapshotOf(c), { live: true }));
+    return list;
+  }
+
+  return { backup: backup, lastBackup: lastBackup, snapshot: snapshot, snapshotOf: snapshotOf, history: history, KEEP: KEEP, BACKUP_FOLDER: BACKUP_FOLDER };
+})();
+
 // ==================== server/main.js ====================
 /**
  * Apps Script 進入點：網頁應用程式（doGet / doPost）、試算表選單、排程。
@@ -4294,11 +4428,24 @@ function doPost(e) {
 function dailyJob() {
   FinJobs.refreshPrices();
   try { FinRecurringJob.runDaily(FinClock.now()); } catch (e) { try { Logger.log('定期排程失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
+  try { FinMaint.snapshot(FinClock.now()); } catch (e) { try { Logger.log('淨資產快照失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
 }
 
-/** 下午收盤後的價格更新（只更新價格，不跑定期交易、不寄信） */
+/** 下午收盤後的價格更新（只更新價格，不跑定期交易、不寄信）；再把今天的淨資產快照更新成收盤後的數字 */
 function afternoonPriceJob() {
   FinJobs.refreshPrices();
+  try { FinMaint.snapshot(FinClock.now()); } catch (e) { try { Logger.log('淨資產快照失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
+}
+
+/** 每週日清晨：備份整份試算表到雲端硬碟 */
+function weeklyBackupJob() {
+  try { FinMaint.backup(FinClock.now(), '每週自動'); } catch (e) { try { Logger.log('備份失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
+}
+
+/** 試算表選單／Apps Script 編輯器：立即備份（第一次執行會跳出雲端硬碟授權畫面） */
+function menuBackupNow() {
+  var info = FinMaint.backup(FinClock.now(), '手動（試算表選單）');
+  try { alert_('備份完成', '已備份為「' + info.name + '」，放在雲端硬碟的「' + FinMaint.BACKUP_FOLDER + '」資料夾（保留最近 ' + FinMaint.KEEP + ' 份）。'); } catch (e) { Logger.log('備份完成：' + info.name); }
 }
 
 // ---------- 試算表選單 ----------
@@ -4311,7 +4458,8 @@ function onOpen() {
     .addItem('新增裝置授權碼', 'menuAddDevice')
     .addItem('查看或撤銷裝置', 'menuManageDevices')
     .addItem('登出所有裝置', 'menuSignOutAll')
-    .addItem('安裝每日排程（匯率、定期交易、提醒信）', 'menuInstallTriggers')
+    .addItem('安裝排程（匯率、定期交易、提醒信、每週備份）', 'menuInstallTriggers')
+    .addItem('立即備份到雲端硬碟', 'menuBackupNow')
     .addItem('檢查目前狀態', 'menuStatus')
     .addToUi();
 }
@@ -4388,7 +4536,7 @@ function menuSignOutAll() {
 
 function menuInstallTriggers() {
   FinSetup.installDailyTrigger();
-  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信；傍晚 6 點會再更新一次股價（上櫃股票用當天收盤價）。' +
+  alert_('已安裝', '每天早上 7 點會自動更新匯率、執行到期的定期交易（自動入帳／產生待確認）、並視情況寄出提醒信；傍晚 6 點會再更新一次股價（上櫃股票用當天收盤價）；每天記一筆淨資產；每週日清晨 4 點備份整份試算表到雲端硬碟。' +
     '第一次安裝、或第一次寄信時 Google 可能會要求你另外授權（寄信需要的 script.send_mail 權限），請按允許。');
 }
 
@@ -4398,7 +4546,7 @@ function menuStatus() {
     '已初始化：' + (s.initialized ? '是' : '否'),
     'PIN：' + (s.pin ? '已設定' : '尚未設定'),
     '裝置：' + (s.devices.length ? s.devices.map(function (d) { return d.name; }).join('、') : '無'),
-    '每日排程：' + (s.triggers ? '已安裝' : '尚未安裝') + '；傍晚價格更新：' + (s.afternoonTriggers ? '已安裝' : '尚未安裝（請按「安裝每日排程」）'),
+    '每日排程：' + (s.triggers ? '已安裝' : '尚未安裝') + '；傍晚價格更新：' + (s.afternoonTriggers ? '已安裝' : '尚未安裝（請按「安裝排程」）') + '；每週備份：' + (s.backupTriggers ? '已安裝' : '尚未安裝（請按「安裝排程」）'),
   ];
   lines.push(s.problems.length ? '資料問題（' + s.problems.length + '）：\n' + s.problems.slice(0, 15).join('\n') : '資料檢查：沒有發現問題');
   alert_('目前狀態', lines.join('\n'));

@@ -1408,6 +1408,34 @@ var FinApi = (function () {
     },
   };
 
+  // ---------- 備份與淨資產走勢（見 server/maintenance.js） ----------
+  H.getBackupStatus = {
+    fn: function () { return { last: FinMaint.lastBackup(), keep: FinMaint.KEEP, folderName: FinMaint.BACKUP_FOLDER, schedule: '每週日清晨 4 點' }; },
+  };
+  H.backupNow = {
+    fn: function (p, env) {
+      var last = Number(cacheGet('backupNow:last') || 0);
+      if (last && env.now - last < 10 * 60000) throw FinFail('BUSY', '剛剛才備份過，請 ' + Math.ceil((10 * 60000 - (env.now - last)) / 60000) + ' 分鐘後再試');
+      var info;
+      try { info = FinMaint.backup(env.now, '手動（' + (env.device || '網頁') + '）'); }
+      catch (e) {
+        if (e && e.code) throw e;
+        var msg = String(e && e.message || e);
+        if (/permission|權限|authoriz|授權/i.test(msg)) throw FinFail('NOT_AUTHORIZED', '備份需要雲端硬碟的授權：請到 Apps Script 編輯器執行一次「menuBackupNow」並按「允許」');
+        throw FinFail('BACKUP_FAILED', '備份失敗：' + msg);
+      }
+      cachePut('backupNow:last', String(env.now), 900);
+      FinRepo.audit('備份', 'backup', '', info.name, env.device);
+      return { backup: info };
+    },
+  };
+  H.getNetWorthHistory = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      return { base: c.base, rows: FinMaint.history(c) };
+    },
+  };
+
   H.changePin = {
     fn: function (p, env) {
       if (!FinAuth.checkPin(p.oldPin)) throw FinFail('AUTH_FAILED', '目前的 PIN 不正確');

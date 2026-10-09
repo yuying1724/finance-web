@@ -195,6 +195,8 @@ function createMocks() {
     computeDigest: (alg, s) => toSigned(crypto.createHash('sha256').update(String(s), 'utf8').digest()),
     computeHmacSha256Signature: (msg, key) => toSigned(crypto.createHmac('sha256', String(key)).update(String(msg), 'utf8').digest()),
     getUuid: () => crypto.randomUUID(),
+    formatDate: (d, tz, pattern) => { const t = new Date(d.getTime() + TZ_MS); const p = (n) => String(n).padStart(2, '0');
+      return pattern.replace('yyyy', t.getUTCFullYear()).replace('MM', p(t.getUTCMonth() + 1)).replace('dd', p(t.getUTCDate())).replace('HH', p(t.getUTCHours())).replace('mm', p(t.getUTCMinutes())); },
     sleep: (ms) => { state.sleptMs += ms; },
   };
   const ContentService = {
@@ -202,11 +204,12 @@ function createMocks() {
     createTextOutput: (s) => ({ content: s, setMimeType() { return this; }, getContent() { return this.content; } }),
   };
   const ScriptApp = {
+    WeekDay: { SUNDAY: 'SUNDAY', MONDAY: 'MONDAY' },
     getProjectTriggers: () => state.triggers.slice(),
     deleteTrigger: (t) => { state.triggers = state.triggers.filter((x) => x !== t); },
     newTrigger: (fn) => {
       const spec = { fn };
-      const b = { timeBased: () => b, everyDays: (n) => { spec.days = n; return b; }, atHour: (h) => { spec.hour = h; return b; },
+      const b = { timeBased: () => b, everyDays: (n) => { spec.days = n; return b; }, atHour: (h) => { spec.hour = h; return b; }, onWeekDay: (d) => { spec.weekDay = d; return b; },
         create: () => { const t = { getHandlerFunction: () => fn, spec }; state.triggers.push(t); return t; } };
       return b;
     },
@@ -265,10 +268,22 @@ function createMocks() {
       return { getResponseCode: () => (r.code === undefined ? 200 : r.code), getContentText: () => (typeof r.body === 'string' ? r.body : JSON.stringify(r.body)) };
     },
   };
+  // DriveApp（備份用）：記憶體中的資料夾／檔案；state.drive.fail 設成錯誤訊息可模擬沒有授權
+  state.drive = { folders: [], files: [], fail: null, seq: 0 };
+  const mkFile = (name, folder) => { const f = { id: 'F' + (++state.drive.seq), name, folder, trashed: false, getId() { return this.id; }, getName() { return this.name; }, getUrl() { return 'https://drive.example/' + this.id; }, isTrashed() { return this.trashed; }, setTrashed(v) { this.trashed = !!v; return this; } }; state.drive.files.push(f); return f; };
+  const mkFolder = (name) => { const fo = { id: 'D' + (++state.drive.seq), name, trashed: false, getId() { return this.id; }, getUrl() { return 'https://drive.example/folder/' + this.id; }, isTrashed() { return this.trashed; },
+    getFiles() { const list = state.drive.files.filter((f) => f.folder === fo); let i = 0; return { hasNext: () => i < list.length, next: () => list[i++] }; } }; state.drive.folders.push(fo); return fo; };
+  const driveGuard = () => { if (state.drive.fail) throw new Error(state.drive.fail); };
+  const DriveApp = {
+    getFolderById: (id) => { driveGuard(); const f = state.drive.folders.find((x) => x.id === id); if (!f) throw new Error('not found'); return f; },
+    getFoldersByName: (name) => { driveGuard(); const list = state.drive.folders.filter((x) => x.name === name && !x.trashed); let i = 0; return { hasNext: () => i < list.length, next: () => list[i++] }; },
+    createFolder: (name) => { driveGuard(); return mkFolder(name); },
+    getFileById: (id) => { driveGuard(); return { makeCopy: (name, folder) => mkFile(name, folder) }; },
+  };
   const Logger = { log: (m) => state.logs.push(String(m)) };
   const MailApp = { sendEmail: (to, subject, body) => { state.mail.push({ to, subject, body }); } };
   const Session = { getEffectiveUser: () => ({ getEmail: () => 'owner@example.com' }), getActiveUser: () => ({ getEmail: () => 'owner@example.com' }) };
-  return { state, newSheet, setActive: (ss) => { active = ss; }, globals: { SpreadsheetApp, PropertiesService, CacheService, LockService, Utilities, ContentService, ScriptApp, Logger, MailApp, Session, Sheets, UrlFetchApp } };
+  return { state, newSheet, setActive: (ss) => { active = ss; }, globals: { SpreadsheetApp, PropertiesService, CacheService, LockService, Utilities, ContentService, ScriptApp, Logger, MailApp, Session, Sheets, UrlFetchApp, DriveApp } };
 }
 
 module.exports = { createMocks, MockSheet, MockSpreadsheet };

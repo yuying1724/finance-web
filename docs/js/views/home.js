@@ -7,6 +7,7 @@ import { openAccountForm } from './accountform.js';
 import { refresh } from '../data.js';
 import { todoCard } from './cards.js';
 import { toast, errorText } from '../ui.js';
+import { netWorthTrendCard } from './nwchart.js';
 
 export function renderHome(root) {
   const d = state.data;
@@ -36,6 +37,7 @@ export function renderHome(root) {
     h('div', { class: 'label' }, '淨資產'),
     h('div', { class: 'big', 'data-testid': 'networth' }, money(nw.total, base, { whole: true })),
     h('div', { class: 'muted small' }, `資產 ${money(nw.assets, base, { whole: true })}　負債 ${money(nw.liabilities, base, { whole: true })}`)));
+  if (d.accounts.length) children.push(netWorthTrendCard());
 
   if (nw.missing.length) {
     children.push(h('div', { class: 'notice' }, icon('alert'), h('div', null,

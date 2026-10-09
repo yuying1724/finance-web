@@ -34,6 +34,7 @@ export function renderSettings(root) {
         h('p', { class: 'muted small', style: { marginBottom: 0 } }, `這台裝置：${d.device || '（未命名）'}。要新增或撤銷裝置，請在試算表的「財務系統」選單操作。`)),
       h('div', { class: 'card' }, h('h2', null, '資料'),
         d.sheetUrl ? h('a', { class: 'btn btn-sm', href: d.sheetUrl, target: '_blank', rel: 'noopener noreferrer' }, icon('external'), '開啟試算表') : null,
+        backupBlock(),
         h('h3', { style: { fontSize: '14px', margin: '14px 0 4px' } }, '匯率與價格'),
         prices.length ? h('ul', { class: 'list' }, prices) : h('div', { class: 'muted small' }, '沒有價格資料'),
         h('h3', { style: { fontSize: '14px', margin: '14px 0 4px' } }, '資料檢查'),
@@ -43,6 +44,37 @@ export function renderSettings(root) {
           h('dt', null, '版本'), h('dd', null, d.version),
           h('dt', null, '後端'), h('dd', { class: 'mono' }, prefs.apiUrl.replace(/^https?:\/\//, '').slice(0, 60) + (prefs.apiUrl.length > 68 ? '…' : ''))),
         h('button', { class: 'btn btn-sm', style: { marginTop: '12px' }, onclick: reloadApp }, icon('refresh'), '清除快取並重新載入'))));
+}
+
+// ---------- 備份（後端每週日清晨自動備份整份試算表到雲端硬碟；這裡顯示上次備份、可以手動備份） ----------
+let backupState = { info: null, loading: false, loaded: false, error: null };
+function backupBlock() {
+  if (!backupState.loaded && !backupState.loading) {
+    backupState.loading = true;
+    api.call('getBackupStatus')
+      .then((r) => { backupState = { info: r, loaded: true, loading: false, error: null }; notify(); })
+      .catch((e) => { backupState = { info: null, loaded: true, loading: false, error: e }; notify(); });
+  }
+  const i = backupState.info, last = i && i.last;
+  const desc = !backupState.loaded ? '載入中…'
+    : backupState.error ? '備份狀態暫時讀不到：' + errorText(backupState.error)
+      : last ? `上次備份：${last.at}（${last.reason || '自動'}）。${i.schedule}自動備份到雲端硬碟「${i.folderName}」資料夾，保留最近 ${i.keep} 份。`
+        : `還沒有備份過。${i ? i.schedule : '每週'}會自動備份到雲端硬碟，也可以現在先備份一次。`;
+  const btn = h('button', { class: 'btn btn-sm', 'data-testid': 'backup-now', onclick: async (e) => {
+    await withBusy(e.currentTarget, async () => {
+      try {
+        const r = await api.call('backupNow');
+        backupState.info = Object.assign({}, backupState.info || {}, { last: r.backup });
+        toast('已備份：' + r.backup.name);
+        notify();
+      } catch (err) { toast(errorText(err), { kind: 'bad', ms: 8000 }); }
+    });
+  } }, '立即備份');
+  return h('div', { 'data-testid': 'backup-block' },
+    h('h3', { style: { fontSize: '14px', margin: '14px 0 4px' } }, '備份'),
+    h('div', { class: 'muted small', style: { marginBottom: '8px' } }, desc),
+    h('div', { class: 'row-flex wrap' }, btn,
+      last && last.folderUrl ? h('a', { class: 'btn btn-sm', href: last.folderUrl, target: '_blank', rel: 'noopener noreferrer' }, icon('external'), '開啟備份資料夾') : null));
 }
 
 async function reloadApp() {
