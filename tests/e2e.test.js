@@ -779,6 +779,46 @@ test('股息：除息日自動產生待確認，定期頁顯示預估明細；�
   });
 });
 
+test('定期「每N天」：表單選每 N 天＋從實際付款日起算，列表顯示「每 30 天（從實際付款日起算）」；到期的待確認可以延後', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const bank = be.call('upsertAccount', { account: { name: '月票付款帳戶', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('recurring');
+    await page.click('[data-testid=add-recurring]');
+    await page.waitForSelector('.sheet [data-testid=recurring-freq]');
+    const field = (label) => page.locator(`.sheet label.field:has(span.lbl:text-is("${label}"))`);
+    await field('名稱').locator('input').fill('捷運月票');
+    await page.selectOption('.sheet [data-testid=recurring-freq]', '每N天');
+    await page.waitForSelector('.sheet [data-testid=recurring-anchor]');
+    await field('每幾天一次（例如 31）').locator('input').fill('30');
+    await page.selectOption('.sheet [data-testid=recurring-anchor]', '實際日期');
+    await field('假日處理').locator('select').selectOption('不調整');
+    assert.match(await page.locator('.sheet').innerText(), /還沒付就按「延後」/);
+    await field('付款帳戶').locator('select').selectOption(bank);
+    await field('預計金額').locator('input').fill('1200');
+    const catSel = field('分類').locator('select');
+    const firstCat = await catSel.locator('option').nth(1).getAttribute('value');
+    await catSel.selectOption(firstCat);
+    await page.click('.sheet [data-testid=recurring-save]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    await page.waitForSelector('[data-testid=recurring-item]:has-text("捷運月票")');
+    assert.match(await page.locator('[data-testid=recurring-item]:has-text("捷運月票")').innerText(), /每 30 天（從實際付款日起算）　支出／提醒確認/);
+    const tpl = be.call('bootstrap').data.recurring.find((t) => t.name === '捷運月票');
+    assert.deepEqual([tpl.freq, String(tpl.days), tpl.anchor, tpl.mode, tpl.startDate], ['每N天', '30', '實際日期', '提醒確認', today]);
+    const sum = be.ctx.FinRecurringJob.runDaily(be.state.clock.now);
+    assert.equal(sum.created, 1, JSON.stringify(sum));
+    await page.reload(); await page.waitForSelector('.tabbar a[data-tab=home]');
+    await a.tab('home'); await a.tab('recurring');
+    await page.waitForSelector('[data-testid=pending-item]:has-text("捷運月票")');
+    await page.click('[data-testid=pending-item]:has-text("捷運月票") [data-testid=postpone-pending]');
+    await page.waitForSelector('.sheet');
+    assert.match(await page.locator('.sheet').innerText(), /預計哪天付款/);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

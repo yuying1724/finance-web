@@ -150,6 +150,8 @@ var FinApi = (function () {
       var o = pub(t);
       o.templateName = tpl ? tpl.name : '';
       o.mode = tpl ? tpl.mode : '';
+      o.anchor = tpl ? (tpl.anchor || '') : '';
+      if (tpl && FinRecurring.isActualAnchored(tpl)) o.intervalDays = FinRecurring.intervalDays(tpl);
       if (t.type === '股息') {
         var di = c.instruments[t.relatedSymbol];
         o.relatedName = di ? di.name : '';
@@ -290,8 +292,10 @@ var FinApi = (function () {
     c.recurringRows.filter(function (t) { return t.active; }).forEach(function (tpl) {
       var dayList = String(tpl.days || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean).map(Number);
       var markets = tpl.type === '貸款還款' ? ['台灣'] : marketsForAccount(c, tpl.dstAccount || tpl.srcAccount);
-      var occ = FinRecurring.occurrences({ freq: tpl.freq, days: dayList, holiday: tpl.holiday, startDate: tpl.startDate, endDate: tpl.endDate },
-        FinDates.addDays(from, -1), to, markets, holidaySetOf(c));
+      var occ = FinRecurring.isActualAnchored(tpl)
+        ? FinRecurring.actualAnchoredProjection(tpl, c.txRows, FinDates.addDays(from, -1), to, markets, holidaySetOf(c))
+        : FinRecurring.occurrences({ freq: tpl.freq, days: dayList, holiday: tpl.holiday, startDate: tpl.startDate, endDate: tpl.endDate },
+          FinDates.addDays(from, -1), to, markets, holidaySetOf(c));
       if (tpl.type === '貸款還款') loanHandledByRecurring[tpl.dstAccount || tpl.srcAccount] = true;
       occ.forEach(function (o) {
         var generated = c.txRows.some(function (t) { return t.recurringId === tpl.id && t.plannedDate === o.planned; });
@@ -1262,7 +1266,8 @@ var FinApi = (function () {
     var daysArr = parseDays(a.days);
     if (!daysArr.length) err('days', '請至少填一個執行日');
     else if (freq === '每週' && daysArr.some(function (d) { return d < 0 || d > 6; })) err('days', '每週頻率的執行日請填 0～6（0＝週日）');
-    else if (freq !== '每週' && daysArr.some(function (d) { return d < 1 || d > 31; })) err('days', '執行日請填 1～31');
+    else if (freq === '每N天' && (daysArr.length !== 1 || daysArr[0] < 1 || daysArr[0] > 366 || Math.floor(daysArr[0]) !== daysArr[0])) err('days', '每幾天請填一個 1～366 的整數（例如 31）');
+    else if (freq !== '每週' && freq !== '每N天' && daysArr.some(function (d) { return d < 1 || d > 31; })) err('days', '執行日請填 1～31');
     var holiday = str(a.holiday) || '順延';
     if (FinSchema.ENUMS.recurHoliday.indexOf(holiday) < 0) err('holiday', '假日處理請選擇：' + FinSchema.ENUMS.recurHoliday.join('、'));
     var startDate = str(a.startDate);
@@ -1325,12 +1330,18 @@ var FinApi = (function () {
     if (settleDays !== null && (!isFinite(settleDays) || settleDays < 0)) err('settleDays', '交割天數必須是不小於 0 的數字');
     var note = str(a.note);
     if (note.length > 200) err('note', '備註最多 200 字');
+    var anchor = freq === '每N天' ? (str(a.anchor) || '固定') : '';
+    if (anchor && FinSchema.ENUMS.recurAnchor.indexOf(anchor) < 0) err('anchor', '起算方式請選擇：' + FinSchema.ENUMS.recurAnchor.join('、'));
+    if (anchor === '實際日期') {
+      if (mode !== '提醒確認') err('anchor', '「從實際付款日起算」要搭配「提醒確認」（才知道你實際哪天付款）');
+      if (['收入', '支出', '轉帳'].indexOf(type) < 0) err('anchor', '「從實際付款日起算」只能用在收入、支出、轉帳');
+    }
 
     var value = {
       name: FinValidate.safeText(name), freq: freq, days: daysArr.slice().sort(function (x, y) { return x - y; }).join(','), holiday: holiday,
       startDate: startDate, endDate: endDate, type: type, srcAccount: srcAccount, srcSymbol: srcSymbol, srcQty: srcQty,
       dstAccount: dstAccount, dstSymbol: dstSymbol, dstQty: dstQty, categoryId: categoryId, mode: mode,
-      remindDays: remindDays, settleDays: settleDays, note: FinValidate.safeText(note),
+      remindDays: remindDays, settleDays: settleDays, note: FinValidate.safeText(note), anchor: anchor,
     };
     return { errors: errors, value: value };
   }
@@ -1351,7 +1362,7 @@ var FinApi = (function () {
         if (existing) {
           var patch = { name: v.name, freq: v.freq, days: v.days, holiday: v.holiday, startDate: v.startDate, endDate: v.endDate,
             type: v.type, srcAccount: v.srcAccount, srcSymbol: v.srcSymbol, srcQty: v.srcQty, dstAccount: v.dstAccount, dstSymbol: v.dstSymbol,
-            dstQty: v.dstQty, categoryId: v.categoryId, mode: v.mode, remindDays: v.remindDays, settleDays: v.settleDays, note: v.note, updatedAt: now };
+            dstQty: v.dstQty, categoryId: v.categoryId, mode: v.mode, remindDays: v.remindDays, settleDays: v.settleDays, note: v.note, anchor: v.anchor, updatedAt: now };
           FinRepo.updateRow('recurring', existing._row, patch);
           out = pub(existing); Object.keys(patch).forEach(function (k) { out[k] = patch[k]; });
           FinRepo.audit('修改', 'recurring', out.id, out.name, env.device);
@@ -1359,7 +1370,7 @@ var FinApi = (function () {
           out = { id: FinRepo.nextIds('recurring', 1)[0], name: v.name, freq: v.freq, days: v.days, holiday: v.holiday,
             startDate: v.startDate, endDate: v.endDate, type: v.type, srcAccount: v.srcAccount, srcSymbol: v.srcSymbol, srcQty: v.srcQty,
             dstAccount: v.dstAccount, dstSymbol: v.dstSymbol, dstQty: v.dstQty, categoryId: v.categoryId, mode: v.mode,
-            remindDays: v.remindDays, settleDays: v.settleDays, active: true, lastRun: '', note: v.note, createdAt: now, updatedAt: now };
+            remindDays: v.remindDays, settleDays: v.settleDays, active: true, lastRun: '', note: v.note, anchor: v.anchor, createdAt: now, updatedAt: now };
           FinRepo.append('recurring', [out]);
           FinRepo.audit('新增', 'recurring', out.id, out.name, env.device);
         }
@@ -1518,7 +1529,7 @@ var FinApi = (function () {
         var row = loadTxForWrite(c, id);
         if (row.status !== '待確認') throw FinFail('BAD_STATE', '這筆交易目前不是待確認狀態');
         var tpl = row.recurringId ? FinRepo.findById('recurring', row.recurringId) : null;
-        if (!tpl || tpl.mode !== '手動下單') throw FinFail('BAD_STATE', '只有「手動下單」的定期待確認可以延後');
+        if (!tpl || (tpl.mode !== '手動下單' && !FinRecurring.isActualAnchored(tpl))) throw FinFail('BAD_STATE', '只有「手動下單」或「從實際付款日起算」的定期待確認可以延後');
         var now = ts(env.now);
         FinRepo.updateRow('transactions', row._row, { date: newDate, updatedAt: now });
         FinRepo.audit('延後', 'transactions', row.id, '定期待確認延後至 ' + newDate, env.device);

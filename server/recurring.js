@@ -119,9 +119,20 @@ var FinRecurringJob = (function () {
     templates.forEach(function (tpl) {
       var markets = tpl.type === '貸款還款' ? ['台灣'] : marketsFor(c, tpl.dstAccount || tpl.srcAccount);
       var days = String(tpl.days || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean).map(Number);
-      var fromExclusive = tpl.lastRun || FinDates.addDays(tpl.startDate, -1);
-      var occ = FinRecurring.occurrences({ freq: tpl.freq, days: days, holiday: tpl.holiday, startDate: tpl.startDate, endDate: tpl.endDate },
-        fromExclusive, c.today, markets, holidaySetOf(c));
+      var occ;
+      if (FinRecurring.isActualAnchored(tpl)) {
+        // 從實際日期起算：一次只會有一筆，上一筆確認（或略過）之後才從那天再算 N 天
+        var nx = FinRecurring.actualAnchoredNext(tpl, c.txRows);
+        occ = [];
+        if (nx && nx.planned && !(tpl.endDate && nx.planned > tpl.endDate)) {
+          var due = FinRecurring.adjustForHoliday(nx.planned, tpl.holiday, markets, holidaySetOf(c));
+          if (due <= c.today) occ.push({ planned: nx.planned, due: due });
+        }
+      } else {
+        var fromExclusive = tpl.lastRun || FinDates.addDays(tpl.startDate, -1);
+        occ = FinRecurring.occurrences({ freq: tpl.freq, days: days, holiday: tpl.holiday, startDate: tpl.startDate, endDate: tpl.endDate },
+          fromExclusive, c.today, markets, holidaySetOf(c));
+      }
       if (!occ.length) return;
       var maxPlanned = tpl.lastRun || '';
       occ.forEach(function (o) {
@@ -198,6 +209,9 @@ var FinRecurringJob = (function () {
       if (t.status !== '待確認' || !t.recurringId) return;
       var createdDate = String(t.createdAt || '').slice(0, 10);
       if (!createdDate) return;
+      var tplS = tplById[t.recurringId];
+      // 從實際日期起算的範本（例如捷運月票）：常常故意晚幾天才付、會按「延後」，所以從（延後後的）日期起算，不從產生日算
+      if (tplS && FinRecurring.isActualAnchored(tplS)) createdDate = t.date > createdDate ? t.date : createdDate;
       var age = daysBetween(createdDate, c.today);
       if (age >= STALE_PENDING_DAYS) {
         var tpl = tplById[t.recurringId];

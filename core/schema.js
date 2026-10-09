@@ -9,7 +9,8 @@ var FinSchema = (function () {
     instrumentTypes: ['法幣', '台股', '美股', 'ETF', '加密', '點數'],
     txStatus: ['有效', '作廢', '待確認', '已略過'],
     categoryTypes: ['收入', '支出', '系統'],
-    recurFreq: ['每週', '每月', '每季', '每年'],
+    recurFreq: ['每週', '每月', '每季', '每年', '每N天'],
+    recurAnchor: ['固定', '實際日期'],
     recurMode: ['自動入帳', '提醒確認', '券商定期定額', '手動下單'],
     recurHoliday: ['順延', '提前', '不調整'],
     recurTypes: ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '貸款還款'],
@@ -91,7 +92,9 @@ var FinSchema = (function () {
         c('dstAccount', '目的帳戶'), c('dstSymbol', '目的標的'), c('dstQty', '目的數量', 'num'),
         c('categoryId', '分類ID'), c('mode', '執行方式'), c('remindDays', '資金備妥提醒', 'num'), c('settleDays', '交割天數', 'num'),
         c('active', '啟用', 'bool'), c('lastRun', '上次執行日', 'date'), c('note', '備註'),
-        c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts')],
+        c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts'),
+        // 2026-10-10 新增：「每N天」頻率的起算方式（固定＝從起始日每 N 天；實際日期＝從上一次實際付款／略過的日子再算 N 天）
+        c('anchor', '起算方式')],
     },
     prices: {
       sheet: '價格', idKey: 'symbol',
@@ -135,7 +138,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.19',
+    APP_VERSION: '0.9.20',
   };
   return api;
 })();

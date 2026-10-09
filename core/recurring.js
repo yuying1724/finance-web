@@ -92,6 +92,21 @@ var FinRecurring = (function () {
         d = FinDates.addDays(d, 1);
         if (++guard > 3660) throw new Error('定期範圍推算超出範圍');
       }
+    } else if (tpl.freq === '每N天') {
+      // 每 N 天：從起始日開始每隔 N 天一次（不管大小月），N 放在執行日欄位
+      var n = intervalDays(tpl);
+      if (!n || !tpl.startDate) return out;
+      var k = 0;
+      var first = tpl.startDate;
+      // 跳到區間附近再開始逐一推（避免從很久以前的起始日一路加）
+      var gap = daysBetween(first, lowerBound);
+      if (gap > 0) k = Math.floor(gap / n);
+      var p = FinDates.addDays(first, k * n);
+      while (p <= toInclusive) {
+        pushIfInRange(p);
+        p = FinDates.addDays(p, n);
+        if (++guard > 3660) throw new Error('定期範圍推算超出範圍');
+      }
     } else if (tpl.freq === '每季' || tpl.freq === '每年') {
       var step = tpl.freq === '每季' ? 3 : 12;
       var anchorYm = FinDates.ymOf(tpl.startDate || FinDates.addDays(lowerBound, 1));
@@ -109,6 +124,61 @@ var FinRecurring = (function () {
       }
     }
     out.sort(function (a, b) { return a.planned < b.planned ? -1 : a.planned > b.planned ? 1 : 0; });
+    return out;
+  }
+
+  function daysBetween(a, b) {
+    var pa = FinDates.parse(a), pb = FinDates.parse(b);
+    if (!pa || !pb) return 0;
+    return Math.round((Date.UTC(pb.y, pb.m - 1, pb.d) - Date.UTC(pa.y, pa.m - 1, pa.d)) / 86400000);
+  }
+
+  /** 「每N天」的 N（執行日欄位第一個數字），不合法回傳 0 */
+  function intervalDays(tpl) {
+    var d = Array.isArray(tpl.days) ? tpl.days[0] : String(tpl.days || '').split(',')[0];
+    var n = Math.floor(Number(d));
+    return isFinite(n) && n >= 1 && n <= 366 ? n : 0;
+  }
+
+  /** 是否為「從實際日期起算」的每N天範本 */
+  function isActualAnchored(tpl) { return tpl.freq === '每N天' && tpl.anchor === '實際日期'; }
+
+  /**
+   * 「從實際日期起算」的下一次預定日：
+   *  - 還沒產生過任何一筆 → 起始日
+   *  - 最近一筆還在「待確認」→ null（等你確認、延後或略過，不會再多產生）
+   *  - 最近一筆已確認（有效）→ 實際日期＋N 天；已略過 → 略過那天＋N 天
+   * 作廢的不算。回傳 {planned} 或 {pending: 交易} 或 null（N 不合法）。
+   */
+  function actualAnchoredNext(tpl, txRows) {
+    var n = intervalDays(tpl);
+    if (!n) return null;
+    var latest = null;
+    (txRows || []).forEach(function (t) {
+      if (t.recurringId !== tpl.id || t.status === '作廢') return;
+      if (!latest || (t.plannedDate || '') > (latest.plannedDate || '') || ((t.plannedDate || '') === (latest.plannedDate || '') && String(t.createdAt || '') > String(latest.createdAt || ''))) latest = t;
+    });
+    if (!latest) return { planned: tpl.startDate };
+    if (latest.status === '待確認') return { pending: latest };
+    var base = latest.status === '有效' ? latest.date : (String(latest.updatedAt || '').slice(0, 10) || latest.plannedDate);
+    if (!FinDates.isValid(base)) base = latest.plannedDate;
+    var next = FinDates.addDays(base, n);
+    // 預定日只會往後走：避免「確認日期比預定日還早」時算出比上一次預定日更早、和舊的那筆撞在一起
+    if (latest.plannedDate && next <= latest.plannedDate) next = FinDates.addDays(latest.plannedDate, 1);
+    return { planned: next };
+  }
+
+  /** 從實際日期起算的範本，在 (fromExclusive, toInclusive] 內預估的日期（第一次之後每 N 天推估，給「即將到來」用） */
+  function actualAnchoredProjection(tpl, txRows, fromExclusive, toInclusive, markets, holidaySet) {
+    var nx = actualAnchoredNext(tpl, txRows);
+    if (!nx || !nx.planned) return [];
+    var n = intervalDays(tpl), out = [], p = nx.planned, guard = 0;
+    if (p <= fromExclusive) p = FinDates.addDays(fromExclusive, 1); // 已經到期但還沒產生（排程還沒跑）：當作今天
+    while (p <= toInclusive) {
+      if (!(tpl.endDate && p > tpl.endDate)) out.push({ planned: p, due: adjustForHoliday(p, tpl.holiday, markets, holidaySet) });
+      p = FinDates.addDays(p, n);
+      if (++guard > 400) break;
+    }
     return out;
   }
 
@@ -173,6 +243,7 @@ var FinRecurring = (function () {
     occurrences: occurrences, defaultSettleDays: defaultSettleDays, computeSettleDate: computeSettleDate,
     wasSettleDateAuto: wasSettleDateAuto, recalcSettleDateOnTradeChange: recalcSettleDateOnTradeChange,
     dedupKey: dedupKey, suggestedAmount: suggestedAmount,
+    intervalDays: intervalDays, isActualAnchored: isActualAnchored, actualAnchoredNext: actualAnchoredNext, actualAnchoredProjection: actualAnchoredProjection,
     SUGGEST_THRESHOLD_PCT: SUGGEST_THRESHOLD_PCT, SUGGEST_STEP_RATIO: SUGGEST_STEP_RATIO,
   };
   return api;

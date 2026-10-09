@@ -6,7 +6,8 @@ import { money, dateLabel, categoryInfo, sortCategories } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
 import { write, mergeRow, refreshInBackground, patchRow } from '../data.js';
 
-const FREQS = ['每週', '每月', '每季', '每年'];
+const FREQS = ['每週', '每月', '每季', '每年', '每N天'];
+const ANCHORS = { 固定: '固定：從起始日起每 N 天', 實際日期: '從實際付款日起算（晚付也沒關係）' };
 const HOLIDAYS = ['順延', '提前', '不調整'];
 const MODES = ['自動入帳', '提醒確認', '券商定期定額', '手動下單'];
 const TYPES = ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '貸款還款'];
@@ -115,7 +116,7 @@ function pendingRow(group) {
       first.autoDividend && first.plannedDate ? h('div', { class: 's' }, `除息日 ${first.plannedDate}　稅前 ${money(first.amount, first.dstSymbol)}${first.fee ? '－匯費 ' + money(first.fee, first.dstSymbol) : ''}${first.tax ? '－二代健保 ' + money(first.tax, first.dstSymbol) : ''}`) : null,
       first.suggested && first.suggested.reason ? h('div', { class: 's', style: { color: 'var(--accent, #b3852c)' } }, `建議金額 ${money(first.suggested.amount, first.srcSymbol)}　${first.suggested.reason}`) : null),
     h('div', { class: 'row-flex', style: { gap: '6px' } },
-      (group.length === 1 && isManualOrder(first)) ? h('button', { class: 'btn btn-sm', onclick: () => openPostponeDialog(first) }, '延後') : null,
+      (group.length === 1 && (isManualOrder(first) || first.anchor === '實際日期')) ? h('button', { class: 'btn btn-sm', 'data-testid': 'postpone-pending', onclick: () => openPostponeDialog(first) }, '延後') : null,
       h('button', { class: 'btn btn-sm', onclick: () => skipGroup(group) }, '略過'),
       h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'confirm-pending', onclick: () => openConfirmDialog(group) }, '確認')));
 }
@@ -153,8 +154,8 @@ function openPostponeDialog(item) {
   } }, '儲存');
   const sheet = openSheet({
     title: '延後到哪一天',
-    body: h('div', null, h('p', { class: 'muted small', style: { marginTop: 0 } }, '仍是同一筆待確認，只是改成別天再下單，不會多產生一筆。'),
-      h('label', { class: 'field' }, h('span', { class: 'lbl' }, '新的預計日期'), input)),
+    body: h('div', null, h('p', { class: 'muted small', style: { marginTop: 0 } }, item.anchor === '實際日期' ? '仍是同一筆待確認，只是改成預計哪天付款；實際付款後按確認，下一次會從那天起算。' : '仍是同一筆待確認，只是改成別天再下單，不會多產生一筆。'),
+      h('label', { class: 'field' }, h('span', { class: 'lbl' }, item.anchor === '實際日期' ? '預計哪天付款' : '新的預計日期'), input)),
     footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save],
   });
 }
@@ -179,7 +180,8 @@ function openSimpleConfirm(group) {
       h('ul', { class: 'list' }, group.map((t) => h('li', null, h('div', { class: 'item' }, h('div', { class: 'grow' }, legLabel(t)))))));
   } else {
     const dateInput = h('input', { type: 'date', value: f.date, onchange: (e) => { f.date = e.target.value; } });
-    const parts = [fld('date', '日期', dateInput)];
+    const parts = [fld('date', first.anchor === '實際日期' ? '實際付款日' : '日期', dateInput,
+      first.anchor === '實際日期' ? `下一次會從這天起算 ${first.intervalDays || 'N'} 天` : null)];
     if (first.srcAccount) parts.push(fld('srcQty', `金額（${first.srcSymbol}）`, h('input', { type: 'text', inputmode: 'decimal', value: f.srcQty, oninput: (e) => { f.srcQty = e.target.value; } })));
     if (first.dstAccount) parts.push(fld('dstQty', `金額（${first.dstSymbol}）`, h('input', { type: 'text', inputmode: 'decimal', value: f.dstQty, oninput: (e) => { f.dstQty = e.target.value; } })));
     mount(body, banner, ...parts);
@@ -282,13 +284,18 @@ function openTradeConfirm(item) {
   const sheet = openSheet({ title: '確認' + (item.templateName || ''), dismissable: false, body, footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save] });
 }
 
+function freqLabel(t) {
+  if (t.freq === '每N天') return `每 ${t.days} 天${t.anchor === '實際日期' ? '（從實際付款日起算）' : ''}`;
+  return `${t.freq}・${t.days}號`;
+}
+
 // ==================== 範本列表 ====================
 function templateRow(t) {
   return h('div', { class: 'item', 'data-testid': 'recurring-item' },
     h('div', { class: 'ico' }, icon('refresh')),
     h('div', { class: 'grow' },
       h('div', { class: 't' }, t.name, t.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')),
-      h('div', { class: 's' }, `${t.freq}・${t.days}號　${t.type}／${t.mode}`)),
+      h('div', { class: 's' }, `${freqLabel(t)}　${t.type}／${t.mode}`)),
     h('div', { class: 'row-flex', style: { gap: '6px' } },
       h('button', { class: 'btn btn-sm', onclick: () => openRecurringForm({ recurring: t }) }, '編輯'),
       h('button', { class: 'btn btn-sm ' + (t.active ? 'btn-danger' : ''), onclick: () => {
@@ -307,11 +314,11 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
     srcAccount: recurring.srcAccount || '', srcSymbol: recurring.srcSymbol || '', srcQty: recurring.srcQty !== null && recurring.srcQty !== undefined ? String(recurring.srcQty) : '',
     dstAccount: recurring.dstAccount || '', dstSymbol: recurring.dstSymbol || '', dstQty: recurring.dstQty !== null && recurring.dstQty !== undefined ? String(recurring.dstQty) : '',
     categoryId: recurring.categoryId || '', remindDays: String(recurring.remindDays ?? 1), settleDays: recurring.settleDays !== null && recurring.settleDays !== undefined ? String(recurring.settleDays) : '',
-    note: recurring.note || '',
+    note: recurring.note || '', anchor: recurring.anchor || '固定',
   } : {
     name: '', freq: '每月', days: '', holiday: '順延', startDate: d.today, endDate: '', type: '支出', mode: '自動入帳',
     srcAccount: '', srcSymbol: 'TWD', srcQty: '', dstAccount: '', dstSymbol: 'TWD', dstQty: '',
-    categoryId: '', remindDays: '1', settleDays: '', note: '',
+    categoryId: '', remindDays: '1', settleDays: '', note: '', anchor: '固定',
   };
   const { banner, fld, showErr, clearErr } = fieldHelpers();
   const accounts = d.accounts.filter((a) => a.active);
@@ -341,8 +348,12 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
       fld('name', '名稱', h('input', { type: 'text', maxlength: 40, value: f.name, oninput: (e) => { f.name = e.target.value; } })),
       fld('type', '類型', h('select', { onchange: (e) => { f.type = e.target.value; draw(); } }, TYPES.map((t) => h('option', { value: t, selected: t === f.type }, t)))),
       fld('mode', '執行方式', h('select', { onchange: (e) => { f.mode = e.target.value; draw(); } }, MODES.map((m) => h('option', { value: m, selected: m === f.mode }, m))), MODE_HINT[f.mode]),
-      fld('freq', '頻率', h('select', { onchange: (e) => { f.freq = e.target.value; } }, FREQS.map((fr) => h('option', { value: fr, selected: fr === f.freq }, fr)))),
-      fld('days', f.freq === '每週' ? '星期幾（0＝週日，可填多個，用逗號分隔）' : '執行日（可填多個，用逗號分隔，例如 6,16,26）', h('input', { type: 'text', value: f.days, oninput: (e) => { f.days = e.target.value; } })),
+      fld('freq', '頻率', h('select', { 'data-testid': 'recurring-freq', onchange: (e) => { f.freq = e.target.value; draw(); } }, FREQS.map((fr) => h('option', { value: fr, selected: fr === f.freq }, fr)))),
+      fld('days', f.freq === '每週' ? '星期幾（0＝週日，可填多個，用逗號分隔）' : f.freq === '每N天' ? '每幾天一次（例如 31）' : '執行日（可填多個，用逗號分隔，例如 6,16,26）', h('input', { type: 'text', inputmode: f.freq === '每N天' ? 'numeric' : 'text', value: f.days, oninput: (e) => { f.days = e.target.value; } }),
+        f.freq === '每N天' ? '第一次是「起始日」，之後每隔這麼多天一次，不管大小月' : null),
+      f.freq === '每N天' ? fld('anchor', '下一次怎麼算', h('select', { 'data-testid': 'recurring-anchor', onchange: (e) => { f.anchor = e.target.value; if (f.anchor === '實際日期') f.mode = '提醒確認'; draw(); } },
+        Object.keys(ANCHORS).map((k) => h('option', { value: k, selected: k === (f.anchor || '固定') }, ANCHORS[k]))),
+        (f.anchor || '固定') === '實際日期' ? '到期產生「待確認」；還沒付就按「延後」，付了按確認並填實際日期，下一次從那天再算；這次不買就按「略過」，從略過那天再算。' : '例如 App 每 31 天扣款一次') : null,
       fld('holiday', '假日處理', h('select', { onchange: (e) => { f.holiday = e.target.value; } }, HOLIDAYS.map((hh) => h('option', { value: hh, selected: hh === f.holiday }, hh)))),
       fld('startDate', '起始日', h('input', { type: 'date', value: f.startDate, onchange: (e) => { f.startDate = e.target.value; } })),
       fld('endDate', '結束日（選填）', h('input', { type: 'date', value: f.endDate, onchange: (e) => { f.endDate = e.target.value; } })),
