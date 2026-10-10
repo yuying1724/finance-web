@@ -79,3 +79,31 @@ test('交割款：已成交、交割日還沒到的買入列在付款帳戶；�
   b.ctx.FinRecurringJob.runDaily(b.mock.state.clock.now);
   assert.ok(!b.state.mail.find((x) => /餘額可能不夠扣款/.test(x.subject)));
 });
+
+test('扣款日曆：定期刷信用卡不算「不夠扣款」（卡的餘額本來就是負的欠款），也不寄餘額不足提醒；繳卡費的銀行不夠才算', () => {
+  const b = fresh('2026-10-09');
+  const bank = b.acct('繳卡費銀行', '銀行');
+  const card = b.acct('數位生活卡', '信用卡');
+  assert.ok(b.call('addTransaction', { tx: { type: '調整', date: '2026-10-01', dstAccount: bank, dstSymbol: 'TWD', dstQty: 500, categoryId: '' } }).ok);
+  assert.ok(b.call('upsertCardSettings', { card: { accountId: card, statementDay: 5, dueDay: 20, limit: 100000, payAccountId: bank } }).ok);
+  const food = b.cat('午餐');
+  assert.ok(b.call('addTransaction', { tx: { type: '支出', date: '2026-09-20', srcAccount: card, srcSymbol: 'TWD', srcQty: 2751, categoryId: food } }).ok);
+  assert.ok(b.call('upsertRecurring', { recurring: { name: '手機-電信費', freq: '每月', days: [13], holiday: '不調整', startDate: '2026-10-13', type: '支出', srcAccount: card, srcSymbol: 'TWD', srcQty: 499, categoryId: food, mode: '自動入帳' } }).ok);
+  const cf = b.call('getCashflow', { days: 30 }).data;
+  const cg = cf.accounts.find((a) => a.accountId === card);
+  assert.ok(cg.liability);
+  assert.equal(cg.shortfall, 0);
+  assert.equal(cg.shortDate, null);
+  assert.equal(cg.totalOut, 499);
+  assert.ok(cg.items.every((r) => r.onLiability));
+  const bg = cf.accounts.find((a) => a.accountId === bank);
+  assert.ok(!bg.liability);
+  assert.equal(bg.shortfall, 2251, '繳卡費的銀行 500 不夠付 10/20 的 2,751');
+  const alert = b.call('bootstrap').data.cashAlert;
+  assert.deepEqual(alert.short.map((x) => x.accountId), [bank]);
+  // 10/10 起算 3 天後（10/13）刷卡，不寄不足提醒
+  b.mock.state.clock.now = new Date('2026-10-10T07:00:00+08:00').getTime(); b.login();
+  b.state.mail.length = 0;
+  b.ctx.FinRecurringJob.runDaily(b.mock.state.clock.now);
+  assert.ok(!b.state.mail.find((m) => /數位生活卡/.test((m.subject || '') + (m.body || m.htmlBody || ''))), '信用卡不寄不足提醒');
+});

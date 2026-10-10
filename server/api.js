@@ -370,6 +370,7 @@ var FinApi = (function () {
    * 與「交割款」（已成交、交割日還沒到的買賣）。每一筆找出實際扣款（或入帳）的帳戶：
    *   定期＝來源帳戶（收入／賣出＝目的帳戶；貸款還款＝貸款設定的扣款帳戶）、信用卡＝信用卡設定的「預設繳款帳戶」、貸款＝貸款設定的扣款帳戶。
    * 找不到扣款帳戶的放在 unassigned。每個帳戶從今天的餘額開始依日期累計，最低點低於 0 就標示「可能不足」。
+   * 信用卡／應付／貸款這類負債帳戶不需要「有錢才能扣」（刷卡只是加進下一期帳單），所以不算不足，標 liability 讓畫面改寫成「會刷多少」。
    */
   function cashflow(c, days, cardOv, calc) {
     days = Math.max(7, Math.min(120, Math.floor(Number(days) || 60)));
@@ -442,7 +443,8 @@ var FinApi = (function () {
       var a = r.fundingAccountId && c.accounts[r.fundingAccountId];
       if (!a) { r.fundingAccountId = ''; unassigned.push(r); return; }
       var key = a.id + '|' + r.symbol;
-      if (!groups[key]) { groups[key] = { accountId: a.id, name: a.name, type: a.type, symbol: r.symbol, balance: FinMoney.round(balOf[key] || 0, 2), items: [] }; order.push(key); }
+      if (!groups[key]) { groups[key] = { accountId: a.id, name: a.name, type: a.type, symbol: r.symbol, balance: FinMoney.round(balOf[key] || 0, 2), items: [], liability: FinSchema.LIABILITY_TYPES.indexOf(a.type) >= 0 }; order.push(key); }
+      if (groups[key].liability) r.onLiability = true;
       groups[key].items.push(r);
     });
     var accounts = order.map(function (key) {
@@ -455,9 +457,10 @@ var FinApi = (function () {
         if (run < min) { min = run; minDate = r.date; }
         if (run < 0 && !firstShort) firstShort = r.date;
       });
-      return { accountId: g.accountId, name: g.name, type: g.type, symbol: g.symbol, balance: g.balance, items: g.items,
+      if (g.liability) { firstShort = null; min = Math.max(min, 0); }
+      return { accountId: g.accountId, name: g.name, type: g.type, symbol: g.symbol, balance: g.balance, items: g.items, liability: g.liability,
         totalOut: FinMoney.round(outSum, 2), totalIn: FinMoney.round(inSum, 2), endBalance: FinMoney.round(run, 2),
-        minBalance: FinMoney.round(min, 2), minDate: minDate, shortDate: firstShort, shortfall: min < 0 ? FinMoney.round(-min, 2) : 0 };
+        minBalance: FinMoney.round(min, 2), minDate: g.liability ? null : minDate, shortDate: firstShort, shortfall: min < 0 ? FinMoney.round(-min, 2) : 0 };
     });
     accounts.sort(function (a, b) { return (b.shortfall > 0) - (a.shortfall > 0) || (a.items[0].date < b.items[0].date ? -1 : 1); });
     return { from: up.from, to: to, days: days, items: rows, accounts: accounts, unassigned: unassigned,

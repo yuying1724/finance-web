@@ -32,6 +32,18 @@ function itemRow(r, opts = {}) {
 }
 
 function accountBlock(a) {
+  if (a.liability) {
+    // 信用卡／應付：刷卡不用卡裡有錢，只會加進帳單，所以不算「不足」，改寫成這段期間會刷多少
+    const isCard = a.type === '信用卡';
+    return h('div', { class: 'card', style: { padding: '12px', marginBottom: '10px' }, 'data-testid': 'cf-account', 'data-account': a.name, 'data-liability': '1' },
+      h('div', { class: 'card-title' },
+        h('h2', { style: { fontSize: '15px' } }, a.name),
+        h('span', { class: 'badge' }, isCard ? '刷卡' : '記在負債')),
+      h('div', { class: 'muted small', style: { marginBottom: '6px' } },
+        isCard ? `這段期間會再刷 ${money(a.totalOut, a.symbol)}，會算進之後的卡費帳單（由繳款帳戶付）`
+          : `這段期間會再增加 ${money(a.totalOut, a.symbol)} 的負債`),
+      h('ul', { class: 'list' }, a.items.map((r) => itemRow(r))));
+  }
   const short = a.shortfall > 0;
   return h('div', { class: 'card', style: { padding: '12px', marginBottom: '10px' }, 'data-testid': 'cf-account', 'data-account': a.name },
     h('div', { class: 'card-title' },
@@ -80,7 +92,7 @@ export function openCashflow() {
           h('div', { class: 'card-title' }, h('h2', { style: { fontSize: '15px' } }, '未指定扣款帳戶')),
           h('ul', { class: 'list' }, data.unassigned.map((r) => itemRow(r)))) : null);
     } else {
-      main = h('ul', { class: 'list' }, data.items.map((r) => itemRow(r, { showAccount: true, showBalance: !!r.fundingAccountId })));
+      main = h('ul', { class: 'list' }, data.items.map((r) => itemRow(r, { showAccount: true, showBalance: !!r.fundingAccountId && !r.onLiability })));
     }
     mount(body, controls, notices, empty, main,
       h('p', { class: 'muted small', style: { marginTop: '10px' } },
