@@ -118,3 +118,22 @@ test('確認待確認的支出時可以換付款帳戶（幣別要一樣、不�
   const t = b.txOf(r.data.recurring.id)[0];
   assert.deepEqual([t.status, t.date, t.srcAccount, t.srcQty], ['有效', '2026-10-17', other, 399]);
 });
+
+test('定期轉帳：金額只要填一次，轉入跟著轉出；確認時改金額兩邊一起改', () => {
+  const b = fresh('2026-10-10');
+  const bank = b.acct('富邦-綜存', '銀行');
+  const loanBank = b.acct('樂天銀行', '銀行');
+  const r = b.call('upsertRecurring', { recurring: { name: '樂天-還款', freq: '每月', days: [15], holiday: '提前', startDate: '2026-10-15', type: '轉帳', srcAccount: bank, srcSymbol: 'TWD', srcQty: 12793, dstAccount: loanBank, mode: '提醒確認' } });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepEqual([r.data.recurring.dstSymbol, r.data.recurring.dstQty], ['TWD', 12793]);
+  // 舊的寫法（兩邊都填、填得不一樣）也以轉出為準
+  const r2 = b.call('upsertRecurring', { recurring: Object.assign({}, r.data.recurring, { srcQty: 100, dstQty: 999 }), expectedUpdatedAt: r.data.recurring.updatedAt });
+  assert.ok(r2.ok, JSON.stringify(r2));
+  assert.equal(r2.data.recurring.dstQty, 100);
+  run(b, '2026-10-15');
+  const p = b.txOf(r.data.recurring.id)[0];
+  assert.equal(p.status, '待確認');
+  assert.ok(b.call('confirmPending', { id: p.id, trade: { date: '2026-10-15', srcQty: 12800 } }).ok);
+  const t = b.txOf(r.data.recurring.id)[0];
+  assert.deepEqual([t.status, t.srcQty, t.dstQty], ['有效', 12800, 12800]);
+});

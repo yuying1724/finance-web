@@ -145,7 +145,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.36',
+    APP_VERSION: '0.9.37',
   };
   return api;
 })();
@@ -4011,7 +4011,12 @@ var FinApi = (function () {
       else if (c.instruments[srcSymbol] && c.instruments[srcSymbol].type === '法幣') err('srcSymbol', '請選擇股票／ETF 等投資標的');
     }
     else if (type === '支出') { if (!srcAccount || !srcSymbol) err('srcAccount', '請填來源帳戶與標的'); }
-    else if (type === '轉帳' || type === '換匯') {
+    else if (type === '轉帳') {
+      // 轉帳：轉出多少就轉入多少、幣別相同，只要填一次（轉入那邊跟著轉出）
+      if (!srcAccount || !srcSymbol) err('srcAccount', '請填轉出帳戶與幣別');
+      if (!dstAccount) err('dstAccount', '請填轉入帳戶');
+      dstSymbol = srcSymbol; dstQty = srcQty;
+    } else if (type === '換匯') {
       if (!srcAccount || !srcSymbol) err('srcAccount', '請填來源帳戶與標的');
       if (!dstAccount || !dstSymbol) err('dstAccount', '請填目的帳戶與標的');
     } else if (type === '買入') {
@@ -4210,6 +4215,7 @@ var FinApi = (function () {
             }
             if (trade.srcQty !== undefined && trade.srcQty !== null && trade.srcQty !== '' && row.srcAccount) patch.srcQty = Number(trade.srcQty);
             if (row.type !== '股息' && trade.dstQty !== undefined && trade.dstQty !== null && trade.dstQty !== '' && row.dstAccount) patch.dstQty = Number(trade.dstQty);
+            if (row.type === '轉帳' && patch.srcQty !== undefined) patch.dstQty = patch.srcQty; // 轉帳：轉入金額一定跟轉出一樣
           }
           FinRepo.updateRow('transactions', row._row, patch);
           FinRepo.audit('確認', 'transactions', row.id, (row.recurringId ? '定期確認入帳：' : '確認入帳：') + summarizeTx(row), env.device);

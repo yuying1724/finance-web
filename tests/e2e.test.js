@@ -1327,6 +1327,33 @@ test('提醒確認也能延後：保險費還沒扣就按延後，選 1 週後�
   });
 });
 
+test('定期轉帳表單：金額只填一次（沒有第二個金額欄），存起來轉入金額跟轉出一樣', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const from = be.call('upsertAccount', { account: { name: '轉出銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const to = be.call('upsertAccount', { account: { name: '還款銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('recurring');
+    await page.click('[data-testid=add-recurring]');
+    await page.waitForSelector('.sheet [data-testid=recurring-freq]');
+    const field = (label) => page.locator(`.sheet label.field:has(span.lbl:text-is("${label}"))`);
+    await field('名稱').locator('input').fill('樂天-還款');
+    await field('類型').locator('select').selectOption('轉帳');
+    await page.waitForSelector('[data-testid=rec-transfer-amount]');
+    assert.equal(await page.locator('.sheet span.lbl:text-is("金額")').count(), 1, '只有一個金額欄');
+    await field('轉出帳戶').locator('select').selectOption(from);
+    await field('轉入帳戶').locator('select').selectOption(to);
+    await page.fill('[data-testid=rec-transfer-amount]', '12793');
+    await field('執行日（可填多個，用逗號分隔，例如 6,16,26）').locator('input').fill('15');
+    await page.click('[data-testid=recurring-save]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    const t = be.call('bootstrap').data.recurring.find((x) => x.name === '樂天-還款');
+    assert.ok(t);
+    assert.deepEqual([t.srcAccount, t.dstAccount, t.srcQty, t.dstQty, t.dstSymbol], [from, to, 12793, 12793, 'TWD']);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

@@ -96,7 +96,8 @@ function legLabel(t) {
     return `${t.type}　${sym}　預計 ${money(t.srcQty ?? t.dstQty, t.srcSymbol || t.dstSymbol)}`;
   }
   if (t.type === '股息') return t.dstQty === null || t.dstQty === undefined || t.dstQty === '' ? `股息　${t.relatedSymbol || ''}　金額待填` : `股息　${t.relatedSymbol || ''}　預估實收 ${money(t.dstQty, t.dstSymbol)}`;
-  if (t.type === '轉帳' || t.type === '換匯') return `${t.type}　${money(t.srcQty, t.srcSymbol)} → ${money(t.dstQty, t.dstSymbol)}`;
+  if (t.type === '轉帳') return `轉帳　${money(t.srcQty, t.srcSymbol)}`;
+  if (t.type === '換匯') return `${t.type}　${money(t.srcQty, t.srcSymbol)} → ${money(t.dstQty, t.dstSymbol)}`;
   if (t.dstAccount) return `${t.type}　${money(t.dstQty, t.dstSymbol)}`;
   return `${t.type}　${money(t.srcQty, t.srcSymbol)}`;
 }
@@ -200,7 +201,7 @@ function openSimpleConfirm(group) {
         opts.map((a) => h('option', { value: a.id, selected: a.id === first[key] }, a.name)))));
     }
     if (first.srcAccount) parts.push(fld('srcQty', `金額（${first.srcSymbol}）`, h('input', { type: 'text', inputmode: 'decimal', value: f.srcQty, oninput: (e) => { f.srcQty = e.target.value; } })));
-    if (first.dstAccount) parts.push(fld('dstQty', `金額（${first.dstSymbol}）`, h('input', { type: 'text', inputmode: 'decimal', value: f.dstQty, oninput: (e) => { f.dstQty = e.target.value; } })));
+    if (first.dstAccount && first.type !== '轉帳') parts.push(fld('dstQty', `金額（${first.dstSymbol}）`, h('input', { type: 'text', inputmode: 'decimal', value: f.dstQty, oninput: (e) => { f.dstQty = e.target.value; } })));
     mount(body, banner, ...parts);
   }
   const save = h('button', { class: 'btn btn-primary', type: 'button', 'data-testid': 'confirm-save', onclick: async (e) => {
@@ -209,6 +210,7 @@ function openSimpleConfirm(group) {
       try {
         const params = { id: first.id, requestId: api.newRequestId() };
         if (!isGroup) params.trade = { date: f.date, srcQty: f.srcQty === '' ? undefined : f.srcQty, dstQty: f.dstQty === '' ? undefined : f.dstQty, srcAccount: f.srcAccount, dstAccount: f.dstAccount };
+        if (!isGroup && first.type === '轉帳') params.trade.dstQty = params.trade.srcQty; // 轉帳：轉入金額跟轉出一樣
         await api.call('confirmPending', params);
         sheet.close(); removePendingLocal(group); refreshInBackground(); toast('已確認入帳');
       } catch (err) {
@@ -392,7 +394,14 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
       }
       parts.push(fld(isIncome ? 'dstQty' : 'srcQty', f.type === '股息' ? '預計金額（選填，留空等入帳時再填）' : '預計金額', h('input', { type: 'text', inputmode: 'decimal', value: isIncome ? f.dstQty : f.srcQty, oninput: (e) => { f[isIncome ? 'dstQty' : 'srcQty'] = e.target.value; } })));
       if (f.type === '收入' || f.type === '支出') parts.push(fld('categoryId', '分類', categorySel()));
-    } else if (f.type === '轉帳' || f.type === '換匯') {
+    } else if (f.type === '轉帳') {
+      // 轉帳：轉出多少就轉入多少，金額和幣別只填一次
+      parts.push(
+        fld('srcAccount', '轉出帳戶', accountSel('srcAccount', accounts, '請選擇')),
+        fld('dstAccount', '轉入帳戶', accountSel('dstAccount', accounts.filter((a) => a.id !== f.srcAccount), '請選擇')),
+        fld('srcSymbol', '幣別', symbolSel('srcSymbol')),
+        fld('srcQty', '金額', h('input', { type: 'text', inputmode: 'decimal', value: f.srcQty, 'data-testid': 'rec-transfer-amount', oninput: (e) => { f.srcQty = e.target.value; } })));
+    } else if (f.type === '換匯') {
       parts.push(
         fld('srcAccount', '轉出／付款帳戶', accountSel('srcAccount', accounts, '請選擇')),
         fld('srcSymbol', '幣別', symbolSel('srcSymbol')),
@@ -423,6 +432,7 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
     await withBusy(e.currentTarget, async () => {
       try {
         const payload = { ...f, days: f.days.split(',').map((s) => s.trim()).filter(Boolean).map(Number) };
+        if (payload.type === '轉帳') { payload.dstSymbol = payload.srcSymbol; payload.dstQty = payload.srcQty; }
         if (recurring) payload.id = recurring.id;
         const r = await api.call('upsertRecurring', { recurring: payload, expectedUpdatedAt: recurring ? recurring.updatedAt : undefined });
         sheet.close();
