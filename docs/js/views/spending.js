@@ -3,7 +3,7 @@ import { icon } from '../icons.js';
 import { state, accountById } from '../store.js';
 import * as api from '../api.js';
 import { money, catIconStyle } from '../fmt.js';
-import { openSheet, errorText } from '../ui.js';
+import { errorText } from '../ui.js';
 
 /**
  * 每月支出圖表（首頁「本月」卡 → 支出圖表）：
@@ -170,19 +170,40 @@ function donut(groups, slots, total, ui, base, onPick) {
   return svg;
 }
 
-export function openSpending() {
+// 圖表的狀態放在模組裡：資料重新整理、切換分頁回來時，保留看到哪個月、展開哪個分類
+const UI = { range: 6, ym: '', filter: '', open: '', kid: '' };
+let CACHE = { stamp: null, data: null, error: null };
+
+/** 首頁「支出圖表」按鈕：到「交易 › 圖表」 */
+export function openSpending() { location.hash = '#/tx?view=chart'; }
+
+/**
+ * 把支出圖表畫進 container（交易分頁上方切到「圖表」）。
+ * opts.ym：要看的月份（跟交易明細共用）；opts.onMonth(ym)：圖表換月份時通知；opts.onShowList(ym, categoryId)：按「看這個月的交易明細」
+ */
+export function mountSpending(container, opts = {}) {
   const base = state.data.base;
-  const ui = { range: 6, ym: '', filter: '', open: '', kid: '', data: null, error: null, tip: h('div', { class: 'muted small sp-tip', 'aria-live': 'polite' }), defaultTip: '',
-    dtip: h('div', { class: 'small sp-dtip', 'aria-live': 'polite' }) };
+  if (opts.ym) UI.ym = opts.ym;
+  const ui = Object.assign(UI, { tip: h('div', { class: 'muted small sp-tip', 'aria-live': 'polite' }), defaultTip: '',
+    dtip: h('div', { class: 'small sp-dtip', 'aria-live': 'polite' }) });
   const body = h('div', { 'data-testid': 'spending' }, h('div', { class: 'muted' }, '載入中…'));
+  mount(container, body);
+  const setYm = (ym) => { ui.ym = ym; if (opts.onMonth) opts.onMonth(ym); draw(); };
 
   function draw() {
-    if (ui.error) { mount(body, h('div', { class: 'notice bad' }, errorText(ui.error))); return; }
-    if (!ui.data) return;
+    const data = CACHE.data;
+    if (!data && CACHE.error) { mount(body, h('div', { class: 'notice bad' }, errorText(CACHE.error))); return; }
+    if (!data) return;
+    ui.data = data;
     // 只顯示開始記帳（startYm）以後的月份
     const all = ui.data.months.filter((m) => !ui.data.startYm || m.ym >= ui.data.startYm);
     const months = all.slice(-ui.range);
-    if (!ui.ym || !months.some((m) => m.ym === ui.ym)) ui.ym = months[months.length - 1].ym;
+    if (!ui.ym || !months.some((m) => m.ym === ui.ym)) {
+      // 要看的月份不在目前範圍：在 12 個月內就自動放大範圍，否則看最新的月份
+      if (ui.range < 12 && all.slice(-12).some((m) => m.ym === ui.ym)) { ui.range = 12; draw(); return; }
+      ui.ym = months[months.length - 1].ym;
+      if (opts.onMonth) opts.onMonth(ui.ym);
+    }
     const cur = months.find((m) => m.ym === ui.ym);
     const idx = all.findIndex((m) => m.ym === ui.ym);
     const prev = idx > 0 ? all[idx - 1] : null;
@@ -196,7 +217,7 @@ export function openSpending() {
       ? h('button', { type: 'button', class: 'chip chip-sm on', 'data-testid': 'sp-filter', onclick: () => { ui.filter = ''; draw(); } }, `只看：${filterCat.name}`, icon('x'))
       : null;
 
-    const chart = barChart(months, ui, base, (ym) => { ui.ym = ym; draw(); });
+    const chart = barChart(months, ui, base, setYm);
     ui.defaultTip = `${ui.range} 個月平均 ${money(chart.avg, base, { whole: true })}／月（虛線）${filterCat ? `　${filterCat.name}` : ''}`;
     ui.tip.textContent = ui.defaultTip;
 
@@ -237,12 +258,14 @@ export function openSpending() {
             h('div', { class: 'amt small' }, money(k.amount, base, { whole: true }))), kOpen ? itemList(kItems, base) : null);
         }));
       } else if (isOpen && its.length) kids = itemList(its, base);
-      return h('li', null, row, kids);
+      const toList = isOpen && opts.onShowList ? h('button', { type: 'button', class: 'link-btn small', 'data-testid': 'sp-to-list', style: { margin: '2px 0 8px 50px' },
+        onclick: () => opts.onShowList(ui.ym, ui.kid || g.id) }, `看 ${monthNum(ui.ym)} 月「${(catById(ui.kid || g.id) || {}).name || name}」的交易明細 ›`) : null;
+      return h('li', null, row, kids, toList);
     });
 
     // 每個月合計（新到舊），點一下換到那個月
     const monthList = h('div', { class: 'sp-months', 'data-testid': 'sp-months' }, months.slice().reverse().map((m) =>
-      h('button', { type: 'button', class: 'sp-month' + (m.ym === ui.ym ? ' on' : ''), 'data-ym': m.ym, onclick: () => { ui.ym = m.ym; draw(); } },
+      h('button', { type: 'button', class: 'sp-month' + (m.ym === ui.ym ? ' on' : ''), 'data-ym': m.ym, onclick: () => setYm(m.ym) },
         h('span', { class: 'muted small' }, `${m.ym.slice(0, 4)}/${monthNum(m.ym)} 月`),
         h('span', { class: 'sp-month-amt' }, money(valueOf(m, ui.filter), base, { whole: true })))));
 
@@ -253,9 +276,16 @@ export function openSpending() {
         return pie ? h('div', { class: 'sp-donut-wrap', 'data-testid': 'sp-donut' }, pie, ui.dtip) : null; })(),
       groups.length ? h('ul', { class: 'list' }, rows) : h('div', { class: 'muted', style: { padding: '8px 0' } }, '這個月沒有支出'),
       cur.missing && cur.missing.length ? h('div', { class: 'muted small' }, `有外幣交易查不到匯率，沒算進去：${cur.missing.join('、')}`) : null,
-      h('div', { class: 'muted small', style: { marginTop: '8px' } }, `點長條或月份換月份；點分類展開細項，再點細項可以看這個月算進去的每一筆（分期會標第幾期），上面的圖會改成只看這個分類。支出＝支出交易扣掉退款，轉帳、投資買賣、繳卡費都不算；分期付款依每期金額算在出帳的月份。從 ${ui.data.startYm.slice(0, 4)}/${monthNum(ui.data.startYm)} 月（開始記帳）起算。`));
+      h('div', { class: 'muted small', style: { marginTop: '8px' } }, `點長條或月份換月份；點分類展開細項，再點細項可以看這個月算進去的每一筆（分期會標第幾期），上面的圖會改成只看這個分類。「交易明細」只列購買日在這個月的交易，所以之前買的分期不會出現在明細裡。支出＝支出交易扣掉退款，轉帳、投資買賣、繳卡費都不算；分期付款依每期金額算在出帳的月份。從 ${ui.data.startYm.slice(0, 4)}/${monthNum(ui.data.startYm)} 月（開始記帳）起算。`));
   }
 
-  api.call('getMonthlyExpenses', { months: 12 }).then((r) => { ui.data = r; draw(); }).catch((e) => { ui.error = e; draw(); });
-  return openSheet({ title: '每月支出', body });
+  // 資料：跟著 App 的資料版本（state.loadedAt）重抓；有舊資料先畫，背景更新完再畫一次
+  const stamp = String(state.loadedAt || '');
+  if (CACHE.data) draw();
+  if (CACHE.stamp !== stamp) {
+    CACHE.stamp = stamp;
+    api.call('getMonthlyExpenses', { months: 12 })
+      .then((r) => { if (CACHE.stamp !== stamp) return; CACHE.data = r; CACHE.error = null; if (body.isConnected) draw(); })
+      .catch((e) => { if (CACHE.stamp !== stamp) return; CACHE.error = e; CACHE.stamp = null; if (body.isConnected) draw(); });
+  }
 }

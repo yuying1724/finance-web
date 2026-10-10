@@ -901,13 +901,13 @@ test('每月支出圖表：首頁開啟，顯示本月合計與大分類排行�
     await page.click('[data-testid=sp-cat][data-cat="飲食"]');
     await page.waitForSelector('[data-testid=sp-filter]');
     assert.match(await page.locator('[data-testid=sp-filter]').innerText(), /只看：飲食/);
-    const food = await page.locator('.sheet').innerText();
+    const food = await page.locator('[data-testid=spending]').innerText();
     assert.match(food, /飲食▾[\s\S]*早餐/); assert.match(food, /飲食▾[\s\S]*午餐/); // 展示資料本身也有飲食消費，只檢查細項有展開
     assert.ok(digits(await page.locator('[data-testid=sp-total]').innerText()) >= 3700);
     // 圖下有每個月合計；點上個月的長條
     assert.ok(await page.locator(`[data-testid=sp-months] .sp-month[data-ym="${ym}"]`).count() === 1);
     await page.click(`.sp-chart .sp-hit[data-ym="${prevYm}"]`);
-    await page.waitForFunction((t) => document.querySelector('[data-testid=sp-total]') && document.querySelector('.sheet').innerText.includes(t), `${Number(prevYm.slice(5))} 月`);
+    await page.waitForFunction((t) => document.querySelector('[data-testid=sp-total]') && document.querySelector('[data-testid=spending]').innerText.includes(t), `${Number(prevYm.slice(5))} 月`);
     // 取消只看
     await page.click('[data-testid=sp-filter]');
     await page.waitForSelector('[data-testid=sp-filter]', { state: 'detached' });
@@ -1262,6 +1262,39 @@ test('每月支出圖表明細：點細項分類列出這個月算進去的每�
     assert.match(txt, /華碩官方購物[\s\S]*分期 第 \d+\/12 期[\s\S]*總額 NT\$95,988/);
     const sum = (await items.allInnerTexts()).reduce((acc, t) => acc + Number((t.match(/NT\$([\d,]+)\s*$/) || [0, '0'])[1].replace(/,/g, '')), 0);
     assert.equal(sum, c3);
+  });
+});
+
+test('交易分頁「明細｜圖表」：首頁按鈕開圖表、共用月份、圖表分類可跳到同月同分類的明細', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const ym = today.slice(0, 7), prevYm = be.ctx.FinDates.addMonths(ym, -1);
+    const bank = be.call('upsertAccount', { account: { name: '切換銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const cat = be.call('bootstrap').data.categories.find((c) => c.name === '早餐').id;
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: prevYm + '-03', srcAccount: bank, srcSymbol: 'TWD', srcQty: 321, categoryId: cat, merchant: '上月早餐店' } }).ok);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.click('[data-testid=open-spending]');
+    await page.waitForSelector('[data-testid=sp-total]');
+    assert.match(await page.evaluate(() => location.hash), /#\/tx\?view=chart/);
+    assert.equal(await page.locator('.sheet').count(), 0, '整頁顯示，不是彈出視窗');
+    assert.equal(await page.locator('[data-testid=tx-view] button.on').innerText(), '圖表');
+    // 圖表換到上個月 → 切到明細也是上個月
+    await page.click(`[data-testid=sp-months] [data-ym="${prevYm}"]`);
+    await page.click('[data-testid=tx-view] button[data-view=list]');
+    await page.waitForSelector('.month-nav');
+    assert.match(await page.locator('.month-nav').innerText(), new RegExp(`${Number(prevYm.slice(5))} 月`));
+    // 回到圖表：展開飲食 → 早餐 → 看這個月的交易明細
+    await page.click('[data-testid=tx-view] button[data-view=chart]');
+    await page.waitForSelector('[data-testid=sp-cat][data-cat="飲食"]');
+    await page.click('[data-testid=sp-cat][data-cat="飲食"]');
+    await page.click('[data-testid=sp-kid][data-cat="早餐"]');
+    await page.click('[data-testid=sp-to-list]');
+    await page.waitForSelector('.month-nav');
+    for (let i = 0; i < 30; i++) { await page.waitForTimeout(100); if ((await page.locator('.main').innerText()).includes('上月早餐店')) break; }
+    assert.equal(await page.locator('select[aria-label="分類"]').inputValue(), cat);
+    assert.match(await page.locator('.main').innerText(), /上月早餐店/);
   });
 });
 

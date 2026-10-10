@@ -7,6 +7,7 @@ import { openSheet, confirmDialog, toast, errorText } from '../ui.js';
 import { openTxForm } from './txform.js';
 import { write, applyTxLocal } from '../data.js';
 import { installmentOf, installmentText, openSetInstallment, togglePayoff } from './installments.js';
+import { mountSpending } from './spending.js';
 
 // ---------- 共用：把一筆交易轉成畫面上的資訊 ----------
 export function describe(t) {
@@ -208,12 +209,30 @@ async function mutate(button, action, t, sheet, doneText) {
 }
 
 // ---------- 交易清單 ----------
-const S = { ym: null, filters: { type: '', accountId: '', categoryId: '', q: '', includeVoid: false }, seq: 0, acctParam: null, cache: null /* 上一次的查詢結果 { key, list, sum }：重畫時先顯示，避免每次都閃「載入中…」 */ };
+const S = { view: 'list', ym: null, filters: { type: '', accountId: '', categoryId: '', q: '', includeVoid: false }, seq: 0, acctParam: null, cache: null /* 上一次的查詢結果 { key, list, sum }：重畫時先顯示，避免每次都閃「載入中…」 */ };
+
+// 交易分頁上方切換「明細｜圖表」（#/tx 與 #/tx?view=chart），兩邊共用月份
+function viewSeg() {
+  return h('div', { class: 'seg', style: { maxWidth: '240px', marginLeft: 'auto' }, 'data-testid': 'tx-view' },
+    [['list', '明細'], ['chart', '圖表']].map(([v, t]) => h('button', { type: 'button', class: S.view === v ? 'on' : '', 'data-view': v,
+      onclick: () => { if (S.view !== v) location.hash = v === 'chart' ? '#/tx?view=chart' : '#/tx'; } }, t)));
+}
 
 export function renderTransactions(root, route) {
   const d = state.data;
   if (!S.ym) S.ym = d.today.slice(0, 7);
   if (route.params.acct !== undefined && route.params.acct !== S.acctParam) { S.acctParam = route.params.acct; S.filters.accountId = route.params.acct || ''; }
+  S.view = route.params.view === 'chart' ? 'chart' : 'list';
+  if (S.view === 'chart') {
+    const box = h('div', { class: 'card' });
+    mount(root, h('div', { class: 'page-head' }, h('h1', null, '交易'), viewSeg()), box);
+    mountSpending(box, {
+      ym: S.ym,
+      onMonth: (ym) => { S.ym = ym; },
+      onShowList: (ym, categoryId) => { S.ym = ym; S.filters = { type: '', accountId: '', categoryId: categoryId || '', q: '', includeVoid: false }; location.hash = '#/tx'; },
+    });
+    return;
+  }
 
   const summaryBox = h('div', { class: 'stats', style: { marginTop: '8px' } });
   const listBox = h('div', null);
@@ -237,7 +256,7 @@ export function renderTransactions(root, route) {
   const voidToggle = h('label', { class: 'check small muted full' }, h('input', { type: 'checkbox', checked: S.filters.includeVoid, onchange: (e) => { S.filters.includeVoid = e.target.checked; load(); } }), '顯示已作廢的交易');
 
   mount(root,
-    h('div', { class: 'page-head' }, h('h1', null, '交易')),
+    h('div', { class: 'page-head' }, h('h1', null, '交易'), viewSeg()),
     h('div', { class: 'card' },
       h('div', { class: 'month-nav' },
         h('button', { class: 'icon-btn', 'aria-label': '上個月', onclick: () => shiftMonth(-1) }, icon('left')), monthLabelEl,
