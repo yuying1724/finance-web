@@ -145,7 +145,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.37',
+    APP_VERSION: '0.9.38',
   };
   return api;
 })();
@@ -2698,6 +2698,33 @@ var FinApi = (function () {
    * 啟用中的定期範本到期日（跳過已產生過的）、信用卡繳款日（有待繳的）、貸款本期應繳日（沒有用定期範本管理的貸款）。
    * 依日期排序；total 只加總基準幣別的「支出」方向金額（外幣列出但不加總）。
    */
+  /** 定期頁用：每個啟用中範本的「下一次」{ date, amount, symbol, pending }；有待確認就是那筆待確認的日期，否則找一年內還沒產生的下一次 */
+  function recurringNext(c) {
+    var out = {};
+    var from = FinDates.addDays(c.today, -1), to = FinDates.addDays(c.today, 400);
+    c.recurringRows.filter(function (t) { return t.active; }).forEach(function (tpl) {
+      var pend = c.txRows.filter(function (t) { return t.recurringId === tpl.id && t.status === '待確認'; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; })[0];
+      var isIncome = tpl.type === '收入' || tpl.type === '股息';
+      var amount = isIncome ? tpl.dstQty : tpl.srcQty, symbol = (isIncome ? tpl.dstSymbol : tpl.srcSymbol) || c.base;
+      if (pend) { out[tpl.id] = { date: pend.date, amount: isIncome ? pend.dstQty : pend.srcQty, symbol: (isIncome ? pend.dstSymbol : pend.srcSymbol) || symbol, pending: true }; return; }
+      try {
+        var dayList = String(tpl.days || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean).map(Number);
+        var markets = tpl.type === '貸款還款' ? ['台灣'] : marketsForAccount(c, tpl.dstAccount || tpl.srcAccount);
+        var occ = FinRecurring.isActualAnchored(tpl)
+          ? FinRecurring.actualAnchoredProjection(tpl, c.txRows, from, to, markets, holidaySetOf(c))
+          : FinRecurring.occurrences({ freq: tpl.freq, days: dayList, holiday: tpl.holiday, startDate: tpl.startDate, endDate: tpl.endDate }, from, to, markets, holidaySetOf(c));
+        var next = occ.filter(function (o) { return !c.txRows.some(function (t) { return t.recurringId === tpl.id && t.plannedDate === o.planned; }); })[0];
+        if (!next) return;
+        if (tpl.type === '貸款還款') {
+          var la = c.accounts[tpl.dstAccount || tpl.srcAccount], ls = la && c.loanByAccount[la.id];
+          if (la && ls) { var li = c.instruments[la.defaultSymbol]; var per = FinLoan.findPeriod(FinLoan.schedule(ls, FinMoney.billingDecimals(la.defaultSymbol, li ? li.decimals : 0)), next.due); if (per) { amount = per.payment; symbol = la.defaultSymbol; } }
+        }
+        out[tpl.id] = { date: next.due, amount: amount === undefined ? null : amount, symbol: symbol, pending: false };
+      } catch (e) { /* 推算失敗就不顯示下一次 */ }
+    });
+    return out;
+  }
+
   function upcoming(c, days, cardOv) {
     var from = c.today, to = FinDates.addDays(c.today, days || 30);
     var items = [];
@@ -2934,7 +2961,7 @@ var FinApi = (function () {
         cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub), cardOverview: cardOv, upcoming: upcoming(c, 30, cardOv),
         cashAlert: cashAlert(cashflow(c, 60, cardOv, calc)),
         installments: installmentList(c),
-        recurring: c.recurringRows.map(pub), pendingConfirmations: pendingConfirmations(c),
+        recurring: c.recurringRows.map(pub), recurringNext: recurringNext(c), pendingConfirmations: pendingConfirmations(c),
         prices: c.priceInfo,
         balances: calc.balances.map(function (b) { return { accountId: b.accountId, symbol: b.symbol, qty: b.qty }; }),
         pending: calc.pending,

@@ -806,7 +806,7 @@ test('定期「每N天」：表單選每 N 天＋從實際付款日起算，列�
     await page.click('.sheet [data-testid=recurring-save]');
     await page.waitForSelector('.sheet', { state: 'detached' });
     await page.waitForSelector('[data-testid=recurring-item]:has-text("捷運月票")');
-    assert.match(await page.locator('[data-testid=recurring-item]:has-text("捷運月票")').innerText(), /每 30 天（從實際付款日起算）　支出／提醒確認/);
+    assert.match(await page.locator('[data-testid=recurring-item]:has-text("捷運月票")').innerText(), /每 30 天（從實際付款日起算） · 提醒確認/);
     const tpl = be.call('bootstrap').data.recurring.find((t) => t.name === '捷運月票');
     assert.deepEqual([tpl.freq, String(tpl.days), tpl.anchor, tpl.mode, tpl.startDate], ['每N天', '30', '實際日期', '提醒確認', today]);
     const sum = be.ctx.FinRecurringJob.runDaily(be.state.clock.now);
@@ -1351,6 +1351,47 @@ test('定期轉帳表單：金額只填一次（沒有第二個金額欄），�
     const t = be.call('bootstrap').data.recurring.find((x) => x.name === '樂天-還款');
     assert.ok(t);
     assert.deepEqual([t.srcAccount, t.dstAccount, t.srcQty, t.dstQty, t.dstSymbol], [from, to, 12793, 12793, 'TWD']);
+  });
+});
+
+test('定期頁分組：收入／支出／轉帳分組並寫每月約多少（每年除以 12）；支出依大分類分小組可展開；上方總覽與下一筆；停用的在最後', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const bank = be.call('upsertAccount', { account: { name: '分組銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const card = be.call('upsertAccount', { account: { name: '分組卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    const cats = be.call('bootstrap').data.categories;
+    const cat = (n, type) => cats.find((c) => c.name === n && c.type === (type || '支出')).id;
+    const start = be.ctx.FinDates.addDays(today, 3);
+    const day = Number(start.slice(8, 10));
+    const add = (rec) => { const r = be.call('upsertRecurring', { recurring: Object.assign({ holiday: '不調整', startDate: start, mode: '自動入帳', days: [day], freq: '每月' }, rec) }); assert.ok(r.ok, JSON.stringify(r)); return r.data.recurring; };
+    add({ name: '分組-本薪', type: '收入', dstAccount: bank, dstSymbol: 'TWD', dstQty: 50000, categoryId: cats.find((c) => c.type === '收入' && c.parentId).id });
+    add({ name: '分組-保險', type: '支出', freq: '每年', srcAccount: card, srcSymbol: 'TWD', srcQty: 12000, categoryId: cat('保險費'), mode: '提醒確認' });
+    add({ name: '分組-手機', type: '支出', srcAccount: card, srcSymbol: 'TWD', srcQty: 499, categoryId: cat('網路電話') });
+    add({ name: '分組-自提', type: '轉帳', srcAccount: bank, srcSymbol: 'TWD', srcQty: 3000, dstAccount: card });
+    const off = add({ name: '分組-停用的', type: '支出', srcAccount: card, srcSymbol: 'TWD', srcQty: 1, categoryId: cat('網路電話') });
+    assert.ok(be.call('setRecurringActive', { id: off.id, active: false }).ok);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('recurring');
+    await page.waitForSelector('[data-testid=recurring-overview]');
+    assert.match(await page.locator('[data-testid=recurring-overview]').innerText(), /每月固定收支[\s\S]*固定收入[\s\S]*固定支出[\s\S]*差額/);
+    assert.match(await page.locator('[data-testid=recurring-next]').innerText(), /下一筆：/);
+    for (const g of ['income', 'expense', 'transfer', 'inactive']) assert.equal(await page.locator(`[data-testid=rec-group][data-group="${g}"]`).count(), 1, g);
+    // 支出小組：醫療保健（保險 12,000/年 → 每月約 1,000），預設收合，點開看到範本
+    const med = page.locator('[data-testid=rec-group][data-group="expense:醫療保健"]');
+    assert.match(await med.innerText(), /醫療保健[\s\S]*1 筆[\s\S]*每月約 NT\$1,000/);
+    assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-保險"]').count(), 0, '小組預設收合');
+    await med.click();
+    await page.waitForSelector('[data-testid=recurring-item][data-name="分組-保險"]');
+    assert.match(await page.locator('[data-testid=recurring-item][data-name="分組-保險"]').innerText(), /每年・\d+號 · 提醒確認[\s\S]*NT\$12,000 · 下次/);
+    // 停用的在最後、預設收合
+    assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-停用的"]').count(), 0);
+    await page.click('[data-testid=rec-group][data-group="inactive"]');
+    await page.waitForSelector('[data-testid=recurring-item][data-name="分組-停用的"]');
+    // 收合收入
+    await page.click('[data-testid=rec-group][data-group="income"]');
+    assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-本薪"]').count(), 0);
   });
 });
 

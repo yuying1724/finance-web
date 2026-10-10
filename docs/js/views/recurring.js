@@ -51,15 +51,116 @@ export function renderRecurring(root) {
     ? h('a', { class: 'notice', href: '#/todo', 'data-testid': 'recurring-todo-link', style: { display: 'block', marginBottom: '12px', textDecoration: 'none' } }, `有 ${pending} 筆待確認，到「待辦」處理 →`)
     : null;
 
-  const templates = (d.recurring || []).slice().sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1));
-  const tplCard = h('div', { class: 'card' },
-    h('div', { class: 'card-title' }, h('h2', null, '定期範本'),
-      h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-recurring', onclick: () => openRecurringForm({}) }, icon('plus'), '新增')),
-    templates.length
-      ? h('ul', { class: 'list' }, templates.map((t) => h('li', null, templateRow(t))))
-      : h('div', { class: 'muted', style: { padding: '8px 0' } }, '還沒有定期範本'));
+  const templates = d.recurring || [];
+  const draw = () => mount(root, h('div', { class: 'page-head' }, h('h1', null, '定期'),
+    h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-recurring', onclick: () => openRecurringForm({}) }, icon('plus'), '新增')),
+  pendingLink,
+  templates.length ? [overviewCard(templates), ...groupCards(templates, draw)] : h('div', { class: 'card muted' }, '還沒有定期範本'));
+  draw();
+}
 
-  mount(root, h('div', { class: 'page-head' }, h('h1', null, '定期')), pendingLink, tplCard);
+// ---------- 分組：第一層依類型，支出再依大分類；每組標題寫筆數和「每月約多少」（每年的除以 12） ----------
+const GROUPS = [
+  { key: 'income', label: '收入', types: ['收入', '股息'] },
+  { key: 'expense', label: '支出', types: ['支出'] },
+  { key: 'transfer', label: '轉帳', types: ['轉帳', '換匯'] },
+  { key: 'invest', label: '投資', types: ['買入', '賣出'] },
+  { key: 'loan', label: '貸款', types: ['貸款還款'] },
+];
+// 收合狀態（只在這次開啟期間記得）：大組預設展開、支出的小組預設收合
+const collapsed = new Set(['inactive']);
+const openSub = new Set();
+let revealId = ''; // 剛新增／修改的範本：自動展開它所在的小組
+
+function nextOf(t) { return (state.data.recurringNext || {})[t.id] || null; }
+function amountOf(t) {
+  const n = nextOf(t);
+  const isIncome = t.type === '收入' || t.type === '股息';
+  const amt = n && n.amount !== null && n.amount !== undefined ? n.amount : (isIncome ? t.dstQty : t.srcQty);
+  const sym = (n && n.symbol) || (isIncome ? t.dstSymbol : t.srcSymbol) || state.data.base;
+  return { amount: amt === null || amt === undefined || amt === '' ? null : Number(amt), symbol: sym };
+}
+/** 一年發生幾次（換算每月用） */
+function timesPerYear(t) {
+  const n = String(t.days || '').split(',').map((x) => x.trim()).filter(Boolean).length || 1;
+  if (t.freq === '每週') return 52 * n;
+  if (t.freq === '每月') return 12 * n;
+  if (t.freq === '每季') return 4 * n;
+  if (t.freq === '每年') return n;
+  if (t.freq === '每N天') return 365 / (Number(t.days) || 30);
+  return 12;
+}
+/** 每月約多少（基準幣別）；金額未定或外幣就回 null */
+function monthlyOf(t) {
+  const a = amountOf(t);
+  if (a.amount === null || a.symbol !== state.data.base) return null;
+  return (a.amount * timesPerYear(t)) / 12;
+}
+function sumMonthly(list) {
+  let sum = 0, unknown = 0;
+  list.forEach((t) => { const m = monthlyOf(t); if (m === null) unknown++; else sum += m; });
+  return { sum, unknown };
+}
+const byNext = (a, b) => { const x = (nextOf(a) || {}).date || '9999', y = (nextOf(b) || {}).date || '9999'; return x < y ? -1 : x > y ? 1 : (a.name < b.name ? -1 : 1); };
+function monthlyText(list, base) {
+  const m = sumMonthly(list);
+  return `每月約 ${money(m.sum, base, { whole: true })}${m.unknown ? `（另有 ${m.unknown} 筆金額未定）` : ''}`;
+}
+
+function overviewCard(templates) {
+  const d = state.data, base = d.base;
+  const act = templates.filter((t) => t.active);
+  const of = (key) => act.filter((t) => GROUPS.find((g) => g.key === key).types.includes(t.type));
+  const inc = sumMonthly(of('income')).sum, out = sumMonthly(of('expense')).sum + sumMonthly(of('loan')).sum;
+  const tr = sumMonthly(of('transfer')).sum, inv = sumMonthly(of('invest')).sum;
+  const next = act.filter((t) => nextOf(t)).sort(byNext)[0];
+  const stat = (k, v, cls) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (cls || '') }, v));
+  const n = next ? nextOf(next) : null;
+  return h('div', { class: 'card', 'data-testid': 'recurring-overview' },
+    h('div', { class: 'card-title' }, h('h2', null, '每月固定收支'), h('span', { class: 'muted small' }, `${act.length} 個啟用中`)),
+    h('div', { class: 'stats' }, stat('固定收入', money(inc, base, { whole: true }), 'amt-pos'), stat('固定支出', money(out, base, { whole: true })),
+      stat('差額', money(inc - out, base, { whole: true, sign: true }), inc - out > 0 ? 'amt-pos' : '')),
+    h('div', { class: 'muted small', style: { marginTop: '6px' } }, [tr ? `另外每月轉帳約 ${money(tr, base, { whole: true })}` : '', inv ? `投資約 ${money(inv, base, { whole: true })}` : '', '每年一次的已除以 12 換算'].filter(Boolean).join('；')),
+    next ? h('div', { class: 'small', style: { marginTop: '6px' }, 'data-testid': 'recurring-next' }, `下一筆：${next.name}　${dateLabel(n.date, d.today)}${n.pending ? '（待確認）' : ''}${n.amount !== null && n.amount !== undefined ? '　' + money(n.amount, n.symbol) : ''}`) : null);
+}
+
+function groupHead(key, title, count, sub, isOpen, onToggle, level) {
+  return h('button', { type: 'button', class: 'rec-group-head' + (level ? ' sub' : ''), 'data-testid': 'rec-group', 'data-group': key, 'aria-expanded': String(isOpen), onclick: onToggle },
+    h('span', { class: 'muted small' }, isOpen ? '▾' : '▸'),
+    h('span', { class: 'grow', style: { textAlign: 'left' } }, h('span', { style: { fontWeight: level ? 550 : 650 } }, title), h('span', { class: 'muted small', style: { marginLeft: '6px' } }, `${count} 筆`)),
+    sub ? h('span', { class: 'muted small' }, sub) : null);
+}
+
+function groupCards(templates, redraw) {
+  const d = state.data, base = d.base;
+  const act = templates.filter((t) => t.active), off = templates.filter((t) => !t.active);
+  const toggle = (set, key) => () => { if (set === collapsed) { if (set.has(key)) set.delete(key); else set.add(key); } else if (set.has(key)) set.delete(key); else set.add(key); redraw(); };
+  const cards = [];
+  GROUPS.forEach((g) => {
+    const list = act.filter((t) => g.types.includes(t.type)).sort(byNext);
+    if (!list.length) return;
+    const isOpen = !collapsed.has(g.key);
+    let body = null;
+    if (isOpen && g.key === 'expense') {
+      // 支出依大分類分小組，金額大的在前
+      const byParent = new Map();
+      list.forEach((t) => { const c = categoryInfo(t.categoryId); const pid = String(c.name || '未分類').split(' › ')[0]; if (!byParent.has(pid)) byParent.set(pid, []); byParent.get(pid).push(t); });
+      const subs = [...byParent.entries()].map(([name, items]) => ({ name, items, m: sumMonthly(items).sum })).sort((a, b) => b.m - a.m);
+      if (revealId) { const hit = subs.find((sg) => sg.items.some((t) => t.id === revealId)); if (hit) openSub.add('expense:' + hit.name); revealId = ''; }
+      body = h('div', null, subs.map((sg) => {
+        const k = 'expense:' + sg.name, so = openSub.has(k);
+        return h('div', { class: 'rec-sub' }, groupHead(k, sg.name, sg.items.length, monthlyText(sg.items, base), so, toggle(openSub, k), 1),
+          so ? h('ul', { class: 'list' }, sg.items.map((t) => h('li', null, templateRow(t)))) : null);
+      }));
+    } else if (isOpen) body = h('ul', { class: 'list' }, list.map((t) => h('li', null, templateRow(t))));
+    cards.push(h('div', { class: 'card', style: { marginTop: '12px' } }, groupHead(g.key, g.label, list.length, monthlyText(list, base), isOpen, toggle(collapsed, g.key)), body));
+  });
+  if (off.length) {
+    const isOpen = !collapsed.has('inactive');
+    cards.push(h('div', { class: 'card', style: { marginTop: '12px' } }, groupHead('inactive', '已停用', off.length, '', isOpen, toggle(collapsed, 'inactive')),
+      isOpen ? h('ul', { class: 'list' }, off.map((t) => h('li', null, templateRow(t)))) : null));
+  }
+  return cards;
 }
 
 /** 立即檢查股息公告（平常每天早上 7 點自動檢查） */
@@ -310,17 +411,20 @@ function freqLabel(t) {
 
 // ==================== 範本列表 ====================
 function templateRow(t) {
-  return h('div', { class: 'item', 'data-testid': 'recurring-item' },
+  const n = t.active ? nextOf(t) : null;
+  const a = amountOf(t);
+  const nextTxt = n ? `下次 ${dateLabel(n.date, state.data.today)}${n.pending ? '（待確認）' : ''}` : '';
+  // 點整列＝編輯；右邊只留停用／啟用
+  return h('div', { class: 'item', 'data-testid': 'recurring-item', 'data-name': t.name },
     h('div', { class: 'ico' }, icon('refresh')),
-    h('div', { class: 'grow' },
+    h('button', { type: 'button', class: 'grow rec-row-main', 'aria-label': `編輯 ${t.name}`, 'data-testid': 'recurring-edit', onclick: () => openRecurringForm({ recurring: t }) },
       h('div', { class: 't' }, t.name, t.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')),
-      h('div', { class: 's' }, `${freqLabel(t)}　${t.type}／${t.mode}`)),
-    h('div', { class: 'row-flex', style: { gap: '6px' } },
-      h('button', { class: 'btn btn-sm', onclick: () => openRecurringForm({ recurring: t }) }, '編輯'),
-      h('button', { class: 'btn btn-sm ' + (t.active ? 'btn-danger' : ''), onclick: () => {
-        // 樂觀更新：先在本機切換，背景送出，失敗自動還原
-        patchRow('setRecurringActive', { id: t.id, active: !t.active }, { list: 'recurring', idField: 'id', id: t.id, patch: { active: !t.active }, toast: t.active ? '已停用' : '已啟用' });
-      } }, t.active ? '停用' : '啟用')));
+      h('div', { class: 's' }, [freqLabel(t), t.mode].join(' · ')),
+      h('div', { class: 's' }, [a.amount === null ? '金額每次不同' : money(a.amount, a.symbol), nextTxt].filter(Boolean).join(' · '))),
+    h('button', { class: 'btn btn-sm ' + (t.active ? 'btn-danger' : ''), onclick: () => {
+      // 樂觀更新：先在本機切換，背景送出，失敗自動還原
+      patchRow('setRecurringActive', { id: t.id, active: !t.active }, { list: 'recurring', idField: 'id', id: t.id, patch: { active: !t.active }, toast: t.active ? '已停用' : '已啟用' });
+    } }, t.active ? '停用' : '啟用'));
 }
 
 // ==================== 新增／編輯範本 ====================
@@ -436,6 +540,7 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
         if (recurring) payload.id = recurring.id;
         const r = await api.call('upsertRecurring', { recurring: payload, expectedUpdatedAt: recurring ? recurring.updatedAt : undefined });
         sheet.close();
+        revealId = r.recurring.id; collapsed.delete(GROUPS.find((g) => g.types.includes(r.recurring.type))?.key || '');
         mergeRow('recurring', 'id', r.recurring); refreshInBackground();
         if (onDone) await onDone();
         toast(editing ? '已儲存修改' : '已新增定期範本');
