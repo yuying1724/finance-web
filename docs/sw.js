@@ -3,14 +3,14 @@
  * 向網路要檔案時一律帶 cache: 'no-cache'（先問伺服器有沒有新版，沒變就回 304，很省流量）：
  * GitHub Pages 會叫瀏覽器把檔案快取 10 分鐘，不這樣做的話手機剛更新完的 10 分鐘內重新整理還是舊畫面。
  * 呼叫後端 API 的請求（跨網域 POST）完全不經過快取。 */
-const VERSION = 'fin-v0.9.31';
+const VERSION = 'fin-v0.9.32';
 const SHELL = [
   './', 'index.html', 'config.js', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg',
   'js/app.js', 'js/api.js', 'js/store.js', 'js/data.js', 'js/dom.js', 'js/icons.js', 'js/fmt.js', 'js/ui.js',
   'js/views/login.js', 'js/views/home.js', 'js/views/transactions.js', 'js/views/accounts.js', 'js/views/settings.js',
   'js/views/txform.js', 'js/views/accountform.js', 'js/views/categories.js',
   'js/views/invest.js', 'js/views/holdings.js', 'js/views/instruments.js', 'js/views/instrumentform.js', 'js/views/brokers.js', 'js/views/brokerform.js',
-  'js/views/liability.js', 'js/views/recurring.js', 'js/views/cards.js', 'js/views/installments.js', 'js/views/nwchart.js', 'js/views/cashflow.js', 'js/views/todo.js', 'js/views/spending.js',
+  'js/views/liability.js', 'js/views/recurring.js', 'js/views/cards.js', 'js/views/installments.js', 'js/views/nwchart.js', 'js/views/cashflow.js', 'js/views/todo.js', 'js/views/spending.js', 'js/views/merchants.js',
   'js/core/money.js', 'js/core/dates.js',
 ];
 

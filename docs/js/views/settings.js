@@ -5,6 +5,7 @@ import * as api from '../api.js';
 import { money } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
 import { lock } from '../app.js';
+import { openMerchants } from './merchants.js';
 
 export function renderSettings(root) {
   const d = state.data;
@@ -33,7 +34,9 @@ export function renderSettings(root) {
           h('button', { class: 'btn btn-sm', onclick: () => lock('已鎖定') }, icon('logout'), '鎖定並登出')),
         h('p', { class: 'muted small', style: { marginBottom: 0 } }, `這台裝置：${d.device || '（未命名）'}。要新增或撤銷裝置，請在試算表的「財務系統」選單操作。`)),
       h('div', { class: 'card' }, h('h2', null, '資料'),
-        d.sheetUrl ? h('a', { class: 'btn btn-sm', href: d.sheetUrl, target: '_blank', rel: 'noopener noreferrer' }, icon('external'), '開啟試算表') : null,
+        h('div', { class: 'row-flex wrap' },
+          d.sheetUrl ? h('a', { class: 'btn btn-sm', href: d.sheetUrl, target: '_blank', rel: 'noopener noreferrer' }, icon('external'), '開啟試算表') : null,
+          h('button', { class: 'btn btn-sm', 'data-testid': 'open-merchants', onclick: openMerchants }, icon('receipt'), '商家管理')),
         backupBlock(),
         h('h3', { style: { fontSize: '14px', margin: '14px 0 4px' } }, '匯率與價格'),
         prices.length ? h('ul', { class: 'list' }, prices) : h('div', { class: 'muted small' }, '沒有價格資料'),

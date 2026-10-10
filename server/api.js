@@ -444,6 +444,26 @@ var FinApi = (function () {
     return Object.keys(count).sort(function (a, b) { return count[b] - count[a] || (a < b ? -1 : 1); }).slice(0, n);
   }
 
+  // ---------- 商家管理：記帳表單「商家」的建議清單來自過去交易；可以隱藏（存在「設定」分頁 hiddenMerchants，JSON 陣列）、改名／合併、清除 ----------
+  var HIDDEN_MERCHANTS_KEY = 'hiddenMerchants';
+  function hiddenMerchantList() {
+    try {
+      var v = FinRepo.getSettings()[HIDDEN_MERCHANTS_KEY];
+      var a = v ? JSON.parse(String(v)) : [];
+      return Array.isArray(a) ? a.map(function (x) { return String(x); }).filter(Boolean) : [];
+    } catch (e) { return []; }
+  }
+  function hiddenMerchantSet() { var o = {}; hiddenMerchantList().forEach(function (m) { o[m] = true; }); return o; }
+  function saveHiddenMerchants(list) {
+    var uniq = [];
+    list.forEach(function (m) { if (m && uniq.indexOf(m) < 0) uniq.push(m); });
+    var value = JSON.stringify(uniq);
+    var row = FinRepo.findById('settings', HIDDEN_MERCHANTS_KEY);
+    if (row) FinRepo.updateRow('settings', row._row, { value: value });
+    else FinRepo.append('settings', [{ key: HIDDEN_MERCHANTS_KEY, value: value, note: '記帳時「商家」建議清單裡不顯示的名稱（App：設定 › 商家管理）' }]);
+    return uniq;
+  }
+
   var cacheGet = function (k) { return CacheService.getScriptCache().get(k); };
   var cachePut = function (k, v, sec) { CacheService.getScriptCache().put(k, v, sec); };
 
@@ -487,9 +507,71 @@ var FinApi = (function () {
         month: month, recent: recent,
         issues: { count: c.bad.length + calc.ledgerIssues.length, items: c.bad.slice(0, 20), ledger: calc.ledgerIssues.slice(0, 20) },
         enabledTxTypes: FinSchema.ENABLED_TX_TYPES,
-        merchants: topValues(c.txRows.map(function (t) { return t.merchant; }), 60),
+        merchants: (function () { var hid = hiddenMerchantSet(); return topValues(c.txRows.map(function (t) { return t.merchant; }), 200).filter(function (m) { return !hid[m]; }).slice(0, 60); })(),
         tagList: topValues([].concat.apply([], c.txRows.map(function (t) { return t.tags ? String(t.tags).split(',') : []; })), 60),
       };
+    },
+  };
+
+  /** 所有商家：名稱、幾筆（不含作廢）、最近一次日期、最常用的分類、是否隱藏 */
+  H.listMerchants = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var hid = hiddenMerchantSet();
+      var map = {};
+      c.txRows.forEach(function (t) {
+        var m = t.merchant ? String(t.merchant).trim() : '';
+        if (!m) return;
+        var x = map[m] || (map[m] = { name: m, count: 0, voided: 0, lastDate: '', cats: {} });
+        if (t.status === '作廢') { x.voided++; return; }
+        x.count++;
+        if (t.date > x.lastDate) x.lastDate = t.date;
+        if (t.categoryId) x.cats[t.categoryId] = (x.cats[t.categoryId] || 0) + 1;
+      });
+      var items = Object.keys(map).map(function (k) {
+        var x = map[k];
+        var top = Object.keys(x.cats).sort(function (a, b) { return x.cats[b] - x.cats[a]; })[0] || '';
+        return { name: x.name, count: x.count, voided: x.voided, lastDate: x.lastDate, categoryId: top, hidden: !!hid[x.name] };
+      }).sort(function (a, b) { return b.count - a.count || (a.lastDate < b.lastDate ? 1 : a.lastDate > b.lastDate ? -1 : 0) || (a.name < b.name ? -1 : 1); });
+      return { items: items };
+    },
+  };
+
+  /**
+   * 商家管理：action = 'hide'（不在建議顯示，交易不動）／'show'（恢復顯示）／'rename'（所有用這個名稱的交易改成 newName；newName 已存在就等於合併）
+   * ／'clear'（所有用這個名稱的交易清空商家欄位；moveToNote 時把名稱加到備註前面）
+   */
+  H.updateMerchant = {
+    fn: function (p, env) {
+      var name = str(p.name), action = str(p.action);
+      if (!name) throw FinFail('BAD_REQUEST', '缺少商家名稱');
+      if (['hide', 'show', 'rename', 'clear'].indexOf(action) < 0) throw FinFail('BAD_REQUEST', '不支援的操作');
+      return FinRepo.withLock(function () {
+        var hidden = hiddenMerchantList();
+        if (action === 'hide' || action === 'show') {
+          hidden = saveHiddenMerchants(action === 'hide' ? hidden.concat([name]) : hidden.filter(function (m) { return m !== name; }));
+          FinRepo.audit('修改', 'settings', HIDDEN_MERCHANTS_KEY, (action === 'hide' ? '隱藏商家建議：' : '恢復商家建議：') + name, env.device);
+          return { name: name, hidden: action === 'hide', changed: 0 };
+        }
+        var newName = '';
+        if (action === 'rename') {
+          newName = FinValidate.safeText(str(p.newName)).slice(0, 40);
+          if (!newName) throw FinFail('VALIDATION', '請輸入新的商家名稱', { errors: [{ field: 'newName', message: '請輸入新的商家名稱' }], warnings: [] });
+          if (newName === name) throw FinFail('VALIDATION', '名稱沒有改變', { errors: [{ field: 'newName', message: '名稱沒有改變' }], warnings: [] });
+        }
+        var c = loadContext(env.now);
+        var rows = c.txRows.filter(function (t) { return t.merchant && String(t.merchant).trim() === name; });
+        var now = ts(env.now), moveToNote = action === 'clear' && !!p.moveToNote;
+        rows.forEach(function (t) {
+          var patch = { merchant: newName, updatedAt: now };
+          if (moveToNote && String(t.note || '').indexOf(name) < 0) patch.note = (name + (t.note ? '；' + t.note : '')).slice(0, 500);
+          FinRepo.updateRow('transactions', t._row, patch);
+        });
+        // 舊名稱不再用了：從隱藏清單拿掉（改名後的新名稱維持原本是否隱藏）
+        if (hidden.indexOf(name) >= 0) saveHiddenMerchants(hidden.filter(function (m) { return m !== name; }));
+        FinRepo.audit('修改', 'transactions', '', (action === 'rename' ? '商家改名：' + name + ' → ' + newName : '清除商家：' + name + (moveToNote ? '（移到備註）' : '')) + '，' + rows.length + ' 筆', env.device);
+        return { name: name, newName: newName, changed: rows.length };
+      });
     },
   };
 

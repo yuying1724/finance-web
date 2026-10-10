@@ -1150,6 +1150,47 @@ test('混合付款：信用卡＋pandapay 餘額，「用完餘額」自動填�
   });
 });
 
+test('商家管理：設定裡列出商家，可以隱藏建議、改名合併；記帳時建議清單跟著變', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const card = be.call('upsertAccount', { account: { name: '商家卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    const cat = be.call('bootstrap').data.categories.find((c) => c.name === '日用品').id;
+    for (const [m, d] of [['好市多', '2026-09-01'], ['COSTCO 好市多', '2026-09-02'], ['統康生活', '2026-09-03']]) assert.ok(be.call('addTransaction', { tx: { type: '支出', date: d, srcAccount: card, srcSymbol: 'TWD', srcQty: 10, categoryId: cat, merchant: m } }).ok);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('settings');
+    await page.click('[data-testid=open-merchants]');
+    await page.waitForSelector('[data-testid=merchant-item]');
+    assert.equal(await page.locator('[data-testid=merchant-item]').count(), 3);
+    // 隱藏統康生活
+    await page.click('[data-testid=merchant-item][data-name="統康生活"]');
+    await page.waitForSelector('[data-testid=merchant-detail]');
+    await page.click('[data-testid=merchant-hide]');
+    await page.waitForSelector('[data-testid=merchant-detail]', { state: 'detached' });
+    await page.waitForSelector('[data-testid=merchant-item][data-name="統康生活"] .badge');
+    assert.ok(!be.call('bootstrap').data.merchants.includes('統康生活'));
+    // COSTCO 好市多 合併到 好市多
+    await page.click('[data-testid=merchant-item][data-name="COSTCO 好市多"]');
+    await page.waitForSelector('[data-testid=merchant-detail]');
+    await page.fill('[data-testid=merchant-newname]', '好市多');
+    await page.click('[data-testid=merchant-rename]');
+    await page.click('.dialog button:text-is("合併"), .sheet button:text-is("合併")');
+    await page.waitForSelector('[data-testid=merchant-detail]', { state: 'detached' });
+    for (let i = 0; i < 30; i++) { await page.waitForTimeout(100); if ((await page.locator('[data-testid=merchant-item]').count()) === 2) break; }
+    assert.equal(await page.locator('[data-testid=merchant-item]').count(), 2);
+    assert.match(await page.locator('[data-testid=merchant-item][data-name="好市多"]').innerText(), /2 筆/);
+    await page.click('.sheet button[aria-label="關閉"]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    // 記帳：建議清單只剩好市多
+    await page.waitForTimeout(800);
+    await a.fab();
+    const opts = await page.evaluate(() => [...document.querySelectorAll('.sheet datalist option')].map((o) => o.value));
+    assert.ok(opts.includes('好市多'));
+    assert.ok(!opts.includes('統康生活'));
+    assert.ok(!opts.includes('COSTCO 好市多'));
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;
