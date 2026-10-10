@@ -893,6 +893,10 @@ test('每月支出圖表：首頁開啟，顯示本月合計與大分類排行�
     await page.waitForSelector('[data-testid=sp-total]');
     assert.equal(digits(await page.locator('[data-testid=sp-total]').innerText()), curTotal);
     assert.ok(await page.locator('.sp-chart .sp-bar').count() >= 1);
+    // 圓餅圖：有片、最多 6 片（前 5 類＋其他），分類清單有同色圓點
+    const segs = await page.locator('[data-testid=sp-donut] [data-seg]').count();
+    assert.ok(segs >= 1 && segs <= 6, '圓餅片數 ' + segs);
+    assert.ok(await page.locator('[data-testid=sp-cat] .sp-dot').count() >= 1);
     // 點「飲食」：展開早餐／午餐，圖改成只看飲食
     await page.click('[data-testid=sp-cat][data-cat="飲食"]');
     await page.waitForSelector('[data-testid=sp-filter]');

@@ -8,7 +8,7 @@ import { openSheet, errorText } from '../ui.js';
 /**
  * 每月支出圖表（首頁「本月」卡 → 支出圖表）：
  *  - 上半部：最近 6／12 個月每月支出的長條圖（單一數列、同一個顏色），點長條切換下面看的月份，虛線是期間平均
- *  - 下半部：選定月份的大分類排行（金額、占比、細條），點大分類展開細項，同時上面的圖改成只看這個分類的每月金額
+ *  - 下半部：選定月份的大分類圓餅圖（花最多的 5 類＋其他）與排行（金額、占比、細條），點大分類展開細項，同時上面的圖改成只看這個分類的每月金額
  * 資料來自後端 getMonthlyExpenses（支出加總、退款抵銷，轉帳／買賣／調整不算；分期依每期金額算在出帳月份），只顯示開始記帳以後的月份；
  * 圖下面列出每個月的合計，點一下換月份。
  */
@@ -97,9 +97,66 @@ function barChart(months, ui, base, onPick) {
   return { svg, avg };
 }
 
+/**
+ * 圓餅（甜甜圈）圖：選定月份的大分類占比。
+ * 顏色跟著分類走、不跟著排名：整段期間花最多的 5 個大分類固定用色票 1～5（換月份顏色不變），其餘併成「其他」（中性灰）。
+ * 色票是驗證過色盲可分辨的 5 色（淺色／深色各一組，見 app.css 的 --sp-c1～c5、--sp-other），片與片之間留 2px 空隙。
+ * 只靠顏色分不清時，下面的分類清單有同色圓點＋名稱＋百分比。
+ */
+const SLOTS = 5;
+function slotMap(allMonths) {
+  const tot = new Map();
+  allMonths.forEach((m) => groupMonth(m).forEach((g) => tot.set(g.id, (tot.get(g.id) || 0) + g.amount)));
+  const order = [...tot.entries()].filter((e) => e[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, SLOTS).map((e) => e[0]);
+  const map = new Map();
+  order.forEach((id, i) => map.set(id, i + 1));
+  return map;
+}
+function colorVar(slot) { return slot ? `var(--sp-c${slot})` : 'var(--sp-other)'; }
+
+function donut(groups, slots, total, ui, base, onPick) {
+  const segs = [];
+  let other = 0;
+  groups.forEach((g) => { if (g.amount <= 0) return; const sl = slots.get(g.id); if (sl) segs.push({ id: g.id, slot: sl, amount: g.amount }); else other += g.amount; });
+  segs.sort((a, b) => a.slot - b.slot); // 依色票順序排（驗證過相鄰色可分辨）
+  if (other > 0.004) segs.push({ id: '__other', slot: 0, amount: other });
+  const sum = segs.reduce((a, b) => a + b.amount, 0);
+  const R = 70, r = 44, C = 80;
+  const svg = s('svg', { viewBox: '0 0 160 160', class: 'sp-donut', role: 'img', 'aria-label': '這個月各大分類支出占比' });
+  if (!(sum > 0)) return null;
+  const pt = (a, rad) => [C + rad * Math.sin(a), C - rad * Math.cos(a)];
+  let a0 = 0;
+  const nameOf = (sg) => (sg.id === '__other' ? '其他' : ((catById(sg.id) || {}).name || '未分類'));
+  segs.forEach((sg) => {
+    const frac = sg.amount / sum;
+    const a1 = a0 + frac * Math.PI * 2;
+    let el;
+    if (segs.length === 1) {
+      el = s('circle', { cx: C, cy: C, r: (R + r) / 2, fill: 'none', 'stroke-width': R - r, style: `stroke:${colorVar(sg.slot)}` });
+    } else {
+      const large = a1 - a0 > Math.PI ? 1 : 0;
+      const [x0, y0] = pt(a0, R), [x1, y1] = pt(a1, R), [x2, y2] = pt(a1, r), [x3, y3] = pt(a0, r);
+      el = s('path', { d: `M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r},${r} 0 ${large} 0 ${x3},${y3} Z`, class: 'sp-seg', style: `fill:${colorVar(sg.slot)}` });
+    }
+    const dim = ui.filter && ui.filter !== sg.id;
+    if (dim) el.setAttribute('opacity', '0.35');
+    el.setAttribute('data-seg', nameOf(sg));
+    el.addEventListener('pointerenter', () => { ui.dtip.textContent = `${nameOf(sg)}　${money(sg.amount, base, { whole: true })}（${Math.round(frac * 1000) / 10}%）`; });
+    el.addEventListener('click', () => { if (sg.id !== '__other') onPick(sg.id); });
+    svg.appendChild(el);
+    a0 = a1;
+  });
+  svg.addEventListener('pointerleave', () => { ui.dtip.textContent = ''; });
+  const t1 = s('text', { x: C, y: C - 2, 'text-anchor': 'middle', class: 'sp-donut-sub' }); t1.textContent = '本月支出';
+  const t2 = s('text', { x: C, y: C + 15, 'text-anchor': 'middle', class: 'sp-donut-total' }); t2.textContent = money(total, base, { whole: true });
+  svg.appendChild(t1); svg.appendChild(t2);
+  return svg;
+}
+
 export function openSpending() {
   const base = state.data.base;
-  const ui = { range: 6, ym: '', filter: '', open: '', data: null, error: null, tip: h('div', { class: 'muted small sp-tip', 'aria-live': 'polite' }), defaultTip: '' };
+  const ui = { range: 6, ym: '', filter: '', open: '', data: null, error: null, tip: h('div', { class: 'muted small sp-tip', 'aria-live': 'polite' }), defaultTip: '',
+    dtip: h('div', { class: 'small sp-dtip', 'aria-live': 'polite' }) };
   const body = h('div', { 'data-testid': 'spending' }, h('div', { class: 'muted' }, '載入中…'));
 
   function draw() {
@@ -113,6 +170,7 @@ export function openSpending() {
     const idx = all.findIndex((m) => m.ym === ui.ym);
     const prev = idx > 0 ? all[idx - 1] : null;
     const groups = groupMonth(cur);
+    const slots = slotMap(months); // 依目前看的期間（6／12 個月）排名，換月份顏色不變
     const filterCat = ui.filter ? catById(ui.filter) : null;
 
     const chips = h('div', { class: 'chips', style: { gap: '6px' } }, RANGES.map(([n, label]) =>
@@ -143,7 +201,7 @@ export function openSpending() {
         onclick: () => { const same = ui.open === g.id; ui.open = same ? '' : g.id; ui.filter = same ? '' : g.id; draw(); } },
         h('div', { class: 'ico', style: catIconStyle(c ? c.color : '') }, icon((c && c.icon) || 'dots')),
         h('div', { class: 'grow' },
-          h('div', { class: 't' }, name, g.children.length ? h('span', { class: 'muted small', style: { marginLeft: '6px', fontWeight: 400 } }, isOpen ? '▾' : '▸') : null),
+          h('div', { class: 't' }, h('span', { class: 'sp-dot', style: { background: colorVar(slots.get(g.id)) } }), name, g.children.length ? h('span', { class: 'muted small', style: { marginLeft: '6px', fontWeight: 400 } }, isOpen ? '▾' : '▸') : null),
           h('div', { class: 'sp-meter' }, h('div', { class: 'sp-meter-fill', style: { width: `${Math.max(2, Math.round((g.amount / maxG) * 100))}%` } }))),
         h('div', { style: { textAlign: 'right' } }, h('div', { class: 'amt' }, money(g.amount, base, { whole: true })), h('div', { class: 'muted small' }, `${pct}%`)));
       const kids = isOpen && g.children.length
@@ -163,6 +221,8 @@ export function openSpending() {
     mount(body,
       h('div', { class: 'row-flex', style: { justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } }, chips, filterChip),
       chart.svg, ui.tip, monthList, head,
+      (() => { const pie = donut(groups, slots, cur.expense, ui, base, (id) => { const same = ui.open === id; ui.open = same ? '' : id; ui.filter = same ? '' : id; draw(); });
+        return pie ? h('div', { class: 'sp-donut-wrap', 'data-testid': 'sp-donut' }, pie, ui.dtip) : null; })(),
       groups.length ? h('ul', { class: 'list' }, rows) : h('div', { class: 'muted', style: { padding: '8px 0' } }, '這個月沒有支出'),
       cur.missing && cur.missing.length ? h('div', { class: 'muted small' }, `有外幣交易查不到匯率，沒算進去：${cur.missing.join('、')}`) : null,
       h('div', { class: 'muted small', style: { marginTop: '8px' } }, `點長條或月份換月份；點分類展開細項，上面的圖會改成只看這個分類。支出＝支出交易扣掉退款，轉帳、投資買賣、繳卡費都不算；分期付款依每期金額算在出帳的月份。從 ${ui.data.startYm.slice(0, 4)}/${monthNum(ui.data.startYm)} 月（開始記帳）起算。`));
