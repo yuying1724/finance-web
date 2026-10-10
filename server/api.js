@@ -1842,12 +1842,21 @@ var FinApi = (function () {
         var row = loadTxForWrite(c, id);
         if (row.status !== '待確認') throw FinFail('BAD_STATE', '這筆交易目前不是待確認狀態');
         var tpl = row.recurringId ? FinRepo.findById('recurring', row.recurringId) : null;
-        if (!tpl || (tpl.mode !== '手動下單' && !FinRecurring.isActualAnchored(tpl))) throw FinFail('BAD_STATE', '只有「手動下單」或「從實際付款日起算」的定期待確認可以延後');
+        // 可以延後：提醒確認（例如保險費晚幾天才扣、加班費還沒入帳）、手動下單、從實際付款日起算；自動入帳的不會有待確認
+        if (!tpl || (tpl.mode !== '手動下單' && tpl.mode !== '提醒確認' && !FinRecurring.isActualAnchored(tpl))) throw FinFail('BAD_STATE', '只有「提醒確認」「手動下單」或「從實際付款日起算」的定期待確認可以延後');
+        if (newDate < c.today) throw FinFail('VALIDATION', '延後的日期不能早於今天', { errors: [{ field: 'date', message: '延後的日期不能早於今天' }], warnings: [] });
         var now = ts(env.now);
-        FinRepo.updateRow('transactions', row._row, { date: newDate, updatedAt: now });
-        FinRepo.audit('延後', 'transactions', row.id, '定期待確認延後至 ' + newDate, env.device);
-        var o = pub(row); o.date = newDate; o.updatedAt = now;
-        return { tx: o };
+        // 同一組（例如還款的本金＋利息）一起延後
+        var rows = row.groupId ? c.txRows.filter(function (t) { return t.groupId === row.groupId && t.status === '待確認'; }) : [row];
+        if (!rows.some(function (t) { return t.id === row.id; })) rows.push(row);
+        var outs = rows.map(function (t) {
+          var r2 = t.id === row.id ? row : FinRepo.findById('transactions', t.id);
+          FinRepo.updateRow('transactions', r2._row, { date: newDate, updatedAt: now });
+          FinRepo.audit('延後', 'transactions', r2.id, '定期待確認延後至 ' + newDate, env.device);
+          var o = pub(r2); o.date = newDate; o.updatedAt = now; return o;
+        });
+        var main = outs.filter(function (o) { return o.id === row.id; })[0];
+        return outs.length > 1 ? { tx: main, txs: outs } : { tx: main };
       });
     },
   };

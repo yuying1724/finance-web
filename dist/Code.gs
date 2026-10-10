@@ -145,7 +145,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.35',
+    APP_VERSION: '0.9.36',
   };
   return api;
 })();
@@ -4255,12 +4255,21 @@ var FinApi = (function () {
         var row = loadTxForWrite(c, id);
         if (row.status !== '待確認') throw FinFail('BAD_STATE', '這筆交易目前不是待確認狀態');
         var tpl = row.recurringId ? FinRepo.findById('recurring', row.recurringId) : null;
-        if (!tpl || (tpl.mode !== '手動下單' && !FinRecurring.isActualAnchored(tpl))) throw FinFail('BAD_STATE', '只有「手動下單」或「從實際付款日起算」的定期待確認可以延後');
+        // 可以延後：提醒確認（例如保險費晚幾天才扣、加班費還沒入帳）、手動下單、從實際付款日起算；自動入帳的不會有待確認
+        if (!tpl || (tpl.mode !== '手動下單' && tpl.mode !== '提醒確認' && !FinRecurring.isActualAnchored(tpl))) throw FinFail('BAD_STATE', '只有「提醒確認」「手動下單」或「從實際付款日起算」的定期待確認可以延後');
+        if (newDate < c.today) throw FinFail('VALIDATION', '延後的日期不能早於今天', { errors: [{ field: 'date', message: '延後的日期不能早於今天' }], warnings: [] });
         var now = ts(env.now);
-        FinRepo.updateRow('transactions', row._row, { date: newDate, updatedAt: now });
-        FinRepo.audit('延後', 'transactions', row.id, '定期待確認延後至 ' + newDate, env.device);
-        var o = pub(row); o.date = newDate; o.updatedAt = now;
-        return { tx: o };
+        // 同一組（例如還款的本金＋利息）一起延後
+        var rows = row.groupId ? c.txRows.filter(function (t) { return t.groupId === row.groupId && t.status === '待確認'; }) : [row];
+        if (!rows.some(function (t) { return t.id === row.id; })) rows.push(row);
+        var outs = rows.map(function (t) {
+          var r2 = t.id === row.id ? row : FinRepo.findById('transactions', t.id);
+          FinRepo.updateRow('transactions', r2._row, { date: newDate, updatedAt: now });
+          FinRepo.audit('延後', 'transactions', r2.id, '定期待確認延後至 ' + newDate, env.device);
+          var o = pub(r2); o.date = newDate; o.updatedAt = now; return o;
+        });
+        var main = outs.filter(function (o) { return o.id === row.id; })[0];
+        return outs.length > 1 ? { tx: main, txs: outs } : { tx: main };
       });
     },
   };
@@ -4807,8 +4816,9 @@ var FinRecurringJob = (function () {
       var createdDate = String(t.createdAt || '').slice(0, 10);
       if (!createdDate) return;
       var tplS = tplById[t.recurringId];
-      // 從實際日期起算的範本（例如捷運月票）：常常故意晚幾天才付、會按「延後」，所以從（延後後的）日期起算，不從產生日算
-      if (tplS && FinRecurring.isActualAnchored(tplS)) createdDate = t.date > createdDate ? t.date : createdDate;
+      // 按過「延後」的（日期比產生日晚）：從延後後的日期起算，不從產生日算
+      void tplS;
+      if (t.date > createdDate) createdDate = t.date;
       var age = daysBetween(createdDate, c.today);
       if (age >= STALE_PENDING_DAYS) {
         var tpl = tplById[t.recurringId];

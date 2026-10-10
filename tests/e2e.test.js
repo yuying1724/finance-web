@@ -1298,6 +1298,35 @@ test('交易分頁「明細｜圖表」：首頁按鈕開圖表、共用月份�
   });
 });
 
+test('提醒確認也能延後：保險費還沒扣就按延後，選 1 週後，待辦改到還沒到日子', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const card = be.call('upsertAccount', { account: { name: '保險卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    const cat = be.call('bootstrap').data.categories.find((c) => c.name === '保險費').id;
+    const r = be.call('upsertRecurring', { recurring: { name: '保險-醫療險', freq: '每年', days: [Number(today.slice(8, 10))], holiday: '不調整', startDate: today, type: '支出', srcAccount: card, srcSymbol: 'TWD', srcQty: 12000, categoryId: cat, mode: '提醒確認' } });
+    assert.ok(r.ok, JSON.stringify(r));
+    be.ctx.FinRecurringJob.runDaily(Date.now());
+    const p = be.call('bootstrap').data.pendingConfirmations.find((t) => t.recurringId === r.data.recurring.id);
+    assert.ok(p, '今天產生待確認');
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('todo');
+    await page.waitForSelector('[data-testid=todo-now] [data-testid=postpone-pending]');
+    await page.click('[data-testid=todo-now] [data-testid=postpone-pending]');
+    await page.waitForSelector('[data-testid=postpone-date]');
+    await page.click('.sheet button:text-is("1 週後")');
+    const want = be.ctx.FinDates.addDays(today, 7);
+    assert.equal(await page.locator('[data-testid=postpone-date]').inputValue(), want);
+    await page.click('.sheet .btn-primary');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    for (let i = 0; i < 30; i++) { await page.waitForTimeout(100); if (be.call('bootstrap').data.pendingConfirmations.find((t) => t.id === p.id).date === want) break; }
+    assert.equal(be.call('bootstrap').data.pendingConfirmations.find((t) => t.id === p.id).date, want);
+    await page.waitForSelector('[data-testid=todo-later] [data-testid=pending-item]');
+    assert.match(await page.locator('[data-testid=todo-later]').innerText(), /保險-醫療險/);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

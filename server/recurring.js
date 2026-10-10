@@ -210,8 +210,9 @@ var FinRecurringJob = (function () {
       var createdDate = String(t.createdAt || '').slice(0, 10);
       if (!createdDate) return;
       var tplS = tplById[t.recurringId];
-      // 從實際日期起算的範本（例如捷運月票）：常常故意晚幾天才付、會按「延後」，所以從（延後後的）日期起算，不從產生日算
-      if (tplS && FinRecurring.isActualAnchored(tplS)) createdDate = t.date > createdDate ? t.date : createdDate;
+      // 按過「延後」的（日期比產生日晚）：從延後後的日期起算，不從產生日算
+      void tplS;
+      if (t.date > createdDate) createdDate = t.date;
       var age = daysBetween(createdDate, c.today);
       if (age >= STALE_PENDING_DAYS) {
         var tpl = tplById[t.recurringId];

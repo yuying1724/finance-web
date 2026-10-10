@@ -87,12 +87,21 @@ test('從實際付款日起算（捷運月票）：到期產生待確認、可�
   run(b, '2026-12-20');
   list = b.txOf(rid);
   assert.deepEqual(list.map((t) => [t.plannedDate, t.status]), [['2026-10-12', '有效'], ['2026-11-15', '已略過'], ['2026-12-20', '待確認']]);
-  // 一般範本仍不能延後
+  // 一般的提醒確認也可以延後（例如保險費晚幾天才扣）；不能延到今天以前
   const r2 = b.call('upsertRecurring', { recurring: { name: '電話費', freq: '每月', days: [20], holiday: '不調整', startDate: '2026-12-20', type: '支出', srcAccount: bank, srcSymbol: 'TWD', srcQty: 500, categoryId: b.cat('大眾運輸'), mode: '提醒確認' } });
   assert.ok(r2.ok);
   run(b, '2026-12-20');
   const p2 = b.txOf(r2.data.recurring.id)[0];
-  assert.equal(b.call('postponePending', { id: p2.id, date: '2026-12-25' }).error.code, 'BAD_STATE');
+  assert.equal(b.call('postponePending', { id: p2.id, date: '2026-12-01' }).error.code, 'VALIDATION');
+  assert.ok(b.call('postponePending', { id: p2.id, date: '2026-12-25' }).ok);
+  assert.equal(b.txOf(r2.data.recurring.id)[0].date, '2026-12-25');
+  // 延後後從新的日期算「待確認放太久」：12/27 還不寄、12/28 才寄
+  b.state.mail.length = 0;
+  run(b, '2026-12-27');
+  assert.ok(!b.state.mail.find((m) => /待確認放了好幾天/.test(m.subject) && /電話費/.test(m.body || m.htmlBody || '')));
+  b.state.mail.length = 0;
+  run(b, '2026-12-28');
+  assert.ok(b.state.mail.find((m) => /待確認放了好幾天/.test(m.subject)));
 });
 
 test('確認待確認的支出時可以換付款帳戶（幣別要一樣、不能選貸款）', () => {

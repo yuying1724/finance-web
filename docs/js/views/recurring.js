@@ -112,12 +112,14 @@ export function pendingRow(group) {
       first.autoDividend && first.plannedDate ? h('div', { class: 's' }, `除息日 ${first.plannedDate}　稅前 ${money(first.amount, first.dstSymbol)}${first.fee ? '－匯費 ' + money(first.fee, first.dstSymbol) : ''}${first.tax ? '－二代健保 ' + money(first.tax, first.dstSymbol) : ''}`) : null,
       first.suggested && first.suggested.reason ? h('div', { class: 's', style: { color: 'var(--accent, #b3852c)' } }, `建議金額 ${money(first.suggested.amount, first.srcSymbol)}　${first.suggested.reason}`) : null),
     h('div', { class: 'row-flex', style: { gap: '6px' } },
-      (group.length === 1 && (isManualOrder(first) || first.anchor === '實際日期')) ? h('button', { class: 'btn btn-sm', 'data-testid': 'postpone-pending', onclick: () => openPostponeDialog(first) }, '延後') : null,
+      canPostpone(first) ? h('button', { class: 'btn btn-sm', 'data-testid': 'postpone-pending', onclick: () => openPostponeDialog(first) }, '延後') : null,
       h('button', { class: 'btn btn-sm', onclick: () => skipGroup(group) }, '略過'),
       h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'confirm-pending', onclick: () => openConfirmDialog(group) }, '確認')));
 }
 
 function isManualOrder(t) { return t.mode === '手動下單'; }
+/** 可以按「延後」：提醒確認（例如保險費晚幾天才扣）、手動下單、從實際付款日起算 */
+function canPostpone(t) { return !t.autoDividend && (t.mode === '提醒確認' || isManualOrder(t) || t.anchor === '實際日期'); }
 
 async function skipGroup(group) {
   const ok = await confirmDialog({ title: '略過', message: `確定要略過「${group[0].templateName || '這筆定期交易'}」嗎？這期就不會入帳，也不會再重新產生。`, danger: true });
@@ -137,21 +139,31 @@ function removePendingLocal(group) {
 }
 
 function openPostponeDialog(item) {
-  const input = h('input', { type: 'date', value: item.date });
+  const today = state.data.today;
+  const start = item.date > today ? item.date : today;
+  const input = h('input', { type: 'date', value: FinDates.addDays(start, 3), min: today, 'data-testid': 'postpone-date' });
+  const quick = h('div', { class: 'chips', style: { marginTop: '8px' } }, [[3, '3 天後'], [7, '1 週後'], [14, '2 週後'], [30, '1 個月後']].map(([n, t]) =>
+    h('button', { type: 'button', class: 'chip chip-sm', onclick: () => { input.value = FinDates.addDays(today, n); } }, t)));
   const save = h('button', { class: 'btn btn-primary', type: 'button', onclick: async (e) => {
     await withBusy(e.currentTarget, async () => {
       try {
         const r = await api.call('postponePending', { id: item.id, date: input.value });
         sheet.close();
-        if (r && r.tx) Object.assign(item, r.tx); // 先把新日期套到本機，背景再重新整理
+        if (r && r.tx) { // 先把新日期套到本機（同一組一起），背景再重新整理
+          const byId = Object.fromEntries((r.txs || [r.tx]).map((t) => [t.id, t]));
+          (state.data.pendingConfirmations || []).forEach((t) => { if (byId[t.id]) Object.assign(t, byId[t.id]); });
+          Object.assign(item, r.tx);
+        }
         refreshInBackground(); toast('已延後');
       } catch (err) { toast(errorText(err), { kind: 'bad' }); }
     });
   } }, '儲存');
   const sheet = openSheet({
     title: '延後到哪一天',
-    body: h('div', null, h('p', { class: 'muted small', style: { marginTop: 0 } }, item.anchor === '實際日期' ? '仍是同一筆待確認，只是改成預計哪天付款；實際付款後按確認，下一次會從那天起算。' : '仍是同一筆待確認，只是改成別天再下單，不會多產生一筆。'),
-      h('label', { class: 'field' }, h('span', { class: 'lbl' }, item.anchor === '實際日期' ? '預計哪天付款' : '新的預計日期'), input)),
+    body: h('div', null, h('p', { class: 'muted small', style: { marginTop: 0 } }, item.anchor === '實際日期' ? '仍是同一筆待確認，只是改成預計哪天付款；實際付款後按確認，下一次會從那天起算。'
+        : isManualOrder(item) ? '仍是同一筆待確認，只是改成別天再下單，不會多產生一筆。'
+          : '還沒扣款或入帳的話，改到之後再提醒：到那天會再出現在「待辦」，不會多產生一筆，也不會影響下一期的日期。'),
+      h('label', { class: 'field' }, h('span', { class: 'lbl' }, item.anchor === '實際日期' ? '預計哪天付款' : '新的預計日期'), input), quick),
     footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save],
   });
 }
