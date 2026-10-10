@@ -49,3 +49,57 @@ test('拆帳：拆成多筆同群組支出，金額加總要等於總額；帳�
   const inc = cats.find((x) => x.name === '薪資' && x.type === '收入' && x.parentId).id;
   assert.equal(b.call('addTransaction', { tx: { type: '收入', date: '2026-10-10', dstAccount: bank, dstSymbol: 'TWD', dstQty: 100, categoryId: inc }, splits: [{ categoryId: inc, amount: 50 }, { categoryId: inc, amount: 50 }] }).error.code, 'VALIDATION');
 });
+
+test('拆帳＋代墊：自己的算支出、幫同事付的轉到應收帳戶（沒有就自動建「代墊-同事」）；卡片帳單算全額；同事還錢從應收轉出', () => {
+  const b = loadBackend().setup();
+  b.mock.state.clock.now = new Date('2026-10-10T18:00:00+08:00').getTime(); b.login();
+  const card = b.call('upsertAccount', { account: { name: 'J卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+  assert.ok(b.call('upsertCardSettings', { card: { accountId: card, statementDay: 25, dueDay: 10, limit: 100000 } }).ok);
+  const linePay = b.call('upsertAccount', { account: { name: 'LINE Pay', type: '數位錢包', defaultSymbol: 'TWD' } }).data.account.id;
+  const cats = b.call('bootstrap').data.categories;
+  const drink = cats.find((c) => c.name === '飲料點心' && c.type === '支出').id;
+  const base = { type: '支出', date: '2026-10-10', srcAccount: card, srcSymbol: 'TWD', srcQty: 400, categoryId: drink, merchant: 'foodpanda' };
+  // 全部都是代墊 → 請改記轉帳
+  let r = b.call('addTransaction', { tx: base, splits: [{ kind: '代墊', amount: 200, dstAccount: '__new__' }, { kind: '代墊', amount: 200, dstAccount: '__new__' }] });
+  assert.equal(r.error.code, 'VALIDATION'); assert.match(r.error.message, /轉帳/);
+  // 代墊選到不是應收的帳戶
+  r = b.call('addTransaction', { tx: base, splits: [{ categoryId: drink, amount: 80 }, { kind: '代墊', amount: 320, dstAccount: linePay }] });
+  assert.equal(r.error.code, 'VALIDATION'); assert.match(r.error.message, /應收/);
+  // 加總錯的時候不會先建帳戶
+  r = b.call('addTransaction', { tx: base, splits: [{ categoryId: drink, amount: 80 }, { kind: '代墊', amount: 300, dstAccount: '__new__' }] });
+  assert.equal(r.error.code, 'VALIDATION');
+  assert.ok(!b.call('bootstrap').data.accounts.find((a) => a.name === '代墊-同事'), '驗證失敗不建帳戶');
+  // 正確
+  r = b.call('addTransaction', { tx: base, splits: [{ categoryId: drink, amount: 80 }, { kind: '代墊', amount: 320, dstAccount: '__new__', note: '小王 80、小李 120、阿明 120' }] });
+  assert.ok(r.ok, JSON.stringify(r));
+  const adv = r.data.createdAccount;
+  assert.equal(adv.name, '代墊-同事'); assert.equal(adv.type, '應收');
+  const [own, lent] = r.data.split;
+  assert.deepEqual([own.type, own.srcQty, own.categoryId], ['支出', 80, drink]);
+  assert.deepEqual([lent.type, lent.srcAccount, lent.dstAccount, lent.dstQty, lent.categoryId, lent.note, lent.merchant], ['轉帳', card, adv.id, 320, '', '小王 80、小李 120、阿明 120', 'foodpanda']);
+  assert.equal(lent.groupId, own.id);
+  let boot = b.call('bootstrap').data;
+  assert.equal(boot.balances.find((x) => x.accountId === card).qty, -400, '卡片欠 400');
+  assert.equal(boot.balances.find((x) => x.accountId === adv.id).qty, 320, '同事欠 320');
+  assert.equal(boot.month.expense, 80, '支出只算自己的 80');
+  const st = b.call('getCardStatement', { accountId: card }).data;
+  assert.equal(st.currentSpend, 400, '帳單本期消費算全額');
+  // 第二次代墊：沿用同一個帳戶，不再新建
+  r = b.call('addTransaction', { tx: Object.assign({}, base, { srcQty: 150 }), splits: [{ categoryId: drink, amount: 50 }, { kind: '代墊', amount: 100, dstAccount: '__new__' }] });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(r.data.createdAccount, null);
+  assert.equal(r.data.split[1].dstAccount, adv.id);
+  assert.equal(b.call('bootstrap').data.accounts.filter((a) => a.name === '代墊-同事').length, 1);
+  // 同事還錢：應收 → LINE Pay
+  assert.ok(b.call('addTransaction', { tx: { type: '轉帳', date: '2026-10-11', srcAccount: adv.id, srcSymbol: 'TWD', srcQty: 120, dstAccount: linePay, dstSymbol: 'TWD', dstQty: 120, note: '小李還' } }).ok);
+  b.mock.state.clock.now = new Date('2026-10-11T18:00:00+08:00').getTime(); b.login();
+  boot = b.call('bootstrap').data;
+  assert.equal(boot.balances.find((x) => x.accountId === adv.id).qty, 300);
+  assert.equal(boot.month.expense, 130);
+  assert.equal(boot.month.income, 0, '收回代墊不算收入');
+  // 整組作廢：支出與代墊一起
+  const g = r.data.split[0];
+  const v = b.call('voidTransaction', { id: g.id, wholeGroup: true, expectedUpdatedAt: g.updatedAt });
+  assert.ok(v.ok); assert.equal(v.data.txs.length, 2);
+  assert.equal(b.call('bootstrap').data.balances.find((x) => x.accountId === adv.id).qty, 200);
+});

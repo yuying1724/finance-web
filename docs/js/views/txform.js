@@ -75,7 +75,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     feeAmount: '', more: false, postDate: editing && (tx.type === '支出' || tx.type === '退款') ? (tx.settleDate || '') : '',
     instOn: false, instTerms: '6', instRemainder: '首期',
     closeChoice: editing && tx.settleDate && tx.settleDate !== tx.date ? 'custom' : '',
-    splitOn: false, splits: [{ cat: '', amt: '' }, { cat: '', amt: '' }], // 拆帳：一次刷卡拆成好幾個分類 // 快結帳提醒的選擇：this／next／custom／auto（依卡片設定預估）
+    splitOn: false, splits: [{ cat: '', amt: '', note: '' }, { cat: '', amt: '', note: '' }], // 拆帳：一次刷卡拆成好幾個分類（某行可以是「幫別人代墊」） // 快結帳提醒的選擇：this／next／custom／auto（依卡片設定預估）
   };
 
   const fmtNum = (n) => String(n);
@@ -96,6 +96,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
   if (!editing && preset.acct && accounts.some((a) => a.id === preset.acct)) { f.acct = preset.acct; f.sym = accountById(preset.acct).defaultSymbol; }
   if (!editing && preset.acct2 && accounts.some((a) => a.id === preset.acct2)) { f.acct2 = preset.acct2; f.sym2 = accountById(preset.acct2).defaultSymbol; }
   if (!editing && preset.amount !== undefined && preset.amount !== '') { f.amount = String(preset.amount); f.amount2 = String(preset.amount); }
+  if (!editing && preset.note) f.note = String(preset.note);
   if (!f.acct) {
     const remembered = accounts.find((a) => a.id === last.acct);
     const a = remembered || accounts[0];
@@ -273,7 +274,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
       status ? h('div', { class: 'small', style: { marginTop: '6px' }, 'data-testid': 'close-status' }, status) : h('div', { class: 'muted small', style: { marginTop: '6px' } }, '不確定可以先不選，之後看到帳單再到「更多」補入帳日')));
   }
 
-  // 拆帳：一次付款（同帳戶、同日期）拆成好幾個分類，例如好市多＝食材＋日用品。存成同一組的多筆支出，各行加起來要等於上面的金額
+  // 拆帳：一次付款（同帳戶、同日期）拆成好幾個分類，例如好市多＝食材＋日用品。存成同一組的多筆支出，各行加起來要等於上面的金額。
+  // 某一行可以選「幫別人代墊」（例如幫同事訂飲料）：那行記成轉帳到「應收」帳戶，不算自己的支出，對方還錢時再從應收帳戶「收回」
   function splitField() {
     if (editing || type !== '支出') return null;
     const box = h('div', { style: { display: f.splitOn ? '' : 'none', marginTop: '8px' }, 'data-testid': 'split-box' });
@@ -282,6 +284,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
       cats.push({ id: p.id, label: p.name });
       sortCategories(d.categories.filter((c) => c.parentId === p.id && c.active)).forEach((k) => cats.push({ id: k.id, label: `${p.name} › ${k.name}` }));
     });
+    const advs = d.accounts.filter((a) => a.type === '應收' && a.active && a.defaultSymbol === f.sym).map((a) => ({ id: 'adv:' + a.id, label: `幫別人代墊 → ${a.name}` }));
+    if (!d.accounts.some((a) => a.type === '應收' && a.active && a.name === '代墊-同事')) advs.push({ id: 'adv:__new__', label: '幫別人代墊（自動建立「代墊-同事」）' });
     const summary = h('div', { class: 'small', style: { marginTop: '6px' }, 'data-testid': 'split-summary' });
     const dec = () => decimalsOf(f.sym);
     const units = (v) => { const a = parseAmount(v); return a.empty || a.bad ? 0 : Math.round(a.n * Math.pow(10, dec())); };
@@ -290,27 +294,31 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     const paintSummary = () => {
       const total = units(f.amount), used = f.splits.reduce((sum, x) => sum + units(x.amt), 0);
       const left = total - used;
-      summary.textContent = !total ? '先在上面填總金額' : left === 0 ? `已分完：${f.splits.length} 個分類，合計 ${money(fromUnits(used), f.sym, { noMask: true })}`
+      const advUsed = f.splits.reduce((sum, x) => sum + (String(x.cat).startsWith('adv:') ? units(x.amt) : 0), 0);
+      summary.textContent = !total ? '先在上面填總金額' : left === 0 ? `已分完：${f.splits.length} 行，合計 ${money(fromUnits(used), f.sym, { noMask: true })}${advUsed ? `（自己 ${money(fromUnits(used - advUsed), f.sym, { noMask: true })}，代墊 ${money(fromUnits(advUsed), f.sym, { noMask: true })}）` : ''}`
         : left > 0 ? `還沒分配 ${money(fromUnits(left), f.sym, { noMask: true })}` : `多分了 ${money(fromUnits(-left), f.sym, { noMask: true })}`;
       summary.style.color = total && left !== 0 ? 'var(--bad)' : '';
     };
     const paintLines = () => {
       mount(box, f.splits.map((ln, i) => {
-        const sel = h('select', { 'aria-label': `第 ${i + 1} 行分類`, 'data-testid': 'split-cat', onchange: (e) => { ln.cat = e.target.value; } },
-          [h('option', { value: '' }, '選分類')].concat(cats.map((c) => h('option', { value: c.id, selected: c.id === ln.cat }, c.label))));
+        const sel = h('select', { 'aria-label': `第 ${i + 1} 行分類`, 'data-testid': 'split-cat', onchange: (e) => { const was = String(ln.cat).startsWith('adv:'); ln.cat = e.target.value; if (was !== ln.cat.startsWith('adv:')) paintLines(); else paintSummary(); } },
+          [h('option', { value: '' }, '選分類')].concat(cats.map((c) => h('option', { value: c.id, selected: c.id === ln.cat }, c.label)),
+            advs.length ? [h('optgroup', { label: '不是自己的消費' }, advs.map((c) => h('option', { value: c.id, selected: c.id === ln.cat }, c.label)))] : []));
         const amt = h('input', { type: 'text', inputmode: 'decimal', value: ln.amt, placeholder: '金額', 'aria-label': `第 ${i + 1} 行金額`, 'data-testid': 'split-amt', style: { maxWidth: '110px' }, oninput: (e) => { ln.amt = e.target.value; paintSummary(); } });
         const rest = h('button', { type: 'button', class: 'chip chip-sm', title: '填入還沒分配的金額', 'data-testid': 'split-rest', onclick: () => {
           const total = units(f.amount), others = f.splits.reduce((sum, x, j) => sum + (j === i ? 0 : units(x.amt)), 0);
           if (total - others > 0) { ln.amt = String(fromUnits(total - others)); amt.value = ln.amt; paintSummary(); }
         } }, '剩下的');
         const del = f.splits.length > 2 ? h('button', { type: 'button', class: 'icon-btn', 'aria-label': `刪除第 ${i + 1} 行`, onclick: () => { f.splits.splice(i, 1); paintLines(); } }, icon('x')) : null;
-        return field('split' + i, '', h('div', { class: 'row-flex', style: { gap: '6px', alignItems: 'center' } }, h('div', { class: 'grow', style: { minWidth: 0 } }, sel), amt, rest, del));
-      }), f.splits.length < 10 ? h('button', { type: 'button', class: 'chip', 'data-testid': 'split-add', onclick: () => { f.splits.push({ cat: '', amt: '' }); paintLines(); } }, icon('plus'), '再加一個分類') : null, summary);
+        const isAdv = String(ln.cat).startsWith('adv:');
+        const who = isAdv ? h('input', { type: 'text', value: ln.note || '', maxlength: 200, placeholder: '幫誰付（選填，例如：小王 80、小李 120）', 'aria-label': `第 ${i + 1} 行幫誰付`, 'data-testid': 'split-who', style: { marginTop: '6px' }, oninput: (e) => { ln.note = e.target.value; } }) : null;
+        return field('split' + i, '', h('div', { class: 'row-flex', style: { gap: '6px', alignItems: 'center' } }, h('div', { class: 'grow', style: { minWidth: 0 } }, sel), amt, rest, del), who);
+      }), f.splits.length < 10 ? h('button', { type: 'button', class: 'chip', 'data-testid': 'split-add', onclick: () => { f.splits.push({ cat: '', amt: '', note: '' }); paintLines(); } }, icon('plus'), '再加一行') : null, summary);
       paintSummary();
     };
     paintLines();
     const toggle = h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: f.splitOn, 'data-testid': 'split-toggle', onchange: (e) => { f.splitOn = e.target.checked; if (f.splitOn) f.instOn = false; draw(); } }),
-      '拆成多個分類（例如好市多：食材＋日用品）');
+      '拆帳：分成多個分類或幫別人代墊（例如好市多食材＋日用品、幫同事訂飲料）');
     return field('splits', '', toggle, box);
   }
 
@@ -552,11 +560,14 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
           if (x.empty || x.bad || !(x.n > 0)) return { error: { field: 'split' + i, message: '這一行的金額要大於 0' } };
           if (!FinMoney.fitsDecimals(x.n, dec)) return { error: { field: 'split' + i, message: `${f.sym} 最多 ${dec} 位小數` } };
           sum += Math.round(x.n * unit);
-          lines.push({ categoryId: ln.cat, amount: x.n });
+          if (String(ln.cat).startsWith('adv:')) lines.push({ kind: '代墊', dstAccount: ln.cat.slice(4), amount: x.n, note: String(ln.note || '').trim() });
+          else lines.push({ categoryId: ln.cat, amount: x.n });
         }
-        if (lines.length < 2) return { error: { field: 'splits', message: '拆帳至少要 2 個分類（只有一個分類就取消勾選）' } };
-        if (sum !== Math.round(a.n * unit)) return { error: { field: 'splits', message: '各分類金額加起來要等於上面的總金額' } };
-        const t = { ...base, categoryId: lines[0].categoryId, srcAccount: f.acct, srcSymbol: f.sym, srcQty: a.n, __splits: lines };
+        if (lines.length < 2) return { error: { field: 'splits', message: '拆帳至少要 2 行（只有一個分類就取消勾選）' } };
+        const own = lines.find((x) => x.kind !== '代墊');
+        if (!own) return { error: { field: 'splits', message: '至少要有一行是自己的消費（全部都是幫別人付的話，請改記「轉帳」到代墊帳戶）' } };
+        if (sum !== Math.round(a.n * unit)) return { error: { field: 'splits', message: '各行金額加起來要等於上面的總金額' } };
+        const t = { ...base, categoryId: own.categoryId, srcAccount: f.acct, srcSymbol: f.sym, srcQty: a.n, __splits: lines };
         return { tx: t };
       }
       if (!f.categoryId) return { error: { field: 'cat', message: '請選擇分類' } };
@@ -651,6 +662,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
         if (r && r.split) { // 拆帳：本機那一筆總額換成後端正式的多筆
           const i = state.data.recent.findIndex((t) => t.id === localTx.id);
           if (i >= 0) state.data.recent.splice(i, 1, ...r.split);
+          if (r.createdAccount && !state.data.accounts.some((a) => a.id === r.createdAccount.id)) state.data.accounts.push(r.createdAccount);
           return;
         }
         if (r && r.tx) { const i = state.data.recent.findIndex((t) => t.id === localTx.id); if (i >= 0) state.data.recent[i] = r.tx; }
@@ -664,7 +676,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     if (onDone && onDone !== refresh) { try { await onDone(); } catch (e) { /* 資料稍後會自動更新 */ } }
     if (cardPay) { toast(`已記錄繳款${res.txs && res.txs.length > 1 ? `（分攤到 ${res.txs.length} 張卡）` : ''}`); return; }
     const saved = res.tx;
-    const msgs = [editing ? '已儲存修改' : inst ? `已新增（分 ${inst.terms} 期）` : splits ? `已新增（拆成 ${splits.length} 個分類）` : '已新增'].concat(res.warnings || []);
+    const advN = splits ? splits.filter((x) => x.kind === '代墊').length : 0;
+    const msgs = [editing ? '已儲存修改' : inst ? `已新增（分 ${inst.terms} 期）` : advN ? `已新增（自己 ${splits.length - advN} 行、代墊 ${advN} 行${res.createdAccount ? '，已建立「代墊-同事」帳戶' : ''}）` : splits ? `已新增（拆成 ${splits.length} 個分類）` : '已新增'].concat(res.warnings || []);
     toast(msgs.join('　'), editing ? {} : { action: { label: '復原', fn: async () => {
       // 拆帳：整組一起作廢（畫面上先當成一筆總額還原）
       const undoLocal = splits ? Object.assign({}, localTx, { id: saved.id }) : saved;

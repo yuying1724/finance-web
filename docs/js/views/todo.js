@@ -4,14 +4,25 @@ import { state } from '../store.js';
 import { money } from '../fmt.js';
 import { pendingRow, groupPending, checkDividendsNow } from './recurring.js';
 import { cardRow, openPayForm } from './cards.js';
+import { openCollect } from './accounts.js';
 
 /**
  * 待辦頁：所有要你處理的事放在一起。
  *  - 現在要處理：日期已到（或已過）的待確認交易、已逾期或 7 天內到期的信用卡帳單
  *  - 還沒到日子：日期還沒到的待確認（例如股息預估下個月才發放，提前入帳也可以先確認）、7 天後才到期的信用卡帳單
+ *  - 代墊還沒收回：「應收」帳戶（例如「代墊-同事」）還有餘額，代表別人還欠你錢（不算進徽章，免得一直掛著數字）
  * 底部分頁的數字徽章只算「現在要處理」。
  */
 const CARD_SOON_DAYS = 7;
+
+/** 還有餘額（別人還欠你）的應收帳戶 */
+export function receivables() {
+  const d = state.data;
+  if (!d) return [];
+  return d.accounts.filter((a) => a.type === '應收' && a.active)
+    .map((a) => ({ account: a, items: d.balances.filter((b) => b.accountId === a.id && b.qty > 0) }))
+    .filter((x) => x.items.length);
+}
 
 export function todoBuckets() {
   const d = state.data;
@@ -50,6 +61,19 @@ function section(title, hint, cardItems, pendingGroups, testid) {
     n ? h('ul', { class: 'list' }, rows) : h('div', { class: 'muted', style: { padding: '8px 0' } }, title === '現在要處理' ? '目前沒有要處理的事' : '沒有'));
 }
 
+function receivableSection() {
+  const list = receivables();
+  if (!list.length) return null;
+  return h('div', { class: 'card', 'data-testid': 'todo-receivable' },
+    h('div', { class: 'card-title' }, h('h2', null, `代墊還沒收回（${list.length}）`)),
+    h('div', { class: 'muted small', style: { margin: '-4px 0 6px' } }, '別人還欠你的錢；對方還錢時按「收回」，選錢進到哪個帳戶'),
+    h('ul', { class: 'list' }, list.map((x) => h('li', null, h('div', { class: 'item' },
+      h('div', { class: 'ico' }, icon('arrowDownCircle')),
+      h('div', { class: 'grow' }, h('div', { class: 't' }, x.account.name)),
+      h('div', { class: 'amt', style: { marginRight: '8px' } }, x.items.map((b) => money(b.qty, b.symbol)).join('、')),
+      h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'todo-collect', onclick: () => openCollect(x.account) }, '收回'))))));
+}
+
 export function renderTodo(root) {
   const b = todoBuckets();
   const d = state.data;
@@ -58,6 +82,7 @@ export function renderTodo(root) {
     h('div', { class: 'page-head' }, h('h1', null, '待辦'),
       h('button', { class: 'btn btn-sm', 'data-testid': 'check-dividends', onclick: (e) => checkDividendsNow(e.currentTarget) }, icon('coin'), '檢查股息')),
     section('現在要處理', '日期到了的待確認，與 7 天內到期的信用卡帳單', b.nowC, b.nowP, 'todo-now'),
+    receivableSection(),
     section('還沒到日子', '預估日期還沒到，先不用處理；如果已經提前入帳，也可以先確認', b.laterC, b.laterP, 'todo-later'),
     total ? null : h('div', { class: 'muted small', style: { textAlign: 'center', marginTop: '8px' } }, `定期交易、薪資、股息到期時會自動出現在這裡（信用卡待繳合計 ${money(((d.cardOverview || {}).totalDue) || 0, d.base)}）`));
 }

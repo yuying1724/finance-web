@@ -111,12 +111,19 @@ function accountItem(a) {
     h('div', { class: 'amt' }, total === undefined ? '' : money(total, d.base, { whole: holdings.some((b) => b.symbol !== d.base) })));
 }
 
+/** 收回代墊：開一筆轉帳，轉出＝應收帳戶，轉入選錢實際進到哪裡；金額依對方還多少填（可以一個人一個人收） */
+export function openCollect(a) {
+  openTxForm({ preset: { type: '轉帳', acct: a.id, note: '收回代墊' } });
+}
+
 function openAccountDetail(a) {
   const d = state.data;
   const holdings = d.balances.filter((b) => b.accountId === a.id);
   const liabilityBtns = [];
   if (a.type === '信用卡') liabilityBtns.push(h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardStatement(a), 0); } }, '信用卡帳單'));
   if (a.type === '貸款') liabilityBtns.push(h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openLoanDetail(a), 0); } }, '還款明細'));
+  // 應收（例如「代墊-同事」）：對方還錢時按「收回」，記一筆從這個帳戶轉到收錢帳戶（LINE Pay、現金、銀行）的轉帳
+  if (a.type === '應收' && holdings.some((b) => b.qty > 0)) liabilityBtns.push(h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'collect-btn', onclick: () => { sheet.close(); setTimeout(() => openCollect(a), 0); } }, '收回（對方還錢）'));
   const sheet = openSheet({
     title: a.name,
     body: h('div', null,

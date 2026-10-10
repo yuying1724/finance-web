@@ -145,7 +145,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.28',
+    APP_VERSION: '0.9.29',
   };
   return api;
 })();
@@ -1215,7 +1215,7 @@ var FinCreditCard = (function () {
     return set;
   }
 
-  /** 某區間內：以這張卡（或同額度群組多張卡，cardAccountIds 可傳陣列）為來源的「支出」總額，扣掉退回的「退款」（不含還款轉帳，還款不算這期的消費） */
+  /** 某區間內：以這張卡（或同額度群組多張卡，cardAccountIds 可傳陣列）為來源的「支出」（含從卡片轉出的轉帳）總額，扣掉退回的「退款」（不含還款轉帳，還款不算這期的消費） */
   function periodSpend(txs, cardAccountIds, symbol, decimals, period, excludeTxIds) {
     var idSet = toIdSet(cardAccountIds);
     var spendUnits = 0, refundUnits = 0;
@@ -1224,7 +1224,8 @@ var FinCreditCard = (function () {
       var bd = billDate(t);
       if (t.status !== '有效' || bd < period.start || bd > period.end) continue;
       if (excludeTxIds && excludeTxIds[t.id]) continue; // 分期的原始消費：本期消費只算當期那一份（另外加）
-      if (t.type === '支出' && idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null) spendUnits += FinMoney.toUnits(t.srcQty, decimals);
+      // 支出，以及從卡片「轉出」的轉帳（例如幫同事代墊、預借現金）都算這張卡的消費；轉進卡片的才是還款
+      if ((t.type === '支出' || t.type === '轉帳') && idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null) spendUnits += FinMoney.toUnits(t.srcQty, decimals);
       else if (t.type === '退款' && idSet[t.dstAccount] && t.dstSymbol === symbol && t.dstQty !== null) refundUnits += FinMoney.toUnits(t.dstQty, decimals);
     }
     return FinMoney.fromUnits(spendUnits - refundUnits, decimals);
@@ -3000,29 +3001,45 @@ var FinApi = (function () {
           if (!feeRes.ok) throw FinFail('VALIDATION', '手續費：' + (feeRes.errors[0] || {}).message, { errors: feeRes.errors.map(function (e) { return { field: 'feeAmount', message: e.message }; }), warnings: [] });
           feeTx = feeRes.tx;
         }
-        // 拆帳：一次刷卡（同帳戶、同日期）拆成好幾個分類，各記一筆「支出」、同一個群組；各行金額加起來要剛好等於總額
+        // 拆帳：一次刷卡（同帳戶、同日期）拆成好幾個分類，各記一筆「支出」、同一個群組；各行金額加起來要剛好等於總額。
+        // 某一行是「幫別人代墊」（kind: '代墊'）時，那一行記成「轉帳」到應收帳戶（例如「代墊-同事」），之後對方還錢再從應收帳戶轉出
+        var createdAccount = null;
         if (Array.isArray(p.splits) && p.splits.length) {
           if (t.type !== '支出') throw FinFail('VALIDATION', '只有「支出」可以拆帳', { errors: [{ field: 'splits', message: '只有支出可以拆帳' }], warnings: [] });
           if (p.splits.length < 2 || p.splits.length > 10) throw FinFail('VALIDATION', '拆帳請分成 2～10 個分類', { errors: [{ field: 'splits', message: '拆帳請分成 2～10 個分類' }], warnings: [] });
           var sInst = c.instruments[t.srcSymbol], sDec = sInst ? sInst.decimals : 0;
           var legs = [], sumUnits = 0;
+          var hasExpense = p.splits.some(function (sp) { return !(sp && sp.kind === '代墊'); });
+          if (!hasExpense) throw FinFail('VALIDATION', '全部都是代墊的話，請直接記一筆「轉帳」到代墊帳戶', { errors: [{ field: 'splits', message: '至少要有一行是自己的消費' }], warnings: [] });
           p.splits.forEach(function (sp, i) {
             var legIn = {};
             Object.keys(p.tx).forEach(function (k) { legIn[k] = p.tx[k]; });
             legIn.srcQty = sp && sp.amount; legIn.categoryId = sp && sp.categoryId;
             if (sp && str(sp.note)) legIn.note = str(sp.note);
+            if (sp && sp.kind === '代墊') {
+              var dstId = str(sp.dstAccount);
+              if (!dstId || dstId === '__new__') dstId = advanceAccount(c, env, createdAccount, function (a) { createdAccount = a; }).id;
+              var da = c.accounts[dstId];
+              if (!da || da.type !== '應收') throw FinFail('VALIDATION', '第 ' + (i + 1) + ' 行：代墊要選「應收」類型的帳戶', { errors: [{ field: 'split' + i + 'Cat', message: '代墊要選應收帳戶' }], warnings: [] });
+              legIn.type = '轉帳'; legIn.categoryId = ''; legIn.dstAccount = dstId; legIn.dstSymbol = legIn.srcSymbol; legIn.dstQty = legIn.srcQty;
+            }
             var lr = FinValidate.validateTransaction(legIn, validationCtx(c, null));
-            if (!lr.ok) throw FinFail('VALIDATION', '第 ' + (i + 1) + ' 行：' + (lr.errors[0] || {}).message, { errors: lr.errors.map(function (e) { return { field: 'split' + i + (e.field === 'categoryId' ? 'Cat' : 'Amt'), message: e.message }; }), warnings: [] });
+            if (!lr.ok) throw FinFail('VALIDATION', '第 ' + (i + 1) + ' 行：' + (lr.errors[0] || {}).message, { errors: lr.errors.map(function (e) { return { field: 'split' + i + (e.field === 'categoryId' || e.field === 'dstAccount' ? 'Cat' : 'Amt'), message: e.message }; }), warnings: [] });
+            if (lr.tx.type === '轉帳' && p.tx.settleDate) lr.tx.settleDate = str(p.tx.settleDate); // 信用卡入帳日跟同一次刷卡一致
             sumUnits += FinMoney.toUnits(lr.tx.srcQty, sDec);
             legs.push(lr.tx);
           });
           if (sumUnits !== FinMoney.toUnits(t.srcQty, sDec)) throw FinFail('VALIDATION', '各分類金額加起來（' + FinMoney.fromUnits(sumUnits, sDec) + '）要等於總額 ' + t.srcQty, { errors: [{ field: 'splits', message: '各分類金額加起來要等於總額' }], warnings: [] });
+          if (createdAccount) {
+            FinRepo.append('accounts', [createdAccount]);
+            FinRepo.audit('新增', 'accounts', createdAccount.id, createdAccount.name + '（代墊時自動建立）', env.device);
+          }
           var sIds = FinRepo.nextIds('transactions', legs.length);
           var sNow = ts(env.now);
           legs.forEach(function (lg, i) { lg.id = sIds[i]; lg.groupId = sIds[0]; lg.createdAt = sNow; lg.updatedAt = sNow; });
           FinRepo.append('transactions', legs);
           FinRepo.audit('新增', 'transactions', sIds[0], '拆帳 ' + legs.length + ' 筆：' + summarizeTx(t), env.device);
-          var sOut = { tx: pub(legs[0]), split: legs.map(pub), fee: null, warnings: res.warnings };
+          var sOut = { tx: pub(legs[0]), split: legs.map(pub), fee: null, warnings: res.warnings, createdAccount: createdAccount ? pub(createdAccount) : null };
           if (requestId) cachePut('req:' + requestId, JSON.stringify(sOut), 600);
           return sOut;
         }
@@ -3038,6 +3055,22 @@ var FinApi = (function () {
       });
     },
   };
+
+  /** 代墊用的應收帳戶：找名稱「代墊-同事」的應收帳戶（啟用中），沒有就準備一個新的（同一次拆帳只建一次） */
+  function advanceAccount(c, env, already, onCreate) {
+    if (already) return already;
+    var found = c.accountRows.filter(function (a) { return a.type === '應收' && a.active !== false && a.name === '代墊-同事'; })[0];
+    if (found) return found;
+    var maxSort = 0;
+    c.accountRows.forEach(function (x) { if (x.sort !== null && x.sort > maxSort) maxSort = x.sort; });
+    var now = ts(env.now);
+    var a = { id: FinRepo.nextIds('accounts', 1)[0], name: '代墊-同事', institution: '', type: '應收', defaultSymbol: c.base || 'TWD',
+      sort: maxSort + 10, active: true, note: '幫別人先付的錢，對方還錢時從這裡「收回」', createdAt: now, updatedAt: now };
+    // 先放在記憶體裡給驗證用，整筆拆帳都檢查通過後才真的寫進試算表（見 addTransaction）
+    c.accountRows.push(a); c.accounts[a.id] = a;
+    onCreate(a);
+    return a;
+  }
 
   function loadTxForWrite(c, id) {
     var row = FinRepo.findById('transactions', id);

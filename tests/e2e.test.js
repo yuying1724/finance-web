@@ -1016,6 +1016,74 @@ test('拆帳：一次刷卡拆成食材＋日用品，加總不對會擋；存�
   });
 });
 
+test('拆帳＋代墊：幫同事訂飲料，自己的算支出、其他的代墊到自動建立的「代墊-同事」；清單一列顯示含代墊；待辦可以收回', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    be.call('upsertAccount', { account: { name: '外送卡', type: '信用卡', defaultSymbol: 'TWD' } });
+    const lp = be.call('upsertAccount', { account: { name: '我的LINE Pay', type: '數位錢包', defaultSymbol: 'TWD' } }).data.account.id;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '400');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '外送卡' });
+    await page.check('[data-testid=split-toggle]');
+    await page.waitForSelector('[data-testid=split-box] [data-testid=split-cat]');
+    const cats = page.locator('[data-testid=split-cat]');
+    const optVal = async (label) => page.evaluate((l) => [...document.querySelector('[data-testid=split-cat]').options].find((o) => o.textContent === l).value, label);
+    // 全部選代墊會被擋
+    await cats.nth(0).selectOption('adv:__new__');
+    await cats.nth(1).selectOption('adv:__new__');
+    await page.locator('[data-testid=split-amt]').nth(0).fill('200');
+    await page.locator('[data-testid=split-rest]').nth(1).click();
+    await a.save();
+    await page.waitForSelector('.sheet [data-field=splits].err');
+    assert.match(await page.locator('.sheet [data-field=splits]').innerText(), /至少要有一行是自己的消費/);
+    await cats.nth(0).selectOption(await optVal('飲食 › 飲料點心'));
+    await page.locator('[data-testid=split-amt]').nth(0).fill('80');
+    await page.locator('[data-testid=split-rest]').nth(1).click();
+    assert.equal(await page.locator('[data-testid=split-who]').count(), 1, '只有代墊那行有「幫誰付」');
+    await page.fill('[data-testid=split-who]', '小王 80、小李 120、阿明 120');
+    assert.match(await page.locator('[data-testid=split-summary]').innerText(), /已分完[\s\S]*自己 NT\$80[\s\S]*代墊 NT\$320/);
+    await page.fill('input[placeholder^="例如：全聯"]', 'foodpanda');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    let legs = [];
+    for (let i = 0; i < 50 && legs.length < 2; i++) { await page.waitForTimeout(100); legs = be.call('listTransactions', { filters: { q: 'foodpanda' } }).data.items; }
+    assert.equal(legs.length, 2);
+    const adv = be.call('bootstrap').data.accounts.find((x) => x.name === '代墊-同事');
+    assert.ok(adv && adv.type === '應收');
+    const lent = legs.find((x) => x.type === '轉帳');
+    assert.deepEqual([lent.dstAccount, lent.srcQty, lent.note], [adv.id, 320, '小王 80、小李 120、阿明 120']);
+    // 交易清單：一列，含代墊
+    await a.tab('tx');
+    await page.waitForSelector('[data-testid=split-row]');
+    const rowText = await page.locator('[data-testid=split-row]').first().innerText();
+    assert.match(rowText, /foodpanda[\s\S]*含代墊[\s\S]*飲料點心、代墊 NT\$320/);
+    assert.match(rowText, /NT\$400/);
+    await page.click('[data-testid=split-row]');
+    await page.waitForSelector('[data-testid=split-detail]');
+    assert.match(await page.locator('[data-testid=split-leg-adv]').innerText(), /幫別人代墊 → 代墊-同事[\s\S]*小王/);
+    assert.match(await page.locator('[data-testid=split-detail]').innerText(), /自己的消費[\s\S]*NT\$80/);
+    await page.click('.sheet button[aria-label="關閉"]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    // 待辦：代墊還沒收回 → 收回 120 到 LINE Pay
+    await a.tab('todo');
+    await page.waitForSelector('[data-testid=todo-receivable]');
+    assert.match(await page.locator('[data-testid=todo-receivable]').innerText(), /代墊-同事[\s\S]*NT\$320/);
+    await page.click('[data-testid=todo-collect]');
+    await page.waitForSelector('.sheet select[aria-label="轉出帳戶"]');
+    assert.equal(await page.locator('.sheet select[aria-label="轉出帳戶"]').inputValue(), adv.id);
+    await page.selectOption('.sheet select[aria-label="轉入帳戶"]', lp);
+    await page.fill('input[aria-label="金額"]', '120');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    let bal = null;
+    for (let i = 0; i < 50; i++) { await page.waitForTimeout(100); bal = be.call('bootstrap').data.balances.find((x) => x.accountId === adv.id); if (bal && bal.qty === 200) break; }
+    assert.equal(bal.qty, 200);
+    assert.equal(be.call('bootstrap').data.balances.find((x) => x.accountId === lp).qty, 120);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

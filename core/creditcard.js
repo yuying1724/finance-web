@@ -74,7 +74,7 @@ var FinCreditCard = (function () {
     return set;
   }
 
-  /** 某區間內：以這張卡（或同額度群組多張卡，cardAccountIds 可傳陣列）為來源的「支出」總額，扣掉退回的「退款」（不含還款轉帳，還款不算這期的消費） */
+  /** 某區間內：以這張卡（或同額度群組多張卡，cardAccountIds 可傳陣列）為來源的「支出」（含從卡片轉出的轉帳）總額，扣掉退回的「退款」（不含還款轉帳，還款不算這期的消費） */
   function periodSpend(txs, cardAccountIds, symbol, decimals, period, excludeTxIds) {
     var idSet = toIdSet(cardAccountIds);
     var spendUnits = 0, refundUnits = 0;
@@ -83,7 +83,8 @@ var FinCreditCard = (function () {
       var bd = billDate(t);
       if (t.status !== '有效' || bd < period.start || bd > period.end) continue;
       if (excludeTxIds && excludeTxIds[t.id]) continue; // 分期的原始消費：本期消費只算當期那一份（另外加）
-      if (t.type === '支出' && idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null) spendUnits += FinMoney.toUnits(t.srcQty, decimals);
+      // 支出，以及從卡片「轉出」的轉帳（例如幫同事代墊、預借現金）都算這張卡的消費；轉進卡片的才是還款
+      if ((t.type === '支出' || t.type === '轉帳') && idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null) spendUnits += FinMoney.toUnits(t.srcQty, decimals);
       else if (t.type === '退款' && idSet[t.dstAccount] && t.dstSymbol === symbol && t.dstQty !== null) refundUnits += FinMoney.toUnits(t.dstQty, decimals);
     }
     return FinMoney.fromUnits(spendUnits - refundUnits, decimals);
