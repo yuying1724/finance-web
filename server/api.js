@@ -589,8 +589,9 @@ var FinApi = (function () {
           feeTx = feeRes.tx;
         }
         // 拆帳：一次刷卡（同帳戶、同日期）拆成好幾個分類，各記一筆「支出」、同一個群組；各行金額加起來要剛好等於總額。
-        // 某一行是「幫別人代墊」（kind: '代墊'）時，那一行記成「轉帳」到應收帳戶（例如「代墊-同事」），之後對方還錢再從應收帳戶轉出
-        var createdAccount = null;
+        // 某一行是「幫別人代墊」（kind: '代墊'）時，那一行記成「轉帳」到應收帳戶（例如「代墊款」），之後對方還錢再從應收帳戶轉出。
+        // dstAccount 是 '__new__' 時用 newAccountName（預設「代墊款」）找同名的應收帳戶，沒有就新建
+        var createdAccount = null, newAccts = {};
         if (Array.isArray(p.splits) && p.splits.length) {
           if (t.type !== '支出') throw FinFail('VALIDATION', '只有「支出」可以拆帳', { errors: [{ field: 'splits', message: '只有支出可以拆帳' }], warnings: [] });
           if (p.splits.length < 2 || p.splits.length > 10) throw FinFail('VALIDATION', '拆帳請分成 2～10 個分類', { errors: [{ field: 'splits', message: '拆帳請分成 2～10 個分類' }], warnings: [] });
@@ -605,7 +606,12 @@ var FinApi = (function () {
             if (sp && str(sp.note)) legIn.note = str(sp.note);
             if (sp && sp.kind === '代墊') {
               var dstId = str(sp.dstAccount);
-              if (!dstId || dstId === '__new__') dstId = advanceAccount(c, env, createdAccount, function (a) { createdAccount = a; }).id;
+              if (!dstId || dstId === '__new__') {
+                var nm = FinValidate.safeText(str(sp.newAccountName)).slice(0, 30) || '代墊款';
+                var aa = advanceAccount(c, env, nm, newAccts);
+                if (aa.__new) createdAccount = aa;
+                dstId = aa.id;
+              }
               var da = c.accounts[dstId];
               if (!da || da.type !== '應收') throw FinFail('VALIDATION', '第 ' + (i + 1) + ' 行：代墊要選「應收」類型的帳戶', { errors: [{ field: 'split' + i + 'Cat', message: '代墊要選應收帳戶' }], warnings: [] });
               legIn.type = '轉帳'; legIn.categoryId = ''; legIn.dstAccount = dstId; legIn.dstSymbol = legIn.srcSymbol; legIn.dstQty = legIn.srcQty;
@@ -618,6 +624,7 @@ var FinApi = (function () {
           });
           if (sumUnits !== FinMoney.toUnits(t.srcQty, sDec)) throw FinFail('VALIDATION', '各分類金額加起來（' + FinMoney.fromUnits(sumUnits, sDec) + '）要等於總額 ' + t.srcQty, { errors: [{ field: 'splits', message: '各分類金額加起來要等於總額' }], warnings: [] });
           if (createdAccount) {
+            delete createdAccount.__new;
             FinRepo.append('accounts', [createdAccount]);
             FinRepo.audit('新增', 'accounts', createdAccount.id, createdAccount.name + '（代墊時自動建立）', env.device);
           }
@@ -643,19 +650,21 @@ var FinApi = (function () {
     },
   };
 
-  /** 代墊用的應收帳戶：找名稱「代墊-同事」的應收帳戶（啟用中），沒有就準備一個新的（同一次拆帳只建一次） */
-  function advanceAccount(c, env, already, onCreate) {
-    if (already) return already;
-    var found = c.accountRows.filter(function (a) { return a.type === '應收' && a.active !== false && a.name === '代墊-同事'; })[0];
+  /** 代墊用的應收帳戶：找這個名稱的應收帳戶（啟用中），沒有就準備一個新的（同一次拆帳同名只建一次；一次拆帳最多新建一個） */
+  function advanceAccount(c, env, name, made) {
+    if (made[name]) return made[name];
+    var found = c.accountRows.filter(function (a) { return a.type === '應收' && a.active !== false && a.name === name; })[0];
     if (found) return found;
+    if (Object.keys(made).length) throw FinFail('VALIDATION', '一次拆帳只能新增一個代墊帳戶', { errors: [{ field: 'splits', message: '一次拆帳只能新增一個代墊帳戶' }], warnings: [] });
+    if (c.accountRows.some(function (a) { return a.name.toLowerCase() === name.toLowerCase(); })) throw FinFail('VALIDATION', '已經有叫「' + name + '」的帳戶（不是應收類型或已停用），請換個名稱', { errors: [{ field: 'splits', message: '帳戶名稱重複' }], warnings: [] });
     var maxSort = 0;
     c.accountRows.forEach(function (x) { if (x.sort !== null && x.sort > maxSort) maxSort = x.sort; });
     var now = ts(env.now);
-    var a = { id: FinRepo.nextIds('accounts', 1)[0], name: '代墊-同事', institution: '', type: '應收', defaultSymbol: c.base || 'TWD',
+    var a = { id: FinRepo.nextIds('accounts', 1)[0], name: name, institution: '', type: '應收', defaultSymbol: c.base || 'TWD',
       sort: maxSort + 10, active: true, note: '幫別人先付的錢，對方還錢時從這裡「收回」', createdAt: now, updatedAt: now };
     // 先放在記憶體裡給驗證用，整筆拆帳都檢查通過後才真的寫進試算表（見 addTransaction）
     c.accountRows.push(a); c.accounts[a.id] = a;
-    onCreate(a);
+    a.__new = true; made[name] = a;
     return a;
   }
 

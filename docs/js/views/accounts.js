@@ -122,7 +122,7 @@ function openAccountDetail(a) {
   const liabilityBtns = [];
   if (a.type === '信用卡') liabilityBtns.push(h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardStatement(a), 0); } }, '信用卡帳單'));
   if (a.type === '貸款') liabilityBtns.push(h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openLoanDetail(a), 0); } }, '還款明細'));
-  // 應收（例如「代墊-同事」）：對方還錢時按「收回」，記一筆從這個帳戶轉到收錢帳戶（LINE Pay、現金、銀行）的轉帳
+  // 應收（例如「代墊款」）：對方還錢時按「收回」，記一筆從這個帳戶轉到收錢帳戶（LINE Pay、現金、銀行）的轉帳
   if (a.type === '應收' && holdings.some((b) => b.qty > 0)) liabilityBtns.push(h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'collect-btn', onclick: () => { sheet.close(); setTimeout(() => openCollect(a), 0); } }, '收回（對方還錢）'));
   const sheet = openSheet({
     title: a.name,

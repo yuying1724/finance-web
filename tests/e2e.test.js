@@ -1016,7 +1016,7 @@ test('拆帳：一次刷卡拆成食材＋日用品，加總不對會擋；存�
   });
 });
 
-test('拆帳＋代墊：幫同事訂飲料，自己的算支出、其他的代墊到自動建立的「代墊-同事」；清單一列顯示含代墊；待辦可以收回', { skip }, async () => {
+test('拆帳＋代墊：幫朋友／同事訂飲料，自己的算支出、其他的代墊到自動建立的「代墊款」；清單一列顯示含代墊；待辦可以收回', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page, s } = a;
     const be = s.backend;
@@ -1042,6 +1042,7 @@ test('拆帳＋代墊：幫同事訂飲料，自己的算支出、其他的代�
     await page.locator('[data-testid=split-amt]').nth(0).fill('80');
     await page.locator('[data-testid=split-rest]').nth(1).click();
     assert.equal(await page.locator('[data-testid=split-who]').count(), 1, '只有代墊那行有「幫誰付」');
+    assert.equal(await page.locator('[data-testid=split-newacct]').inputValue(), '代墊款', '新代墊帳戶名稱預設「代墊款」，可以改');
     await page.fill('[data-testid=split-who]', '小王 80、小李 120、阿明 120');
     assert.match(await page.locator('[data-testid=split-summary]').innerText(), /已分完[\s\S]*自己 NT\$80[\s\S]*代墊 NT\$320/);
     await page.fill('input[placeholder^="例如：全聯"]', 'foodpanda');
@@ -1050,7 +1051,7 @@ test('拆帳＋代墊：幫同事訂飲料，自己的算支出、其他的代�
     let legs = [];
     for (let i = 0; i < 50 && legs.length < 2; i++) { await page.waitForTimeout(100); legs = be.call('listTransactions', { filters: { q: 'foodpanda' } }).data.items; }
     assert.equal(legs.length, 2);
-    const adv = be.call('bootstrap').data.accounts.find((x) => x.name === '代墊-同事');
+    const adv = be.call('bootstrap').data.accounts.find((x) => x.name === '代墊款');
     assert.ok(adv && adv.type === '應收');
     const lent = legs.find((x) => x.type === '轉帳');
     assert.deepEqual([lent.dstAccount, lent.srcQty, lent.note], [adv.id, 320, '小王 80、小李 120、阿明 120']);
@@ -1062,14 +1063,14 @@ test('拆帳＋代墊：幫同事訂飲料，自己的算支出、其他的代�
     assert.match(rowText, /NT\$400/);
     await page.click('[data-testid=split-row]');
     await page.waitForSelector('[data-testid=split-detail]');
-    assert.match(await page.locator('[data-testid=split-leg-adv]').innerText(), /幫別人代墊 → 代墊-同事[\s\S]*小王/);
+    assert.match(await page.locator('[data-testid=split-leg-adv]').innerText(), /幫別人代墊 → 代墊款[\s\S]*小王/);
     assert.match(await page.locator('[data-testid=split-detail]').innerText(), /自己的消費[\s\S]*NT\$80/);
     await page.click('.sheet button[aria-label="關閉"]');
     await page.waitForSelector('.sheet', { state: 'detached' });
     // 待辦：代墊還沒收回 → 收回 120 到 LINE Pay
     await a.tab('todo');
     await page.waitForSelector('[data-testid=todo-receivable]');
-    assert.match(await page.locator('[data-testid=todo-receivable]').innerText(), /代墊-同事[\s\S]*NT\$320/);
+    assert.match(await page.locator('[data-testid=todo-receivable]').innerText(), /代墊款[\s\S]*NT\$320/);
     await page.click('[data-testid=todo-collect]');
     await page.waitForSelector('.sheet select[aria-label="轉出帳戶"]');
     assert.equal(await page.locator('.sheet select[aria-label="轉出帳戶"]').inputValue(), adv.id);

@@ -50,7 +50,7 @@ test('拆帳：拆成多筆同群組支出，金額加總要等於總額；帳�
   assert.equal(b.call('addTransaction', { tx: { type: '收入', date: '2026-10-10', dstAccount: bank, dstSymbol: 'TWD', dstQty: 100, categoryId: inc }, splits: [{ categoryId: inc, amount: 50 }, { categoryId: inc, amount: 50 }] }).error.code, 'VALIDATION');
 });
 
-test('拆帳＋代墊：自己的算支出、幫同事付的轉到應收帳戶（沒有就自動建「代墊-同事」）；卡片帳單算全額；同事還錢從應收轉出', () => {
+test('拆帳＋代墊：自己的算支出、幫別人付的轉到應收帳戶（沒有就自動建「代墊款」）；卡片帳單算全額；對方還錢從應收轉出', () => {
   const b = loadBackend().setup();
   b.mock.state.clock.now = new Date('2026-10-10T18:00:00+08:00').getTime(); b.login();
   const card = b.call('upsertAccount', { account: { name: 'J卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
@@ -68,12 +68,12 @@ test('拆帳＋代墊：自己的算支出、幫同事付的轉到應收帳戶�
   // 加總錯的時候不會先建帳戶
   r = b.call('addTransaction', { tx: base, splits: [{ categoryId: drink, amount: 80 }, { kind: '代墊', amount: 300, dstAccount: '__new__' }] });
   assert.equal(r.error.code, 'VALIDATION');
-  assert.ok(!b.call('bootstrap').data.accounts.find((a) => a.name === '代墊-同事'), '驗證失敗不建帳戶');
+  assert.ok(!b.call('bootstrap').data.accounts.find((a) => a.name === '代墊款'), '驗證失敗不建帳戶');
   // 正確
   r = b.call('addTransaction', { tx: base, splits: [{ categoryId: drink, amount: 80 }, { kind: '代墊', amount: 320, dstAccount: '__new__', note: '小王 80、小李 120、阿明 120' }] });
   assert.ok(r.ok, JSON.stringify(r));
   const adv = r.data.createdAccount;
-  assert.equal(adv.name, '代墊-同事'); assert.equal(adv.type, '應收');
+  assert.equal(adv.name, '代墊款'); assert.equal(adv.type, '應收');
   const [own, lent] = r.data.split;
   assert.deepEqual([own.type, own.srcQty, own.categoryId], ['支出', 80, drink]);
   assert.deepEqual([lent.type, lent.srcAccount, lent.dstAccount, lent.dstQty, lent.categoryId, lent.note, lent.merchant], ['轉帳', card, adv.id, 320, '', '小王 80、小李 120、阿明 120', 'foodpanda']);
@@ -89,7 +89,18 @@ test('拆帳＋代墊：自己的算支出、幫同事付的轉到應收帳戶�
   assert.ok(r.ok, JSON.stringify(r));
   assert.equal(r.data.createdAccount, null);
   assert.equal(r.data.split[1].dstAccount, adv.id);
-  assert.equal(b.call('bootstrap').data.accounts.filter((a) => a.name === '代墊-同事').length, 1);
+  assert.equal(b.call('bootstrap').data.accounts.filter((a) => a.name === '代墊款').length, 1);
+  let rf;
+  // 自己取名的代墊帳戶（朋友）：另外建一個；名稱跟其他類型的帳戶重複會擋
+  rf = b.call('addTransaction', { tx: Object.assign({}, base, { srcQty: 300 }), splits: [{ categoryId: drink, amount: 100 }, { kind: '代墊', amount: 200, dstAccount: '__new__', newAccountName: 'LINE Pay' }] });
+  assert.equal(rf.error.code, 'VALIDATION'); assert.match(rf.error.message, /換個名稱/);
+  rf = b.call('addTransaction', { tx: Object.assign({}, base, { srcQty: 300, date: '2026-10-09' }), splits: [{ categoryId: drink, amount: 100 }, { kind: '代墊', amount: 200, dstAccount: '__new__', newAccountName: '代墊-朋友' }] });
+  assert.ok(rf.ok, JSON.stringify(rf));
+  assert.equal(rf.data.createdAccount.name, '代墊-朋友');
+  const friend = rf.data.createdAccount.id;
+  assert.equal(b.call('bootstrap').data.balances.find((x) => x.accountId === friend).qty, 200);
+  assert.equal(b.call('addTransaction', { tx: Object.assign({}, base, { srcQty: 300 }), splits: [{ categoryId: drink, amount: 100 }, { kind: '代墊', amount: 100, dstAccount: '__new__', newAccountName: 'A' }, { kind: '代墊', amount: 100, dstAccount: '__new__', newAccountName: 'B' }] }).error.code, 'VALIDATION', '一次只能新建一個');
+  b.call('voidTransaction', { id: rf.data.split[0].id, wholeGroup: true, expectedUpdatedAt: rf.data.split[0].updatedAt });
   // 同事還錢：應收 → LINE Pay
   assert.ok(b.call('addTransaction', { tx: { type: '轉帳', date: '2026-10-11', srcAccount: adv.id, srcSymbol: 'TWD', srcQty: 120, dstAccount: linePay, dstSymbol: 'TWD', dstQty: 120, note: '小李還' } }).ok);
   b.mock.state.clock.now = new Date('2026-10-11T18:00:00+08:00').getTime(); b.login();
