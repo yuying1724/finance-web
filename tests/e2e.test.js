@@ -1378,20 +1378,35 @@ test('定期頁分組：收入／支出／轉帳分組並寫每月約多少（�
     assert.match(await page.locator('[data-testid=recurring-overview]').innerText(), /每月固定收支[\s\S]*固定收入[\s\S]*固定支出[\s\S]*差額/);
     assert.match(await page.locator('[data-testid=recurring-next]').innerText(), /下一筆：/);
     for (const g of ['income', 'expense', 'transfer', 'inactive']) assert.equal(await page.locator(`[data-testid=rec-group][data-group="${g}"]`).count(), 1, g);
-    // 支出小組：醫療保健（保險 12,000/年 → 每月約 1,000），預設收合，點開看到範本
+    // 支出小組：醫療保健（保險 12,000/年 → 每月約 1,000），預設展開；點標題收合；「全部收合／全部展開」
     const med = page.locator('[data-testid=rec-group][data-group="expense:醫療保健"]');
     assert.match(await med.innerText(), /醫療保健[\s\S]*1 筆[\s\S]*每月約 NT\$1,000/);
-    assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-保險"]').count(), 0, '小組預設收合');
+    await page.waitForSelector('[data-testid=recurring-item][data-name="分組-保險"]');
     await med.click();
+    assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-保險"]').count(), 0, '點標題收合');
+    await page.click('[data-testid=rec-sub-all]'); // 有一組收合 → 全部收合
+    assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-手機"]').count(), 0);
+    assert.equal(await page.locator('[data-testid=rec-sub-all]').innerText(), '全部展開');
+    await page.click('[data-testid=rec-sub-all]');
     await page.waitForSelector('[data-testid=recurring-item][data-name="分組-保險"]');
     assert.match(await page.locator('[data-testid=recurring-item][data-name="分組-保險"]').innerText(), /每年・\d+號 · 提醒確認[\s\S]*NT\$12,000 · 下次/);
     // 停用的在最後、預設收合
     assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-停用的"]').count(), 0);
     await page.click('[data-testid=rec-group][data-group="inactive"]');
     await page.waitForSelector('[data-testid=recurring-item][data-name="分組-停用的"]');
-    // 收合收入
+    // 收合收入；重新整理後還記得
     await page.click('[data-testid=rec-group][data-group="income"]');
     assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-本薪"]').count(), 0);
+    await page.reload(); await page.waitForSelector('.tabbar'); await a.tab('recurring');
+    await page.waitForSelector('[data-testid=recurring-overview]');
+    assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-本薪"]').count(), 0, '收合狀態有記住');
+    // 依日期：本月（3 天後的）／一年內（保險每年，起始 3 天後所以也在本月或下個月）
+    await page.click('[data-testid=rec-view] button[data-view=date]');
+    await page.waitForSelector('[data-testid=rec-date-group]');
+    const firstBucket = await page.locator('[data-testid=rec-date-group]').first().innerText();
+    assert.match(firstBucket, /(本月|下個月)[\s\S]*分組-/);
+    assert.match(await page.locator('.main').innerText(), /分組-本薪[\s\S]*\+NT\$50,000/);
+    assert.match(await page.locator('.main').innerText(), /另有 1 個已停用的範本/);
   });
 });
 

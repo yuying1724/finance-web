@@ -55,7 +55,7 @@ export function renderRecurring(root) {
   const draw = () => mount(root, h('div', { class: 'page-head' }, h('h1', null, '定期'),
     h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'add-recurring', onclick: () => openRecurringForm({}) }, icon('plus'), '新增')),
   pendingLink,
-  templates.length ? [overviewCard(templates), ...groupCards(templates, draw)] : h('div', { class: 'card muted' }, '還沒有定期範本'));
+  templates.length ? [overviewCard(templates), viewSeg(draw), ...(UI.view === 'date' ? dateCards(templates) : groupCards(templates, draw))] : h('div', { class: 'card muted' }, '還沒有定期範本'));
   draw();
 }
 
@@ -67,10 +67,45 @@ const GROUPS = [
   { key: 'invest', label: '投資', types: ['買入', '賣出'] },
   { key: 'loan', label: '貸款', types: ['貸款還款'] },
 ];
-// 收合狀態（只在這次開啟期間記得）：大組預設展開、支出的小組預設收合
-const collapsed = new Set(['inactive']);
-const openSub = new Set();
-let revealId = ''; // 剛新增／修改的範本：自動展開它所在的小組
+// 畫面狀態：檢視方式（依分類／依日期）、哪些組收合；記在這台裝置（瀏覽器存不了也沒關係，就用預設）
+const UI_KEY = 'fin.recurring.ui';
+const UI = (() => {
+  const def = { view: 'cat', collapsed: ['inactive'], subClosed: [] };
+  try { const v = JSON.parse(localStorage.getItem(UI_KEY) || 'null'); return v && typeof v === 'object' ? Object.assign(def, v) : def; } catch (e) { return def; }
+})();
+const collapsed = new Set(UI.collapsed); // 收合的大組（預設只有「已停用」）
+const subClosed = new Set(UI.subClosed); // 收合的支出小組（預設全部展開）
+function saveUI() {
+  UI.collapsed = [...collapsed]; UI.subClosed = [...subClosed];
+  try { localStorage.setItem(UI_KEY, JSON.stringify(UI)); } catch (e) { /* 無痕模式等存不了就算了 */ }
+}
+let revealId = ''; // 剛新增／修改的範本：自動展開它所在的組
+
+function viewSeg(redraw) {
+  return h('div', { class: 'seg', style: { marginTop: '12px' }, 'data-testid': 'rec-view' },
+    [['cat', '依分類'], ['date', '依日期']].map(([v, t]) => h('button', { type: 'button', class: UI.view === v ? 'on' : '', 'data-view': v, onclick: () => { UI.view = v; saveUI(); redraw(); } }, t)));
+}
+
+/** 依日期：每個範本依「下一次」放進本月／下個月／之後…，快到的在前 */
+function dateCards(templates) {
+  const d = state.data, today = d.today, ym = today.slice(0, 7);
+  const act = templates.filter((t) => t.active).sort(byNext);
+  const monthsAhead = (date) => { const y = Number(date.slice(0, 4)) - Number(ym.slice(0, 4)); return y * 12 + Number(date.slice(5, 7)) - Number(ym.slice(5, 7)); };
+  const label = (n) => (n <= 0 ? `本月（${Number(ym.slice(5))} 月）` : n === 1 ? `下個月（${Number(FinDates.addMonths(ym, 1).slice(5))} 月）` : n <= 3 ? '2～3 個月內' : n <= 6 ? '半年內' : n <= 12 ? '一年內' : '一年以後');
+  const buckets = new Map();
+  act.forEach((t) => {
+    const n = nextOf(t);
+    const key = n ? label(monthsAhead(n.date)) : '沒有下一次（已結束或日期推算不到）';
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(t);
+  });
+  const cards = [...buckets.entries()].map(([k, list]) => h('div', { class: 'card', style: { marginTop: '12px' }, 'data-testid': 'rec-date-group', 'data-bucket': k },
+    h('div', { class: 'rec-group-head', style: { cursor: 'default' } }, h('span', { class: 'grow' }, h('span', { style: { fontWeight: 650 } }, k), h('span', { class: 'muted small', style: { marginLeft: '6px' } }, `${list.length} 筆`))),
+    h('ul', { class: 'list' }, list.map((t) => h('li', null, templateRow(t))))));
+  const off = templates.filter((t) => !t.active);
+  if (off.length) cards.push(h('div', { class: 'muted small', style: { margin: '10px 4px' } }, `另有 ${off.length} 個已停用的範本，在「依分類」最下面`));
+  return cards;
+}
 
 function nextOf(t) { return (state.data.recurringNext || {})[t.id] || null; }
 function amountOf(t) {
@@ -134,7 +169,7 @@ function groupHead(key, title, count, sub, isOpen, onToggle, level) {
 function groupCards(templates, redraw) {
   const d = state.data, base = d.base;
   const act = templates.filter((t) => t.active), off = templates.filter((t) => !t.active);
-  const toggle = (set, key) => () => { if (set === collapsed) { if (set.has(key)) set.delete(key); else set.add(key); } else if (set.has(key)) set.delete(key); else set.add(key); redraw(); };
+  const toggle = (set, key) => () => { if (set.has(key)) set.delete(key); else set.add(key); saveUI(); redraw(); };
   const cards = [];
   GROUPS.forEach((g) => {
     const list = act.filter((t) => g.types.includes(t.type)).sort(byNext);
@@ -146,10 +181,14 @@ function groupCards(templates, redraw) {
       const byParent = new Map();
       list.forEach((t) => { const c = categoryInfo(t.categoryId); const pid = String(c.name || '未分類').split(' › ')[0]; if (!byParent.has(pid)) byParent.set(pid, []); byParent.get(pid).push(t); });
       const subs = [...byParent.entries()].map(([name, items]) => ({ name, items, m: sumMonthly(items).sum })).sort((a, b) => b.m - a.m);
-      if (revealId) { const hit = subs.find((sg) => sg.items.some((t) => t.id === revealId)); if (hit) openSub.add('expense:' + hit.name); revealId = ''; }
-      body = h('div', null, subs.map((sg) => {
-        const k = 'expense:' + sg.name, so = openSub.has(k);
-        return h('div', { class: 'rec-sub' }, groupHead(k, sg.name, sg.items.length, monthlyText(sg.items, base), so, toggle(openSub, k), 1),
+      if (revealId) { const hit = subs.find((sg) => sg.items.some((t) => t.id === revealId)); if (hit) { subClosed.delete('expense:' + hit.name); saveUI(); } revealId = ''; }
+      const keys = subs.map((sg) => 'expense:' + sg.name);
+      const allClosed = keys.every((k) => subClosed.has(k));
+      const tools = subs.length > 1 ? h('div', { style: { textAlign: 'right', marginTop: '2px' } }, h('button', { type: 'button', class: 'link-btn small', 'data-testid': 'rec-sub-all',
+        onclick: () => { keys.forEach((k) => { if (allClosed) subClosed.delete(k); else subClosed.add(k); }); saveUI(); redraw(); } }, allClosed ? '全部展開' : '全部收合')) : null;
+      body = h('div', null, tools, subs.map((sg) => {
+        const k = 'expense:' + sg.name, so = !subClosed.has(k);
+        return h('div', { class: 'rec-sub' }, groupHead(k, sg.name, sg.items.length, monthlyText(sg.items, base), so, toggle(subClosed, k), 1),
           so ? h('ul', { class: 'list' }, sg.items.map((t) => h('li', null, templateRow(t)))) : null);
       }));
     } else if (isOpen) body = h('ul', { class: 'list' }, list.map((t) => h('li', null, templateRow(t))));
@@ -420,7 +459,7 @@ function templateRow(t) {
     h('button', { type: 'button', class: 'grow rec-row-main', 'aria-label': `編輯 ${t.name}`, 'data-testid': 'recurring-edit', onclick: () => openRecurringForm({ recurring: t }) },
       h('div', { class: 't' }, t.name, t.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')),
       h('div', { class: 's' }, [freqLabel(t), t.mode].join(' · ')),
-      h('div', { class: 's' }, [a.amount === null ? '金額每次不同' : money(a.amount, a.symbol), nextTxt].filter(Boolean).join(' · '))),
+      h('div', { class: 's' }, [a.amount === null ? '金額每次不同' : ((t.type === '收入' || t.type === '股息') ? '+' : '') + money(a.amount, a.symbol), nextTxt].filter(Boolean).join(' · '))),
     h('button', { class: 'btn btn-sm ' + (t.active ? 'btn-danger' : ''), onclick: () => {
       // 樂觀更新：先在本機切換，背景送出，失敗自動還原
       patchRow('setRecurringActive', { id: t.id, active: !t.active }, { list: 'recurring', idField: 'id', id: t.id, patch: { active: !t.active }, toast: t.active ? '已停用' : '已啟用' });
@@ -540,7 +579,7 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
         if (recurring) payload.id = recurring.id;
         const r = await api.call('upsertRecurring', { recurring: payload, expectedUpdatedAt: recurring ? recurring.updatedAt : undefined });
         sheet.close();
-        revealId = r.recurring.id; collapsed.delete(GROUPS.find((g) => g.types.includes(r.recurring.type))?.key || '');
+        revealId = r.recurring.id; collapsed.delete(GROUPS.find((g) => g.types.includes(r.recurring.type))?.key || ''); saveUI();
         mergeRow('recurring', 'id', r.recurring); refreshInBackground();
         if (onDone) await onDone();
         toast(editing ? '已儲存修改' : '已新增定期範本');
