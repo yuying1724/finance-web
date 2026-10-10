@@ -6,8 +6,9 @@ import { money, dateLabel, categoryInfo, sortCategories } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
 import { write, mergeRow, refreshInBackground, patchRow } from '../data.js';
 
-const FREQS = ['每週', '每月', '每季', '每年', '每N天'];
-const ANCHORS = { 固定: '固定：從起始日起每 N 天', 實際日期: '從實際付款日起算（晚付也沒關係）' };
+const FREQS = ['每週', '每月', '每N個月', '每季', '每年', '每N天'];
+const ANCHORS = { 固定: '固定：從起始日起算', 實際日期: '從實際付款日起算（晚付也沒關係）' };
+const isInterval = (fr) => fr === '每N天' || fr === '每N個月';
 const HOLIDAYS = ['順延', '提前', '不調整'];
 const MODES = ['自動入帳', '提醒確認', '券商定期定額', '手動下單'];
 const TYPES = ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '貸款還款'];
@@ -123,6 +124,7 @@ function timesPerYear(t) {
   if (t.freq === '每季') return 4 * n;
   if (t.freq === '每年') return n;
   if (t.freq === '每N天') return 365 / (Number(t.days) || 30);
+  if (t.freq === '每N個月') return 12 / (Number(t.days) || 1);
   return 12;
 }
 /** 每月約多少（基準幣別）；金額未定或外幣就回 null */
@@ -330,7 +332,7 @@ function openSimpleConfirm(group) {
   } else {
     const dateInput = h('input', { type: 'date', value: f.date, onchange: (e) => { f.date = e.target.value; } });
     const parts = [fld('date', first.anchor === '實際日期' ? '實際付款日' : '日期', dateInput,
-      first.anchor === '實際日期' ? `下一次會從這天起算 ${first.intervalDays || 'N'} 天` : null)];
+      first.anchor === '實際日期' ? `下一次會從這天起算 ${first.intervalLabel || (first.intervalDays ? first.intervalDays + ' 天' : 'N 天')}` : null)];
     if (first.type === '收入' || first.type === '支出') {
       // 可以換成這次實際付款（入帳）的帳戶，預設是範本設定的帳戶
       const key = first.type === '支出' ? 'srcAccount' : 'dstAccount';
@@ -445,6 +447,7 @@ function openTradeConfirm(item) {
 
 function freqLabel(t) {
   if (t.freq === '每N天') return `每 ${t.days} 天${t.anchor === '實際日期' ? '（從實際付款日起算）' : ''}`;
+  if (t.freq === '每N個月') return `每 ${t.days} 個月${t.anchor === '實際日期' ? '（從實際付款日起算）' : `・${Number(String(t.startDate || '').slice(8, 10)) || ''}號`}`;
   return `${t.freq}・${t.days}號`;
 }
 
@@ -511,11 +514,12 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
       fld('type', '類型', h('select', { onchange: (e) => { f.type = e.target.value; draw(); } }, TYPES.map((t) => h('option', { value: t, selected: t === f.type }, t)))),
       fld('mode', '執行方式', h('select', { onchange: (e) => { f.mode = e.target.value; draw(); } }, MODES.map((m) => h('option', { value: m, selected: m === f.mode }, m))), MODE_HINT[f.mode]),
       fld('freq', '頻率', h('select', { 'data-testid': 'recurring-freq', onchange: (e) => { f.freq = e.target.value; draw(); } }, FREQS.map((fr) => h('option', { value: fr, selected: fr === f.freq }, fr)))),
-      fld('days', f.freq === '每週' ? '星期幾（0＝週日，可填多個，用逗號分隔）' : f.freq === '每N天' ? '每幾天一次（例如 31）' : '執行日（可填多個，用逗號分隔，例如 6,16,26）', h('input', { type: 'text', inputmode: f.freq === '每N天' ? 'numeric' : 'text', value: f.days, oninput: (e) => { f.days = e.target.value; } }),
-        f.freq === '每N天' ? '第一次是「起始日」，之後每隔這麼多天一次，不管大小月' : null),
-      f.freq === '每N天' ? fld('anchor', '下一次怎麼算', h('select', { 'data-testid': 'recurring-anchor', onchange: (e) => { f.anchor = e.target.value; if (f.anchor === '實際日期') f.mode = '提醒確認'; draw(); } },
+      fld('days', f.freq === '每週' ? '星期幾（0＝週日，可填多個，用逗號分隔）' : f.freq === '每N天' ? '每幾天一次（例如 31）' : f.freq === '每N個月' ? '每幾個月一次（例如 2＝兩個月一次、6＝半年一次）' : '執行日（可填多個，用逗號分隔，例如 6,16,26）', h('input', { type: 'text', inputmode: isInterval(f.freq) ? 'numeric' : 'text', value: f.days, 'data-testid': 'recurring-days', oninput: (e) => { f.days = e.target.value; } }),
+        f.freq === '每N天' ? '第一次是「起始日」，之後每隔這麼多天一次，不管大小月'
+          : f.freq === '每N個月' ? '第一次是「起始日」，之後每隔這麼多個月的同一天（例如起始日 1/29、每 6 個月 → 1/29、7/29）；遇到小月取月底' : null),
+      isInterval(f.freq) ? fld('anchor', '下一次怎麼算', h('select', { 'data-testid': 'recurring-anchor', onchange: (e) => { f.anchor = e.target.value; if (f.anchor === '實際日期') f.mode = '提醒確認'; draw(); } },
         Object.keys(ANCHORS).map((k) => h('option', { value: k, selected: k === (f.anchor || '固定') }, ANCHORS[k]))),
-        (f.anchor || '固定') === '實際日期' ? '到期產生「待確認」；還沒付就按「延後」，付了按確認並填實際日期，下一次從那天再算；這次不買就按「略過」，從略過那天再算。' : '例如 App 每 31 天扣款一次') : null,
+        (f.anchor || '固定') === '實際日期' ? '到期產生「待確認」；還沒付就按「延後」，付了按確認並填實際日期，下一次從那天再算；這次不買就按「略過」，從略過那天再算。' : f.freq === '每N個月' ? '例如房租每半年 1/29 繳' : '例如 App 每 31 天扣款一次') : null,
       fld('holiday', '假日處理', h('select', { onchange: (e) => { f.holiday = e.target.value; } }, HOLIDAYS.map((hh) => h('option', { value: hh, selected: hh === f.holiday }, hh)))),
       fld('startDate', '起始日', h('input', { type: 'date', value: f.startDate, onchange: (e) => { f.startDate = e.target.value; } })),
       fld('endDate', '結束日（選填）', h('input', { type: 'date', value: f.endDate, onchange: (e) => { f.endDate = e.target.value; } })),

@@ -15,7 +15,7 @@ var FinSchema = (function () {
     instrumentTypes: ['法幣', '台股', '美股', 'ETF', '加密', '點數'],
     txStatus: ['有效', '作廢', '待確認', '已略過'],
     categoryTypes: ['收入', '支出', '系統'],
-    recurFreq: ['每週', '每月', '每季', '每年', '每N天'],
+    recurFreq: ['每週', '每月', '每N個月', '每季', '每年', '每N天'],
     recurAnchor: ['固定', '實際日期'],
     recurMode: ['自動入帳', '提醒確認', '券商定期定額', '手動下單'],
     recurHoliday: ['順延', '提前', '不調整'],
@@ -100,7 +100,7 @@ var FinSchema = (function () {
         c('categoryId', '分類ID'), c('mode', '執行方式'), c('remindDays', '資金備妥提醒', 'num'), c('settleDays', '交割天數', 'num'),
         c('active', '啟用', 'bool'), c('lastRun', '上次執行日', 'date'), c('note', '備註'),
         c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts'),
-        // 2026-10-10 新增：「每N天」頻率的起算方式（固定＝從起始日每 N 天；實際日期＝從上一次實際付款／略過的日子再算 N 天）
+        // 2026-10-10 新增：「每N天」頻率的起算方式（固定＝從起始日每 N 天；實際日期＝從上一次實際付款／略過的日子再算 N 天）；2026-10-11 起「每N個月」也適用
         c('anchor', '起算方式')],
     },
     prices: {
@@ -145,7 +145,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.39',
+    APP_VERSION: '0.9.40',
   };
   return api;
 })();
@@ -446,8 +446,11 @@ var FinRecurring = (function () {
         p = FinDates.addDays(p, n);
         if (++guard > 3660) throw new Error('定期範圍推算超出範圍');
       }
-    } else if (tpl.freq === '每季' || tpl.freq === '每年') {
-      var step = tpl.freq === '每季' ? 3 : 12;
+    } else if (tpl.freq === '每季' || tpl.freq === '每年' || tpl.freq === '每N個月') {
+      // 每N個月：N 放在執行日欄位，日子跟著起始日的「幾號」（例如起始日 1/29、每 6 個月 → 1/29、7/29）
+      var nMonths = tpl.freq === '每N個月' ? intervalMonths(tpl) : 0;
+      if (tpl.freq === '每N個月' && (!nMonths || !tpl.startDate)) return out;
+      var step = tpl.freq === '每季' ? 3 : tpl.freq === '每年' ? 12 : nMonths;
       var anchorYm = FinDates.ymOf(tpl.startDate || FinDates.addDays(lowerBound, 1));
       var startYm2 = FinDates.ymOf(FinDates.addDays(lowerBound, 1));
       var ym2 = anchorYm;
@@ -457,7 +460,7 @@ var FinRecurring = (function () {
       var endYm2 = FinDates.ymOf(toInclusive);
       while (ym2 <= endYm2) {
         var y2 = +ym2.slice(0, 4), m2 = +ym2.slice(5, 7);
-        monthlyRawDates(tpl.days && tpl.days.length ? tpl.days : [fallbackDay], y2, m2).forEach(pushIfInRange);
+        monthlyRawDates(tpl.freq !== '每N個月' && tpl.days && tpl.days.length ? tpl.days : [fallbackDay], y2, m2).forEach(pushIfInRange);
         ym2 = FinDates.addMonths(ym2, step);
         if (++guard > 800) throw new Error('定期範圍推算超出範圍');
       }
@@ -479,8 +482,36 @@ var FinRecurring = (function () {
     return isFinite(n) && n >= 1 && n <= 366 ? n : 0;
   }
 
-  /** 是否為「從實際日期起算」的每N天範本 */
-  function isActualAnchored(tpl) { return tpl.freq === '每N天' && tpl.anchor === '實際日期'; }
+  /** 「每N個月」的 N（執行日欄位第一個數字，1～24），不合法回傳 0 */
+  function intervalMonths(tpl) {
+    var d = Array.isArray(tpl.days) ? tpl.days[0] : String(tpl.days || '').split(',')[0];
+    var n = Math.floor(Number(d));
+    return isFinite(n) && n >= 1 && n <= 24 ? n : 0;
+  }
+
+  /** 日期加 N 個月，遇到小月取月底（1/31 + 1 個月 → 2/28） */
+  function addMonthsToDate(date, n) {
+    var p = FinDates.parse(date);
+    if (!p) return date;
+    var ym = FinDates.addMonths(FinDates.ymOf(date), n);
+    var y = +ym.slice(0, 4), m = +ym.slice(5, 7);
+    return FinDates.format(y, m, Math.min(p.d, FinDates.daysInMonth(y, m)));
+  }
+
+  /** 間隔的說明文字：「30 天」「2 個月」 */
+  function intervalLabel(tpl) {
+    if (tpl.freq === '每N個月') { var m = intervalMonths(tpl); return m ? m + ' 個月' : ''; }
+    var d = intervalDays(tpl); return d ? d + ' 天' : '';
+  }
+
+  /** 範本的「下一次」：每N天加天數、每N個月加月數 */
+  function stepFrom(tpl, date) {
+    return tpl.freq === '每N個月' ? addMonthsToDate(date, intervalMonths(tpl)) : FinDates.addDays(date, intervalDays(tpl));
+  }
+  function hasInterval(tpl) { return tpl.freq === '每N個月' ? !!intervalMonths(tpl) : !!intervalDays(tpl); }
+
+  /** 是否為「從實際日期起算」的範本（每N天或每N個月） */
+  function isActualAnchored(tpl) { return (tpl.freq === '每N天' || tpl.freq === '每N個月') && tpl.anchor === '實際日期'; }
 
   /**
    * 「從實際日期起算」的下一次預定日：
@@ -490,8 +521,7 @@ var FinRecurring = (function () {
    * 作廢的不算。回傳 {planned} 或 {pending: 交易} 或 null（N 不合法）。
    */
   function actualAnchoredNext(tpl, txRows) {
-    var n = intervalDays(tpl);
-    if (!n) return null;
+    if (!hasInterval(tpl)) return null;
     var latest = null;
     (txRows || []).forEach(function (t) {
       if (t.recurringId !== tpl.id || t.status === '作廢') return;
@@ -501,7 +531,7 @@ var FinRecurring = (function () {
     if (latest.status === '待確認') return { pending: latest };
     var base = latest.status === '有效' ? latest.date : (String(latest.updatedAt || '').slice(0, 10) || latest.plannedDate);
     if (!FinDates.isValid(base)) base = latest.plannedDate;
-    var next = FinDates.addDays(base, n);
+    var next = stepFrom(tpl, base);
     // 預定日只會往後走：避免「確認日期比預定日還早」時算出比上一次預定日更早、和舊的那筆撞在一起
     if (latest.plannedDate && next <= latest.plannedDate) next = FinDates.addDays(latest.plannedDate, 1);
     return { planned: next };
@@ -511,11 +541,11 @@ var FinRecurring = (function () {
   function actualAnchoredProjection(tpl, txRows, fromExclusive, toInclusive, markets, holidaySet) {
     var nx = actualAnchoredNext(tpl, txRows);
     if (!nx || !nx.planned) return [];
-    var n = intervalDays(tpl), out = [], p = nx.planned, guard = 0;
+    var out = [], p = nx.planned, guard = 0;
     if (p <= fromExclusive) p = FinDates.addDays(fromExclusive, 1); // 已經到期但還沒產生（排程還沒跑）：當作今天
     while (p <= toInclusive) {
       if (!(tpl.endDate && p > tpl.endDate)) out.push({ planned: p, due: adjustForHoliday(p, tpl.holiday, markets, holidaySet) });
-      p = FinDates.addDays(p, n);
+      p = stepFrom(tpl, p);
       if (++guard > 400) break;
     }
     return out;
@@ -582,7 +612,7 @@ var FinRecurring = (function () {
     occurrences: occurrences, defaultSettleDays: defaultSettleDays, computeSettleDate: computeSettleDate,
     wasSettleDateAuto: wasSettleDateAuto, recalcSettleDateOnTradeChange: recalcSettleDateOnTradeChange,
     dedupKey: dedupKey, suggestedAmount: suggestedAmount,
-    intervalDays: intervalDays, isActualAnchored: isActualAnchored, actualAnchoredNext: actualAnchoredNext, actualAnchoredProjection: actualAnchoredProjection,
+    intervalDays: intervalDays, intervalMonths: intervalMonths, intervalLabel: intervalLabel, addMonthsToDate: addMonthsToDate, isActualAnchored: isActualAnchored, actualAnchoredNext: actualAnchoredNext, actualAnchoredProjection: actualAnchoredProjection,
     SUGGEST_THRESHOLD_PCT: SUGGEST_THRESHOLD_PCT, SUGGEST_STEP_RATIO: SUGGEST_STEP_RATIO,
   };
   return api;
@@ -2564,7 +2594,7 @@ var FinApi = (function () {
       o.templateName = tpl ? tpl.name : '';
       o.mode = tpl ? tpl.mode : '';
       o.anchor = tpl ? (tpl.anchor || '') : '';
-      if (tpl && FinRecurring.isActualAnchored(tpl)) o.intervalDays = FinRecurring.intervalDays(tpl);
+      if (tpl && FinRecurring.isActualAnchored(tpl)) { o.intervalDays = FinRecurring.intervalDays(tpl); o.intervalLabel = FinRecurring.intervalLabel(tpl); }
       if (t.type === '股息') {
         var di = c.instruments[t.relatedSymbol];
         o.relatedName = di ? di.name : '';
@@ -4008,7 +4038,8 @@ var FinApi = (function () {
     if (!daysArr.length) err('days', '請至少填一個執行日');
     else if (freq === '每週' && daysArr.some(function (d) { return d < 0 || d > 6; })) err('days', '每週頻率的執行日請填 0～6（0＝週日）');
     else if (freq === '每N天' && (daysArr.length !== 1 || daysArr[0] < 1 || daysArr[0] > 366 || Math.floor(daysArr[0]) !== daysArr[0])) err('days', '每幾天請填一個 1～366 的整數（例如 31）');
-    else if (freq !== '每週' && freq !== '每N天' && daysArr.some(function (d) { return d < 1 || d > 31; })) err('days', '執行日請填 1～31');
+    else if (freq === '每N個月' && (daysArr.length !== 1 || daysArr[0] < 1 || daysArr[0] > 24 || Math.floor(daysArr[0]) !== daysArr[0])) err('days', '每幾個月請填一個 1～24 的整數（例如 2）');
+    else if (freq !== '每週' && freq !== '每N天' && freq !== '每N個月' && daysArr.some(function (d) { return d < 1 || d > 31; })) err('days', '執行日請填 1～31');
     var holiday = str(a.holiday) || '順延';
     if (FinSchema.ENUMS.recurHoliday.indexOf(holiday) < 0) err('holiday', '假日處理請選擇：' + FinSchema.ENUMS.recurHoliday.join('、'));
     var startDate = str(a.startDate);
@@ -4076,7 +4107,7 @@ var FinApi = (function () {
     if (settleDays !== null && (!isFinite(settleDays) || settleDays < 0)) err('settleDays', '交割天數必須是不小於 0 的數字');
     var note = str(a.note);
     if (note.length > 200) err('note', '備註最多 200 字');
-    var anchor = freq === '每N天' ? (str(a.anchor) || '固定') : '';
+    var anchor = freq === '每N天' || freq === '每N個月' ? (str(a.anchor) || '固定') : '';
     if (anchor && FinSchema.ENUMS.recurAnchor.indexOf(anchor) < 0) err('anchor', '起算方式請選擇：' + FinSchema.ENUMS.recurAnchor.join('、'));
     if (anchor === '實際日期') {
       if (mode !== '提醒確認') err('anchor', '「從實際付款日起算」要搭配「提醒確認」（才知道你實際哪天付款）');

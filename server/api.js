@@ -151,7 +151,7 @@ var FinApi = (function () {
       o.templateName = tpl ? tpl.name : '';
       o.mode = tpl ? tpl.mode : '';
       o.anchor = tpl ? (tpl.anchor || '') : '';
-      if (tpl && FinRecurring.isActualAnchored(tpl)) o.intervalDays = FinRecurring.intervalDays(tpl);
+      if (tpl && FinRecurring.isActualAnchored(tpl)) { o.intervalDays = FinRecurring.intervalDays(tpl); o.intervalLabel = FinRecurring.intervalLabel(tpl); }
       if (t.type === '股息') {
         var di = c.instruments[t.relatedSymbol];
         o.relatedName = di ? di.name : '';
@@ -1595,7 +1595,8 @@ var FinApi = (function () {
     if (!daysArr.length) err('days', '請至少填一個執行日');
     else if (freq === '每週' && daysArr.some(function (d) { return d < 0 || d > 6; })) err('days', '每週頻率的執行日請填 0～6（0＝週日）');
     else if (freq === '每N天' && (daysArr.length !== 1 || daysArr[0] < 1 || daysArr[0] > 366 || Math.floor(daysArr[0]) !== daysArr[0])) err('days', '每幾天請填一個 1～366 的整數（例如 31）');
-    else if (freq !== '每週' && freq !== '每N天' && daysArr.some(function (d) { return d < 1 || d > 31; })) err('days', '執行日請填 1～31');
+    else if (freq === '每N個月' && (daysArr.length !== 1 || daysArr[0] < 1 || daysArr[0] > 24 || Math.floor(daysArr[0]) !== daysArr[0])) err('days', '每幾個月請填一個 1～24 的整數（例如 2）');
+    else if (freq !== '每週' && freq !== '每N天' && freq !== '每N個月' && daysArr.some(function (d) { return d < 1 || d > 31; })) err('days', '執行日請填 1～31');
     var holiday = str(a.holiday) || '順延';
     if (FinSchema.ENUMS.recurHoliday.indexOf(holiday) < 0) err('holiday', '假日處理請選擇：' + FinSchema.ENUMS.recurHoliday.join('、'));
     var startDate = str(a.startDate);
@@ -1663,7 +1664,7 @@ var FinApi = (function () {
     if (settleDays !== null && (!isFinite(settleDays) || settleDays < 0)) err('settleDays', '交割天數必須是不小於 0 的數字');
     var note = str(a.note);
     if (note.length > 200) err('note', '備註最多 200 字');
-    var anchor = freq === '每N天' ? (str(a.anchor) || '固定') : '';
+    var anchor = freq === '每N天' || freq === '每N個月' ? (str(a.anchor) || '固定') : '';
     if (anchor && FinSchema.ENUMS.recurAnchor.indexOf(anchor) < 0) err('anchor', '起算方式請選擇：' + FinSchema.ENUMS.recurAnchor.join('、'));
     if (anchor === '實際日期') {
       if (mode !== '提醒確認') err('anchor', '「從實際付款日起算」要搭配「提醒確認」（才知道你實際哪天付款）');

@@ -137,3 +137,49 @@ test('定期轉帳：金額只要填一次，轉入跟著轉出；確認時改�
   const t = b.txOf(r.data.recurring.id)[0];
   assert.deepEqual([t.status, t.srcQty, t.dstQty], ['有效', 12800, 12800]);
 });
+
+test('core：每N個月的到期日跟著起始日的「幾號」，小月取月底；從實際日期起算就加 N 個月', () => {
+  const occ = FinRecurring.occurrences({ freq: '每N個月', days: [6], holiday: '不調整', startDate: '2027-01-29' }, '2026-12-31', '2028-08-31', ['台灣'], {});
+  assert.deepEqual(occ.map((o) => o.planned), ['2027-01-29', '2027-07-29', '2028-01-29', '2028-07-29']);
+  // 區間從中間開始也對齊起始月份
+  const mid = FinRecurring.occurrences({ freq: '每N個月', days: [2], holiday: '不調整', startDate: '2026-11-30' }, '2027-01-01', '2027-06-30', ['台灣'], {});
+  assert.deepEqual(mid.map((o) => o.planned), ['2027-01-30', '2027-03-30', '2027-05-30']);
+  const eom = FinRecurring.occurrences({ freq: '每N個月', days: [1], holiday: '不調整', startDate: '2027-01-31' }, '2027-01-01', '2027-04-30', ['台灣'], {});
+  assert.deepEqual(eom.map((o) => o.planned), ['2027-01-31', '2027-02-28', '2027-03-31', '2027-04-30']);
+  assert.deepEqual(FinRecurring.occurrences({ freq: '每N個月', days: [0], startDate: '2027-01-31' }, '2027-01-01', '2027-04-30', ['台灣'], {}), [], 'N 不合法就不產生');
+  const tpl = { id: 'R1', freq: '每N個月', days: '2', anchor: '實際日期', startDate: '2026-11-16' };
+  assert.ok(FinRecurring.isActualAnchored(tpl));
+  assert.equal(FinRecurring.intervalLabel(tpl), '2 個月');
+  const done = { recurringId: 'R1', plannedDate: '2026-11-16', date: '2026-11-20', status: '有效', createdAt: '2026-11-16 07:00:00' };
+  assert.deepEqual(FinRecurring.actualAnchoredNext(tpl, [done]), { planned: '2027-01-20' });
+  assert.equal(FinRecurring.addMonthsToDate('2026-12-31', 2), '2027-02-28');
+});
+
+test('每 6 個月（房租）：一個範本就好，1/29、7/29 各產生一次；從實際付款日起算的每 2 個月（瓦斯）', () => {
+  const b = fresh('2027-01-01');
+  const bank = b.acct('富邦-綜存', '銀行');
+  const bad = b.call('upsertRecurring', { recurring: { name: 'x', freq: '每N個月', days: [6, 12], holiday: '不調整', startDate: '2027-01-29', type: '支出', srcAccount: bank, srcSymbol: 'TWD', srcQty: 1, categoryId: b.cat('其他支出'), mode: '自動入帳' } });
+  assert.equal(bad.error.code, 'VALIDATION', '每N個月只能填一個數字');
+  assert.equal(b.call('upsertRecurring', { recurring: { name: 'x', freq: '每N個月', days: [25], holiday: '不調整', startDate: '2027-01-29', type: '支出', srcAccount: bank, srcSymbol: 'TWD', srcQty: 1, categoryId: b.cat('其他支出'), mode: '自動入帳' } }).error.code, 'VALIDATION', 'N 最多 24');
+  const r = b.call('upsertRecurring', { recurring: { name: '房租', freq: '每N個月', days: [6], holiday: '不調整', startDate: '2027-01-29', type: '支出', srcAccount: bank, srcSymbol: 'TWD', srcQty: 55500, categoryId: b.cat('其他支出'), mode: '自動入帳' } });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepEqual([r.data.recurring.freq, r.data.recurring.days, r.data.recurring.anchor], ['每N個月', '6', '固定']);
+  const rid = r.data.recurring.id;
+  run(b, '2027-01-29');
+  run(b, '2027-08-01');
+  assert.deepEqual(b.txOf(rid).map((t) => t.date), ['2027-01-29', '2027-07-29']);
+  const nx = b.call('bootstrap').data.recurringNext[rid];
+  assert.equal(nx.date, '2028-01-29');
+
+  const g = b.call('upsertRecurring', { recurring: { name: '瓦斯', freq: '每N個月', days: [2], holiday: '不調整', startDate: '2027-08-10', type: '支出', srcAccount: bank, srcSymbol: 'TWD', srcQty: 361, categoryId: b.cat('其他支出'), mode: '提醒確認', anchor: '實際日期' } });
+  assert.ok(g.ok, JSON.stringify(g));
+  run(b, '2027-08-10');
+  const p = b.txOf(g.data.recurring.id)[0];
+  assert.equal(p.status, '待確認');
+  const pend = b.call('bootstrap').data.pendingConfirmations.find((x) => x.id === p.id);
+  assert.equal(pend.intervalLabel, '2 個月');
+  assert.ok(b.call('confirmPending', { id: p.id, trade: { date: '2027-08-13', srcQty: 380 } }).ok);
+  assert.equal(b.call('bootstrap').data.recurringNext[g.data.recurring.id].date, '2027-10-13');
+  run(b, '2027-10-13');
+  assert.deepEqual(b.txOf(g.data.recurring.id).map((t) => [t.plannedDate, t.status]), [['2027-08-10', '有效'], ['2027-10-13', '待確認']]);
+});

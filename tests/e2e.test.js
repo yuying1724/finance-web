@@ -1354,6 +1354,36 @@ test('定期轉帳表單：金額只填一次（沒有第二個金額欄），�
   });
 });
 
+test('定期表單「每N個月」：每 6 個月的房租一個範本就好，列表寫「每 6 個月・29號」', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const bank = be.call('upsertAccount', { account: { name: '房租銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('recurring');
+    await page.click('[data-testid=add-recurring]');
+    await page.waitForSelector('.sheet [data-testid=recurring-freq]');
+    const field = (label) => page.locator(`.sheet label.field:has(span.lbl:text-is("${label}"))`);
+    await field('名稱').locator('input').fill('房租');
+    await page.selectOption('.sheet [data-testid=recurring-freq]', '每N個月');
+    await page.waitForSelector('.sheet [data-testid=recurring-anchor]');
+    assert.match(await page.locator('.sheet').innerText(), /每 6 個月 → 1\/29、7\/29/);
+    await page.fill('.sheet [data-testid=recurring-days]', '6');
+    await field('假日處理').locator('select').selectOption('不調整');
+    await field('起始日').locator('input').fill('2027-01-29');
+    await field('付款帳戶').locator('select').selectOption(bank);
+    await field('預計金額').locator('input').fill('55500');
+    const catSel = field('分類').locator('select');
+    await catSel.selectOption(await catSel.locator('option').nth(1).getAttribute('value'));
+    await page.click('.sheet [data-testid=recurring-save]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    const t = be.call('bootstrap').data.recurring.find((x) => x.name === '房租');
+    assert.deepEqual([t.freq, t.days, t.startDate, t.anchor], ['每N個月', '6', '2027-01-29', '固定']);
+    await page.waitForSelector('[data-testid=recurring-item][data-name="房租"]');
+    assert.match(await page.locator('[data-testid=recurring-item][data-name="房租"]').innerText(), /每 6 個月・29號/);
+  });
+});
+
 test('定期頁分組：收入／支出／轉帳分組並寫每月約多少（每年除以 12）；支出依大分類分小組可展開；上方總覽與下一筆；停用的在最後', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page, s } = a;
