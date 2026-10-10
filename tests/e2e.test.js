@@ -1191,6 +1191,48 @@ test('商家管理：設定裡列出商家，可以隱藏建議、改名合併�
   });
 });
 
+test('付款帳戶：帳戶多時依類型分組、常用快捷、類型篩選；填商家自動帶出上次的付款帳戶（手動選過就不改）', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const acct = (name, type) => be.call('upsertAccount', { account: { name, type, defaultSymbol: 'TWD' } }).data.account.id;
+    const fp = acct('foodpanda卡', '信用卡'), costco = acct('Costco卡', '信用卡'), jcard = acct('J卡', '信用卡');
+    acct('LINE POINTS', '點數'); acct('pandapay', '數位錢包'); acct('綜存', '銀行'); acct('零錢', '現金');
+    const cat = be.call('bootstrap').data.categories.find((c) => c.name === '飲料點心').id;
+    const add = (src, merchant, n) => { for (let i = 0; i < n; i++) assert.ok(be.call('addTransaction', { tx: { type: '支出', date: be.call('bootstrap').data.today, srcAccount: src, srcSymbol: 'TWD', srcQty: 10, categoryId: cat, merchant } }).ok); };
+    add(jcard, '早餐店', 3); add(fp, 'foodpanda', 2); add(costco, '好市多', 1);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.fab();
+    await page.waitForSelector('[data-testid=acct-select-acct]');
+    assert.ok(await page.locator('[data-testid=acct-select-acct] optgroup[label="信用卡"]').count() === 1, '依類型分組');
+    const quick = await page.locator('[data-testid=acct-quick-acct]').innerText();
+    assert.match(quick, /常用[\s\S]*J卡/);
+    assert.equal(await page.locator("[data-testid=acct-quick-acct] button").count(), 4);
+    // 類型篩選：點「點數」→ 只列點數帳戶並自動選 LINE POINTS
+    await page.click('[data-testid=acct-types-acct] button[data-type="點數"]');
+    assert.match(await page.locator('[data-testid=acct-select-acct] option:checked').innerText(), /LINE POINTS/);
+    assert.equal(await page.locator('[data-testid=acct-select-acct] option').count(), 1);
+    await page.click('[data-testid=acct-types-acct] button[data-type="all"]');
+    await page.click('.sheet button[aria-label="關閉"]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    // 商家自動帶出：還沒手動選帳戶 → 填 foodpanda 換成 foodpanda卡
+    await page.waitForTimeout(300);
+    await a.fab();
+    await page.waitForSelector('input[aria-label="商家"]');
+    await page.fill('input[aria-label="商家"]', 'foodpanda');
+    await page.locator('input[aria-label="商家"]').blur();
+    await page.waitForTimeout(200);
+    assert.equal(await page.locator('[data-testid=acct-select-acct]').inputValue(), fp);
+    assert.match(await page.locator('.sheet [data-field=acct]').innerText(), /已依「foodpanda」上次的付款帳戶自動帶入/);
+    // 手動選過帳戶就不再自動換
+    await page.locator('[data-testid=acct-quick-acct] button', { hasText: 'J卡' }).click();
+    await page.fill('input[aria-label="商家"]', '好市多');
+    await page.locator('input[aria-label="商家"]').blur();
+    await page.waitForTimeout(200);
+    assert.equal(await page.locator('[data-testid=acct-select-acct]').inputValue(), jcard);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

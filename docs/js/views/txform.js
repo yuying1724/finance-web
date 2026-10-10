@@ -55,6 +55,9 @@ function uiField(type, serverField) {
   return map[serverField] || 'form';
 }
 
+const ACCOUNT_TYPE_ORDER = ['信用卡', '銀行', '現金', '數位錢包', '點數', '證券', '加密交易所', '應收', '應付', '貸款'];
+const ACCOUNT_TYPE_SHORT = { 數位錢包: '錢包', 加密交易所: '加密' };
+
 export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serverErrors = null } = {}) {
   const d = state.data;
   const editing = !!tx;
@@ -98,7 +101,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     const r = preset.related;
     Object.assign(f, { acct: r.srcAccount, sym: r.srcSymbol, amount: fmtNum(r.srcQty), categoryId: r.categoryId });
   }
-  if (!editing && preset.acct && accounts.some((a) => a.id === preset.acct)) { f.acct = preset.acct; f.sym = accountById(preset.acct).defaultSymbol; }
+  if (!editing && preset.acct && accounts.some((a) => a.id === preset.acct)) { f.acct = preset.acct; f.sym = accountById(preset.acct).defaultSymbol; f.acctTouched = true; }
   if (!editing && preset.acct2 && accounts.some((a) => a.id === preset.acct2)) { f.acct2 = preset.acct2; f.sym2 = accountById(preset.acct2).defaultSymbol; }
   if (!editing && preset.amount !== undefined && preset.amount !== '') { f.amount = String(preset.amount); f.amount2 = String(preset.amount); }
   if (!editing && preset.note) f.note = String(preset.note);
@@ -140,22 +143,54 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
   }
 
   let wantFocus = true;
+  // 帳戶選單：依類型分組；帳戶多的時候上面多一排「常用」（最近 120 天最常用的 4 個）和一排類型（點了只列那一類）
+  const typeFilter = {};
+  const usage = d.accountUsage || {};
   function accountSelect(key, label, accKey, symKey, changesSym = true, list) {
     const hint = h('div', { class: 'muted small', style: { marginTop: '3px' } });
     const paint = () => {
       if (type === '調整' && !editing) { hint.textContent = ''; return; }
       const bal = balanceOf(f[accKey], f[symKey]);
-      hint.textContent = f[accKey] ? `目前餘額 ${money(bal, f[symKey], { noMask: false })}` : '';
+      const auto = accKey === 'acct' && f.acctAuto && f.acctAuto.id === f.acct ? `　已依「${f.acctAuto.merchant}」上次的付款帳戶自動帶入` : '';
+      hint.textContent = f[accKey] ? `目前餘額 ${money(bal, f[symKey], { noMask: false })}${auto}` : '';
     };
     const opts = list || accounts;
-    const sel = h('select', { 'aria-label': label, onchange: (e) => {
-      f[accKey] = e.target.value;
-      const a = accountById(f[accKey]);
+    const choose = (id) => {
+      f[accKey] = id; f[accKey + 'Touched'] = true;
+      if (accKey === 'acct') f.acctAuto = null;
+      const a = accountById(id);
       if (a && symKey && changesSym && !f[symKey + 'Touched']) { f[symKey] = a.defaultSymbol; }
       draw();
-    } }, opts.map((a) => h('option', { value: a.id, selected: a.id === f[accKey] }, a.name + (a.active ? '' : '（已停用）'))));
+    };
+    const types = ACCOUNT_TYPE_ORDER.filter((t) => opts.some((a) => a.type === t)).concat([...new Set(opts.map((a) => a.type))].filter((t) => !ACCOUNT_TYPE_ORDER.includes(t)));
+    const many = opts.length > 6 && types.length > 1;
+    const filt = many && typeFilter[accKey] && types.includes(typeFilter[accKey]) ? typeFilter[accKey] : '';
+    const optEl = (a) => h('option', { value: a.id, selected: a.id === f[accKey] }, a.name + (a.active ? '' : '（已停用）'));
+    let options;
+    if (filt) options = opts.filter((a) => a.type === filt || a.id === f[accKey]).map(optEl);
+    else if (many) options = types.map((t) => h('optgroup', { label: t }, opts.filter((a) => a.type === t).map(optEl)));
+    else options = opts.map(optEl);
+    const sel = h('select', { 'aria-label': label, 'data-testid': 'acct-select-' + accKey, onchange: (e) => choose(e.target.value) }, options);
+    let extra = null;
+    if (many) {
+      const top = opts.filter((a) => usage[a.id]).sort((a, b) => usage[b.id] - usage[a.id]).slice(0, 4);
+      const quick = top.length >= 2 ? h('div', { class: 'chips', style: { gap: '6px', marginBottom: '6px', flexWrap: 'nowrap', overflowX: 'auto', paddingBottom: '2px' }, 'data-testid': 'acct-quick-' + accKey },
+        h('span', { class: 'muted small', style: { alignSelf: 'center', flexShrink: 0 } }, '常用'),
+        top.map((a) => h('button', { type: 'button', class: 'chip chip-sm' + (a.id === f[accKey] ? ' on' : ''), style: { flexShrink: 0, whiteSpace: 'nowrap' }, onclick: () => choose(a.id) }, a.name))) : null;
+      const typeRow = h('div', { class: 'chips', style: { gap: '6px', marginBottom: '6px', flexWrap: 'nowrap', overflowX: 'auto', paddingBottom: '2px' }, 'data-testid': 'acct-types-' + accKey },
+        [['', '全部']].concat(types.map((t) => [t, ACCOUNT_TYPE_SHORT[t] || t])).map(([t, txt]) => h('button', { type: 'button', class: 'chip chip-sm' + (filt === t ? ' on' : ''), style: { flexShrink: 0, whiteSpace: 'nowrap' }, 'data-type': t || 'all', onclick: () => {
+          typeFilter[accKey] = t;
+          const cur = accountById(f[accKey]);
+          if (t && (!cur || cur.type !== t)) { // 換到這一類最常用的帳戶
+            const pick = opts.filter((a) => a.type === t).sort((a, b) => (usage[b.id] || 0) - (usage[a.id] || 0))[0];
+            if (pick) { choose(pick.id); return; }
+          }
+          draw();
+        } }, txt)));
+      extra = h('div', null, quick, typeRow);
+    }
     paint();
-    return field(key, label, sel, hint);
+    return field(key, label, extra, sel, hint);
   }
 
   function symbolSelect(symKey, list) {
@@ -192,8 +227,20 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
   // 商家（自動完成用最近常用的商家）
   const merchantListId = 'merchant-list-' + requestId.slice(0, 8);
   const merchantField = () => field('merchant', '商家（選填）',
-    h('input', { type: 'text', maxlength: 40, value: f.merchant, list: merchantListId, placeholder: '例如：全聯、Uber Eats', 'aria-label': '商家', oninput: (e) => { f.merchant = e.target.value; } }),
+    h('input', { type: 'text', maxlength: 40, value: f.merchant, list: merchantListId, placeholder: '例如：全聯、Uber Eats', 'aria-label': '商家', oninput: (e) => { f.merchant = e.target.value; }, onchange: (e) => autoAccountFromMerchant(e.target.value) }),
     h('datalist', { id: merchantListId }, (d.merchants || []).map((m) => h('option', { value: m }))));
+  // 填了商家：還沒手動選過付款帳戶的話，自動換成上次在這個商家付款用的帳戶（支出、新增時）
+  function autoAccountFromMerchant(v) {
+    if (editing || type !== '支出' || f.acctTouched) return;
+    const m = String(v || '').trim();
+    const id = (d.merchantAccounts || {})[m];
+    const a = id && accounts.find((x) => x.id === id && x.active);
+    if (!a || a.id === f.acct) return;
+    f.acct = a.id;
+    if (!f.symTouched) f.sym = a.defaultSymbol;
+    f.acctAuto = { id: a.id, merchant: m };
+    draw();
+  }
   // 「更多」：標籤、原幣金額（台幣帳戶刷外幣時保留原幣）
   const tagListId = 'tag-list-' + requestId.slice(0, 8);
   function moreFields(withFx) {

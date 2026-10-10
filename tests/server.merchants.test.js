@@ -37,3 +37,19 @@ test('商家管理：隱藏只影響建議清單；改名會改所有交易並�
   assert.deepEqual([t.merchant, t.note], ['', '電話費；9 月']);
   assert.ok(!b.call('bootstrap').data.merchants.includes('電話費'));
 });
+
+test('記帳用：accountUsage 算最近 120 天各帳戶用幾次；merchantAccounts 是每個商家最近一次支出的付款帳戶（拆帳只看主要那筆）', () => {
+  const b = loadBackend().setup();
+  b.mock.state.clock.now = new Date('2026-10-10T18:00:00+08:00').getTime(); b.login();
+  const acct = (name, type) => b.call('upsertAccount', { account: { name, type, defaultSymbol: 'TWD' } }).data.account.id;
+  const cardA = acct('A卡', '信用卡'), cardB = acct('B卡', '信用卡'), panda = acct('pandapay', '數位錢包');
+  const cat = b.call('bootstrap').data.categories.find((c) => c.name === '飲料點心').id;
+  const add = (src, merchant, date, extra) => assert.ok(b.call('addTransaction', Object.assign({ tx: { type: '支出', date, srcAccount: src, srcSymbol: 'TWD', srcQty: 100, categoryId: cat, merchant } }, extra || {})).ok);
+  add(cardA, 'foodpanda', '2026-09-01'); add(cardB, 'foodpanda', '2026-10-01'); add(cardA, '全家', '2026-10-02'); add(cardA, 'old', '2026-01-01');
+  add(cardB, '青山', '2026-10-05', { payments: [{ account: panda, amount: 4 }] });
+  const d = b.call('bootstrap').data;
+  assert.deepEqual(d.merchantAccounts, { foodpanda: cardB, 全家: cardA, old: cardA, 青山: cardB });
+  assert.equal(d.accountUsage[cardA], 2, '1/1 那筆超過 120 天不算');
+  assert.equal(d.accountUsage[cardB], 2);
+  assert.equal(d.accountUsage[panda], 1);
+});

@@ -3,7 +3,7 @@
  * 向網路要檔案時一律帶 cache: 'no-cache'（先問伺服器有沒有新版，沒變就回 304，很省流量）：
  * GitHub Pages 會叫瀏覽器把檔案快取 10 分鐘，不這樣做的話手機剛更新完的 10 分鐘內重新整理還是舊畫面。
  * 呼叫後端 API 的請求（跨網域 POST）完全不經過快取。 */
-const VERSION = 'fin-v0.9.32';
+const VERSION = 'fin-v0.9.33';
 const SHELL = [
   './', 'index.html', 'config.js', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg',
   'js/app.js', 'js/api.js', 'js/store.js', 'js/data.js', 'js/dom.js', 'js/icons.js', 'js/fmt.js', 'js/ui.js',

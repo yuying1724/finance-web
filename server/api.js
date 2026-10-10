@@ -464,6 +464,28 @@ var FinApi = (function () {
     return uniq;
   }
 
+  /** 記帳表單「常用帳戶」：最近 120 天每個帳戶出現在幾筆有效交易（來源或目的） */
+  function accountUsage(c) {
+    var since = FinDates.addDays(c.today, -120), out = {};
+    c.txRows.forEach(function (t) {
+      if (t.status !== '有效' || t.date < since) return;
+      [t.srcAccount, t.dstAccount].forEach(function (a) { if (a) out[a] = (out[a] || 0) + 1; });
+    });
+    return out;
+  }
+  /** 記帳時填了商家就自動帶出「上次在這個商家付款用的帳戶」：每個商家最近一筆有效支出的付款帳戶（拆帳／混合付款只看主要那筆） */
+  function merchantAccounts(c) {
+    var best = {};
+    c.txRows.forEach(function (t) {
+      if (t.status !== '有效' || t.type !== '支出' || !t.merchant || !t.srcAccount || (t.groupId && t.groupId !== t.id)) return;
+      var m = String(t.merchant).trim(), b = best[m];
+      if (!b || t.date > b.date || (t.date === b.date && t.id > b.id)) best[m] = { date: t.date, id: t.id, account: t.srcAccount };
+    });
+    var out = {};
+    Object.keys(best).forEach(function (m) { out[m] = best[m].account; });
+    return out;
+  }
+
   var cacheGet = function (k) { return CacheService.getScriptCache().get(k); };
   var cachePut = function (k, v, sec) { CacheService.getScriptCache().put(k, v, sec); };
 
@@ -509,6 +531,8 @@ var FinApi = (function () {
         enabledTxTypes: FinSchema.ENABLED_TX_TYPES,
         merchants: (function () { var hid = hiddenMerchantSet(); return topValues(c.txRows.map(function (t) { return t.merchant; }), 200).filter(function (m) { return !hid[m]; }).slice(0, 60); })(),
         tagList: topValues([].concat.apply([], c.txRows.map(function (t) { return t.tags ? String(t.tags).split(',') : []; })), 60),
+        accountUsage: accountUsage(c),
+        merchantAccounts: merchantAccounts(c),
       };
     },
   };
