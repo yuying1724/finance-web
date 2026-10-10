@@ -591,15 +591,40 @@ var FinApi = (function () {
         // 拆帳：一次刷卡（同帳戶、同日期）拆成好幾個分類，各記一筆「支出」、同一個群組；各行金額加起來要剛好等於總額。
         // 某一行是「幫別人代墊」（kind: '代墊'）時，那一行記成「轉帳」到應收帳戶（例如「代墊款」），之後對方還錢再從應收帳戶轉出。
         // dstAccount 是 '__new__' 時用 newAccountName（預設「代墊款」）找同名的應收帳戶，沒有就新建
+        // 混合付款（payments）：同一筆消費有一部分用其他帳戶付（例如信用卡 229＋pandapay 餘額 4），其他帳戶各付多少、主要付款帳戶付剩下的；
+        // 跟拆帳可以一起用：其他帳戶付的錢先分給自己的消費（照行的順序），再分給代墊，每一段各記一筆、同一個群組
         var createdAccount = null, newAccts = {};
-        if (Array.isArray(p.splits) && p.splits.length) {
-          if (t.type !== '支出') throw FinFail('VALIDATION', '只有「支出」可以拆帳', { errors: [{ field: 'splits', message: '只有支出可以拆帳' }], warnings: [] });
-          if (p.splits.length < 2 || p.splits.length > 10) throw FinFail('VALIDATION', '拆帳請分成 2～10 個分類', { errors: [{ field: 'splits', message: '拆帳請分成 2～10 個分類' }], warnings: [] });
+        var hasSplits = Array.isArray(p.splits) && p.splits.length > 0;
+        var pays = Array.isArray(p.payments) ? p.payments : [];
+        if (hasSplits || pays.length) {
+          var vfail = function (field, msg) { return FinFail('VALIDATION', msg, { errors: [{ field: field, message: msg }], warnings: [] }); };
+          if (t.type !== '支出') throw vfail(hasSplits ? 'splits' : 'payments', '只有「支出」可以拆帳或混合付款');
+          if (hasSplits && (p.splits.length < 2 || p.splits.length > 10)) throw vfail('splits', '拆帳請分成 2～10 個分類');
+          if (pays.length > 3) throw vfail('payments', '混合付款最多再加 3 個付款帳戶');
           var sInst = c.instruments[t.srcSymbol], sDec = sInst ? sInst.decimals : 0;
+          var totalUnits = FinMoney.toUnits(t.srcQty, sDec);
+          var payQ = [], payUnitsSum = 0, seenAcct = {};
+          seenAcct[t.srcAccount] = true;
+          pays.forEach(function (pp, i) {
+            var pid = str(pp && pp.account), pa = c.accounts[pid];
+            var pre = '其他付款第 ' + (i + 1) + ' 個：';
+            if (!pa) throw vfail('pay' + i + 'Acct', pre + '請選擇付款帳戶');
+            if (!pa.active) throw vfail('pay' + i + 'Acct', pre + '帳戶「' + pa.name + '」已停用');
+            if (['貸款', '應收', '應付'].indexOf(pa.type) >= 0) throw vfail('pay' + i + 'Acct', pre + '不能用「' + pa.type + '」帳戶付款');
+            if (seenAcct[pid]) throw vfail('pay' + i + 'Acct', pre + (pid === t.srcAccount ? '跟主要付款帳戶一樣' : '付款帳戶重複了'));
+            seenAcct[pid] = true;
+            var amt = Number(pp.amount);
+            if (!(amt > 0)) throw vfail('pay' + i + 'Amt', pre + '金額要大於 0');
+            if (!FinMoney.fitsDecimals(amt, sDec)) throw vfail('pay' + i + 'Amt', pre + t.srcSymbol + ' 最多 ' + sDec + ' 位小數');
+            var pu = FinMoney.toUnits(amt, sDec);
+            payUnitsSum += pu; payQ.push({ account: pid, units: pu });
+          });
+          if (payQ.length && payUnitsSum >= totalUnits) throw vfail('payments', '其他付款加起來要少於總額（全部用同一個帳戶付的話，直接選那個帳戶就好）');
+          var lines = hasSplits ? p.splits : [{ categoryId: p.tx.categoryId, amount: p.tx.srcQty }];
           var legs = [], sumUnits = 0;
-          var hasExpense = p.splits.some(function (sp) { return !(sp && sp.kind === '代墊'); });
-          if (!hasExpense) throw FinFail('VALIDATION', '全部都是代墊的話，請直接記一筆「轉帳」到代墊帳戶', { errors: [{ field: 'splits', message: '至少要有一行是自己的消費' }], warnings: [] });
-          p.splits.forEach(function (sp, i) {
+          var hasExpense = lines.some(function (sp) { return !(sp && sp.kind === '代墊'); });
+          if (!hasExpense) throw vfail('splits', '全部都是代墊的話，請直接記一筆「轉帳」到代墊帳戶');
+          lines.forEach(function (sp, i) {
             var legIn = {};
             Object.keys(p.tx).forEach(function (k) { legIn[k] = p.tx[k]; });
             legIn.srcQty = sp && sp.amount; legIn.categoryId = sp && sp.categoryId;
@@ -617,12 +642,45 @@ var FinApi = (function () {
               legIn.type = '轉帳'; legIn.categoryId = ''; legIn.dstAccount = dstId; legIn.dstSymbol = legIn.srcSymbol; legIn.dstQty = legIn.srcQty;
             }
             var lr = FinValidate.validateTransaction(legIn, validationCtx(c, null));
-            if (!lr.ok) throw FinFail('VALIDATION', '第 ' + (i + 1) + ' 行：' + (lr.errors[0] || {}).message, { errors: lr.errors.map(function (e) { return { field: 'split' + i + (e.field === 'categoryId' || e.field === 'dstAccount' ? 'Cat' : 'Amt'), message: e.message }; }), warnings: [] });
+            if (!lr.ok) throw FinFail('VALIDATION', (hasSplits ? '第 ' + (i + 1) + ' 行：' : '') + (lr.errors[0] || {}).message, { errors: lr.errors.map(function (e) { return { field: hasSplits ? 'split' + i + (e.field === 'categoryId' || e.field === 'dstAccount' ? 'Cat' : 'Amt') : e.field, message: e.message }; }), warnings: [] });
             if (lr.tx.type === '轉帳' && p.tx.settleDate) lr.tx.settleDate = str(p.tx.settleDate); // 信用卡入帳日跟同一次刷卡一致
             sumUnits += FinMoney.toUnits(lr.tx.srcQty, sDec);
             legs.push(lr.tx);
           });
-          if (sumUnits !== FinMoney.toUnits(t.srcQty, sDec)) throw FinFail('VALIDATION', '各分類金額加起來（' + FinMoney.fromUnits(sumUnits, sDec) + '）要等於總額 ' + t.srcQty, { errors: [{ field: 'splits', message: '各分類金額加起來要等於總額' }], warnings: [] });
+          if (sumUnits !== totalUnits) throw FinFail('VALIDATION', '各分類金額加起來（' + FinMoney.fromUnits(sumUnits, sDec) + '）要等於總額 ' + t.srcQty, { errors: [{ field: 'splits', message: '各分類金額加起來要等於總額' }], warnings: [] });
+          if (payQ.length) {
+            // 其他帳戶付的錢：先分給自己的消費，再分給代墊
+            var alloc = legs.map(function () { return { rem: 0, pieces: [] }; });
+            var qi = 0;
+            legs.map(function (lg, i) { return i; }).sort(function (x, y) { return (legs[x].type === '支出' ? 0 : 1) - (legs[y].type === '支出' ? 0 : 1) || x - y; }).forEach(function (i) {
+              var rem = FinMoney.toUnits(legs[i].srcQty, sDec);
+              while (rem > 0 && qi < payQ.length) {
+                var take = Math.min(rem, payQ[qi].units);
+                alloc[i].pieces.push({ account: payQ[qi].account, units: take });
+                rem -= take; payQ[qi].units -= take;
+                if (payQ[qi].units === 0) qi++;
+              }
+              alloc[i].rem = rem;
+            });
+            var mixed = [];
+            legs.forEach(function (lg, i) {
+              if (alloc[i].rem > 0) {
+                lg.srcQty = FinMoney.fromUnits(alloc[i].rem, sDec);
+                if (lg.type === '轉帳') lg.dstQty = lg.srcQty;
+                mixed.push(lg);
+              }
+              alloc[i].pieces.forEach(function (pc) {
+                var cp = {};
+                Object.keys(lg).forEach(function (k) { cp[k] = lg[k]; });
+                cp.srcAccount = pc.account; cp.srcQty = FinMoney.fromUnits(pc.units, sDec); cp.settleDate = '';
+                if (cp.type === '轉帳') cp.dstQty = cp.srcQty;
+                var pr = FinValidate.validateTransaction(cp, validationCtx(c, null));
+                if (!pr.ok) throw vfail('payments', '其他付款：' + (pr.errors[0] || {}).message);
+                mixed.push(pr.tx);
+              });
+            });
+            legs = mixed;
+          }
           if (createdAccount) {
             delete createdAccount.__new;
             FinRepo.append('accounts', [createdAccount]);
@@ -632,7 +690,7 @@ var FinApi = (function () {
           var sNow = ts(env.now);
           legs.forEach(function (lg, i) { lg.id = sIds[i]; lg.groupId = sIds[0]; lg.createdAt = sNow; lg.updatedAt = sNow; });
           FinRepo.append('transactions', legs);
-          FinRepo.audit('新增', 'transactions', sIds[0], '拆帳 ' + legs.length + ' 筆：' + summarizeTx(t), env.device);
+          FinRepo.audit('新增', 'transactions', sIds[0], (hasSplits ? '拆帳' : '') + (payQ.length ? '混合付款' : '') + ' ' + legs.length + ' 筆：' + summarizeTx(t), env.device);
           var sOut = { tx: pub(legs[0]), split: legs.map(pub), fee: null, warnings: res.warnings, createdAccount: createdAccount ? pub(createdAccount) : null };
           if (requestId) cachePut('req:' + requestId, JSON.stringify(sOut), 600);
           return sOut;

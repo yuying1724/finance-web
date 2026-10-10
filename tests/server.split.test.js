@@ -114,3 +114,48 @@ test('拆帳＋代墊：自己的算支出、幫別人付的轉到應收帳戶�
   assert.ok(v.ok); assert.equal(v.data.txs.length, 2);
   assert.equal(b.call('bootstrap').data.balances.find((x) => x.accountId === adv.id).qty, 200);
 });
+
+test('混合付款：信用卡 229＋pandapay 4；可以跟拆帳、代墊一起用；其他帳戶的錢先算給自己的消費', () => {
+  const b = loadBackend().setup();
+  b.mock.state.clock.now = new Date('2026-10-10T18:00:00+08:00').getTime(); b.login();
+  const card = b.call('upsertAccount', { account: { name: 'foodpanda卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+  assert.ok(b.call('upsertCardSettings', { card: { accountId: card, statementDay: 25, dueDay: 10, limit: 100000 } }).ok);
+  const panda = b.call('upsertAccount', { account: { name: 'pandapay', type: '數位錢包', defaultSymbol: 'TWD' } }).data.account.id;
+  const pts = b.call('upsertAccount', { account: { name: 'LINE POINTS', type: '點數', defaultSymbol: 'TWD' } }).data.account.id;
+  const loan = b.call('upsertAccount', { account: { name: '信貸', type: '貸款', defaultSymbol: 'TWD' } }).data.account.id;
+  const cats = b.call('bootstrap').data.categories;
+  const drink = cats.find((c) => c.name === '飲料點心' && c.type === '支出').id;
+  const base = { type: '支出', date: '2026-10-10', srcAccount: card, srcSymbol: 'TWD', srcQty: 233, categoryId: drink, merchant: 'foodpanda', settleDate: '2026-10-12' };
+  // 檢查
+  assert.match(b.call('addTransaction', { tx: base, payments: [{ account: card, amount: 4 }] }).error.message, /跟主要付款帳戶一樣/);
+  assert.match(b.call('addTransaction', { tx: base, payments: [{ account: loan, amount: 4 }] }).error.message, /貸款/);
+  assert.match(b.call('addTransaction', { tx: base, payments: [{ account: panda, amount: 233 }] }).error.message, /少於總額/);
+  assert.match(b.call('addTransaction', { tx: base, payments: [{ account: panda, amount: 4 }, { account: panda, amount: 1 }] }).error.message, /重複/);
+  assert.match(b.call('addTransaction', { tx: base, payments: [{ account: panda, amount: 0 }] }).error.message, /大於 0/);
+  // 只有混合付款：同分類兩筆
+  let r = b.call('addTransaction', { tx: base, payments: [{ account: panda, amount: 4 }] });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepEqual(r.data.split.map((x) => [x.type, x.srcAccount, x.srcQty, x.categoryId, x.settleDate]), [['支出', card, 229, drink, '2026-10-12'], ['支出', panda, 4, drink, '']]);
+  assert.equal(r.data.split[1].groupId, r.data.split[0].id);
+  let boot = b.call('bootstrap').data;
+  assert.equal(boot.balances.find((x) => x.accountId === panda).qty, -4);
+  assert.equal(boot.month.expense, 233);
+  b.call('voidTransaction', { id: r.data.split[0].id, wholeGroup: true, expectedUpdatedAt: r.data.split[0].updatedAt });
+  // 拆帳＋代墊＋混合付款：自己 80、代墊 153；pandapay 4、LINE POINTS 10 → 先算給自己的 80
+  r = b.call('addTransaction', { tx: Object.assign({}, base, { settleDate: '' }), splits: [{ kind: '代墊', amount: 153, dstAccount: '__new__', note: '三杯' }, { categoryId: drink, amount: 80 }], payments: [{ account: panda, amount: 4 }, { account: pts, amount: 10 }] });
+  assert.ok(r.ok, JSON.stringify(r));
+  const adv = r.data.createdAccount.id;
+  assert.deepEqual(r.data.split.map((x) => [x.type, x.srcAccount, x.srcQty]), [['轉帳', card, 153], ['支出', card, 66], ['支出', panda, 4], ['支出', pts, 10]]);
+  boot = b.call('bootstrap').data;
+  assert.equal(boot.balances.find((x) => x.accountId === card).qty, -219);
+  assert.equal(boot.balances.find((x) => x.accountId === adv).qty, 153);
+  assert.equal(boot.month.expense, 80);
+  // 其他帳戶的錢比自己的消費多：剩下的再分給代墊
+  r = b.call('addTransaction', { tx: Object.assign({}, base, { srcQty: 100, settleDate: '' }), splits: [{ categoryId: drink, amount: 30 }, { kind: '代墊', amount: 70, dstAccount: adv }], payments: [{ account: pts, amount: 40 }] });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepEqual(r.data.split.map((x) => [x.type, x.srcAccount, x.srcQty]), [['支出', pts, 30], ['轉帳', card, 60], ['轉帳', pts, 10]]);
+  // 整組作廢
+  const g = r.data.split[0];
+  const v = b.call('voidTransaction', { id: g.id, wholeGroup: true, expectedUpdatedAt: g.updatedAt });
+  assert.ok(v.ok); assert.equal(v.data.txs.length, 3);
+});

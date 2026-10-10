@@ -53,7 +53,7 @@ function rateText(t) {
 }
 
 /**
- * 拆帳（一次付款拆成好幾個分類）：同一個 groupId、同一個付款帳戶與日期、狀態一樣的 2 筆以上，在清單上合成一列。
+ * 拆帳（一次付款拆成好幾個分類）、混合付款（一次消費用好幾個帳戶付）：同一個 groupId、同一天、狀態與幣別一樣的 2 筆以上，在清單上合成一列。
  * 每一筆是「支出」，或是「幫別人代墊」（從同一個帳戶轉帳到應收帳戶），而且至少要有一筆支出。
  * 轉帳手續費（手續費那筆有 relatedTxId）、貸款還款這類群組不會被合併。
  */
@@ -62,7 +62,7 @@ function collapseSplits(items) {
   const byGroup = new Map();
   items.forEach((t) => { if (t.groupId) { if (!byGroup.has(t.groupId)) byGroup.set(t.groupId, []); byGroup.get(t.groupId).push(t); } });
   const isSplit = (legs) => legs.length >= 2 && legs.some((x) => x.type === '支出')
-    && legs.every((x) => (x.type === '支出' || isAdvanceLeg(x)) && !x.relatedTxId && x.srcAccount === legs[0].srcAccount && x.date === legs[0].date && x.status === legs[0].status && x.srcSymbol === legs[0].srcSymbol);
+    && legs.every((x) => (x.type === '支出' || isAdvanceLeg(x)) && !x.relatedTxId && x.date === legs[0].date && x.status === legs[0].status && x.srcSymbol === legs[0].srcSymbol);
   const done = new Set();
   const out = [];
   items.forEach((t) => {
@@ -70,42 +70,57 @@ function collapseSplits(items) {
     if (!legs || !isSplit(legs)) { out.push(t); return; }
     if (done.has(t.groupId)) return;
     done.add(t.groupId);
+    legs.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0)); // 照建立順序：第一筆（groupId）是主要付款帳戶
     const total = legs.reduce((sum, x) => sum + (Number(x.srcQty) || 0), 0);
     const advance = legs.filter(isAdvanceLeg).reduce((sum, x) => sum + (Number(x.srcQty) || 0), 0);
-    out.push({ __split: true, id: t.groupId, groupId: t.groupId, date: t.date, status: t.status, srcAccount: t.srcAccount, srcSymbol: t.srcSymbol, merchant: legs.find((x) => x.merchant)?.merchant || '', total, advance, legs });
+    // 各付款帳戶付了多少（第一筆的帳戶是主要付款帳戶）
+    const pays = [];
+    legs.forEach((x) => { let p = pays.find((y) => y.account === x.srcAccount); if (!p) pays.push(p = { account: x.srcAccount, amount: 0 }); p.amount += Number(x.srcQty) || 0; });
+    // 分類（自己的消費）有幾種
+    const catN = new Set(legs.filter((x) => x.type === '支出').map((x) => x.categoryId)).size;
+    out.push({ __split: true, id: t.groupId, groupId: t.groupId, date: t.date, status: t.status, srcAccount: legs[0].srcAccount, srcSymbol: t.srcSymbol, merchant: legs.find((x) => x.merchant)?.merchant || '', total, advance, legs, pays, catN });
   });
   return out;
 }
 
-const legName = (x) => (isAdvanceLeg(x) ? '代墊 ' + money(x.srcQty, x.srcSymbol) : categoryInfo(x.categoryId).short);
+const acctName = (id) => (accountById(id) || {}).name || id;
+function splitBadge(g) {
+  const parts = [];
+  if (g.advance) parts.push('含代墊'); else if (g.catN > 1) parts.push(`拆 ${g.catN} 類`);
+  if (g.pays.length > 1) parts.push('混合付款');
+  return parts.join('・') || '拆帳';
+}
 function splitRow(g) {
-  const a = accountById(g.srcAccount);
-  // 自己的分類在前、代墊在後
-  const names = g.legs.filter((x) => !isAdvanceLeg(x)).concat(g.legs.filter(isAdvanceLeg)).map(legName).join('、');
-  const badge = g.advance ? '含代墊' : `拆 ${g.legs.length} 類`;
+  // 自己的分類在前、代墊在後（同一個分類、不同付款帳戶的只列一次）
+  const seen = new Set(), names = [];
+  g.legs.filter((x) => !isAdvanceLeg(x)).forEach((x) => { if (!seen.has(x.categoryId)) { seen.add(x.categoryId); names.push(categoryInfo(x.categoryId).short); } });
+  if (g.advance) names.push('代墊 ' + money(g.advance, g.srcSymbol));
+  const accts = g.pays.map((p) => acctName(p.account)).join('＋');
+  const badge = splitBadge(g);
   return h('button', { class: 'item' + (g.status === '作廢' ? ' voided' : ''), 'data-testid': 'split-row', onclick: () => openSplitDetail(g) },
     h('div', { class: 'ico' }, icon('list')),
     h('div', { class: 'grow' }, h('div', { class: 't' }, g.merchant || '拆帳', h('span', { class: 'badge', style: { marginLeft: '6px' } }, badge), g.status !== '有效' ? h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, g.status) : null),
-      h('div', { class: 's' }, `${a ? a.name : g.srcAccount} · ${names}`)),
+      h('div', { class: 's' }, `${accts} · ${names.join('、')}`)),
     h('div', { class: amountClass('') }, '-' + money(g.total, g.srcSymbol)));
 }
 
 /** 拆帳詳情：列出各分類（點進去可以單筆編輯），可以整筆作廢／還原 */
 function openSplitDetail(g) {
-  const a = accountById(g.srcAccount);
+  const multi = g.pays.length > 1;
   const list = h('ul', { class: 'list' }, g.legs.filter((x) => !isAdvanceLeg(x)).concat(g.legs.filter(isAdvanceLeg)).map((x) => {
     const adv = isAdvanceLeg(x), c = categoryInfo(x.categoryId);
     return h('li', null, h('button', { class: 'item', 'data-testid': adv ? 'split-leg-adv' : 'split-leg', onclick: () => { sheet.close(); setTimeout(() => openTxDetail(x), 0); } },
       h('div', { class: 'ico', style: adv ? null : catIconStyle(c.color) }, icon(adv ? 'arrowDownCircle' : c.icon)),
-      h('div', { class: 'grow' }, h('div', { class: 't' }, adv ? `幫別人代墊 → ${(accountById(x.dstAccount) || {}).name || x.dstAccount}` : c.name), x.note ? h('div', { class: 's' }, x.note) : null),
+      h('div', { class: 'grow' }, h('div', { class: 't' }, adv ? `幫別人代墊 → ${acctName(x.dstAccount)}` : c.name),
+        multi || x.note ? h('div', { class: 's' }, [multi ? acctName(x.srcAccount) + ' 付' : '', x.note].filter(Boolean).join(' · ')) : null),
       h('div', { class: amountClass(adv ? 'mute' : '') }, (adv ? '' : '-') + money(x.srcQty, x.srcSymbol, { noMask: true }))));
   }));
-  const rows = [['日期', dateLabel(g.date, state.data.today)], ['付款帳戶', a ? a.name : g.srcAccount]];
+  const rows = [['日期', dateLabel(g.date, state.data.today)], ['付款帳戶', multi ? g.pays.map((p) => `${acctName(p.account)} ${money(p.amount, g.srcSymbol, { noMask: true })}`).join('、') : acctName(g.srcAccount)]];
   if (g.merchant) rows.push(['商家', g.merchant]);
   if (g.advance) rows.push(['自己的消費', money(g.total - g.advance, g.srcSymbol, { noMask: true })], ['幫別人代墊', money(g.advance, g.srcSymbol, { noMask: true }) + '（不算支出，對方還錢時到代墊帳戶按「收回」）']);
   const dl = h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)]));
   const actions = h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } });
-  const sheet = openSheet({ title: (g.merchant || '拆帳') + (g.advance ? '（含代墊）' : `（拆 ${g.legs.length} 類）`), body: h('div', { 'data-testid': 'split-detail' },
+  const sheet = openSheet({ title: (g.merchant || '拆帳') + `（${splitBadge(g)}）`, body: h('div', { 'data-testid': 'split-detail' },
     h('div', { class: 'center', style: { margin: '-4px 0 12px' } }, h('div', { class: amountClass(''), style: { fontSize: '26px' } }, '-' + money(g.total, g.srcSymbol, { noMask: true }))),
     dl, h('div', { class: 'muted small', style: { margin: '10px 0 2px' } }, '點一行可以單獨修改金額或分類（改了總額會跟著變）'), list, actions) });
   const toVoid = g.status === '有效' || g.status === '待確認';

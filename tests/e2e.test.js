@@ -1085,6 +1085,71 @@ test('拆帳＋代墊：幫朋友／同事訂飲料，自己的算支出、其�
   });
 });
 
+test('混合付款：信用卡＋pandapay 餘額，「用完餘額」自動填，主要帳戶付剩下的；清單一列；也能跟拆帳一起用', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const card = be.call('upsertAccount', { account: { name: 'foodpanda卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    const panda = be.call('upsertAccount', { account: { name: 'pandapay', type: '數位錢包', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('addTransaction', { tx: { type: '調整', date: '2026-01-01', dstAccount: panda, dstSymbol: 'TWD', dstQty: 4, note: '開帳' } }).ok);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '233');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: 'foodpanda卡' });
+    await page.check('[data-testid=pay-toggle]');
+    await page.waitForSelector('[data-testid=pay-acct]');
+    assert.equal(await page.locator('[data-testid=inst-toggle]').count(), 0, '混合付款時不顯示分期');
+    assert.ok(!(await page.evaluate(() => [...document.querySelector('[data-testid=pay-acct]').options].some((o) => o.textContent.startsWith('foodpanda卡')))), '不能選主要付款帳戶');
+    await page.selectOption('[data-testid=pay-acct]', panda);
+    await page.click('[data-testid=pay-all]');
+    assert.equal(await page.locator('[data-testid=pay-amt]').inputValue(), '4');
+    assert.match(await page.locator('[data-testid=pay-summary]').innerText(), /foodpanda卡」付剩下的 NT\$229/);
+    await a.pickCategory('飲食', '飲料點心');
+    await page.fill('input[placeholder^="例如：全聯"]', 'foodpanda');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    let legs = [];
+    for (let i = 0; i < 50 && legs.length < 2; i++) { await page.waitForTimeout(100); legs = be.call('listTransactions', { filters: { q: 'foodpanda' } }).data.items; }
+    assert.deepEqual(legs.map((x) => [x.srcAccount, x.srcQty]).sort((x, y) => y[1] - x[1]), [[card, 229], [panda, 4]]);
+    assert.equal(be.call('bootstrap').data.balances.find((x) => x.accountId === panda), undefined, 'pandapay 用完歸零');
+    await a.tab('tx');
+    await page.waitForSelector('[data-testid=split-row]');
+    const rowText = await page.locator('[data-testid=split-row]').first().innerText();
+    assert.match(rowText, /foodpanda[\s\S]*混合付款[\s\S]*foodpanda卡＋pandapay · 飲料點心[\s\S]*NT\$233/);
+    await page.click('[data-testid=split-row]');
+    await page.waitForSelector('[data-testid=split-detail]');
+    assert.match(await page.locator('[data-testid=split-detail]').innerText(), /付款帳戶[\s\S]*foodpanda卡 NT\$229、pandapay NT\$4/);
+    await page.click('.sheet button[aria-label="關閉"]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    // 拆帳＋混合付款＋其他帳戶金額太多會擋
+    await page.waitForTimeout(400);
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '100');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: 'foodpanda卡' });
+    await page.check('[data-testid=pay-toggle]');
+    await page.waitForSelector('[data-testid=pay-acct]');
+    await page.selectOption('[data-testid=pay-acct]', panda);
+    await page.fill('[data-testid=pay-amt]', '100');
+    await page.check('[data-testid=split-toggle]');
+    await page.waitForSelector('[data-testid=split-cat]');
+    const optVal = async (label) => page.evaluate((l) => [...document.querySelector('[data-testid=split-cat]').options].find((o) => o.textContent === l).value, label);
+    await page.locator('[data-testid=split-cat]').nth(0).selectOption(await optVal('飲食 › 飲料點心'));
+    await page.locator('[data-testid=split-amt]').nth(0).fill('40');
+    await page.locator('[data-testid=split-cat]').nth(1).selectOption('adv:__new__');
+    await page.locator('[data-testid=split-rest]').nth(1).click();
+    await a.save();
+    await page.waitForSelector('.sheet [data-field=pays].err');
+    assert.match(await page.locator('.sheet [data-field=pays]').innerText(), /要少於總金額/);
+    await page.fill('[data-testid=pay-amt]', '10');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    let g2 = [];
+    for (let i = 0; i < 50 && g2.length < 3; i++) { await page.waitForTimeout(100); g2 = be.call('listTransactions', { filters: { accountId: panda } }).data.items.concat(be.call('listTransactions', { filters: { accountId: card } }).data.items).filter((x) => x.date === be.call('bootstrap').data.today && !x.merchant); }
+    const legs2 = be.call('listTransactions', { limit: 50 }).data.items.filter((x) => x.groupId && x.groupId === g2[0].groupId);
+    assert.deepEqual(legs2.map((x) => [x.type, x.srcAccount === panda ? 'panda' : 'card', x.srcQty]).sort(), [['支出', 'card', 30], ['支出', 'panda', 10], ['轉帳', 'card', 60]].sort());
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;
