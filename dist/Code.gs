@@ -145,7 +145,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.27',
+    APP_VERSION: '0.9.28',
   };
   return api;
 })();
@@ -3000,6 +3000,32 @@ var FinApi = (function () {
           if (!feeRes.ok) throw FinFail('VALIDATION', '手續費：' + (feeRes.errors[0] || {}).message, { errors: feeRes.errors.map(function (e) { return { field: 'feeAmount', message: e.message }; }), warnings: [] });
           feeTx = feeRes.tx;
         }
+        // 拆帳：一次刷卡（同帳戶、同日期）拆成好幾個分類，各記一筆「支出」、同一個群組；各行金額加起來要剛好等於總額
+        if (Array.isArray(p.splits) && p.splits.length) {
+          if (t.type !== '支出') throw FinFail('VALIDATION', '只有「支出」可以拆帳', { errors: [{ field: 'splits', message: '只有支出可以拆帳' }], warnings: [] });
+          if (p.splits.length < 2 || p.splits.length > 10) throw FinFail('VALIDATION', '拆帳請分成 2～10 個分類', { errors: [{ field: 'splits', message: '拆帳請分成 2～10 個分類' }], warnings: [] });
+          var sInst = c.instruments[t.srcSymbol], sDec = sInst ? sInst.decimals : 0;
+          var legs = [], sumUnits = 0;
+          p.splits.forEach(function (sp, i) {
+            var legIn = {};
+            Object.keys(p.tx).forEach(function (k) { legIn[k] = p.tx[k]; });
+            legIn.srcQty = sp && sp.amount; legIn.categoryId = sp && sp.categoryId;
+            if (sp && str(sp.note)) legIn.note = str(sp.note);
+            var lr = FinValidate.validateTransaction(legIn, validationCtx(c, null));
+            if (!lr.ok) throw FinFail('VALIDATION', '第 ' + (i + 1) + ' 行：' + (lr.errors[0] || {}).message, { errors: lr.errors.map(function (e) { return { field: 'split' + i + (e.field === 'categoryId' ? 'Cat' : 'Amt'), message: e.message }; }), warnings: [] });
+            sumUnits += FinMoney.toUnits(lr.tx.srcQty, sDec);
+            legs.push(lr.tx);
+          });
+          if (sumUnits !== FinMoney.toUnits(t.srcQty, sDec)) throw FinFail('VALIDATION', '各分類金額加起來（' + FinMoney.fromUnits(sumUnits, sDec) + '）要等於總額 ' + t.srcQty, { errors: [{ field: 'splits', message: '各分類金額加起來要等於總額' }], warnings: [] });
+          var sIds = FinRepo.nextIds('transactions', legs.length);
+          var sNow = ts(env.now);
+          legs.forEach(function (lg, i) { lg.id = sIds[i]; lg.groupId = sIds[0]; lg.createdAt = sNow; lg.updatedAt = sNow; });
+          FinRepo.append('transactions', legs);
+          FinRepo.audit('新增', 'transactions', sIds[0], '拆帳 ' + legs.length + ' 筆：' + summarizeTx(t), env.device);
+          var sOut = { tx: pub(legs[0]), split: legs.map(pub), fee: null, warnings: res.warnings };
+          if (requestId) cachePut('req:' + requestId, JSON.stringify(sOut), 600);
+          return sOut;
+        }
         var ids = FinRepo.nextIds('transactions', feeTx ? 2 : 1);
         t.id = ids[0];
         t.createdAt = ts(env.now); t.updatedAt = t.createdAt;
@@ -3055,10 +3081,17 @@ var FinApi = (function () {
           if (from.indexOf(row.status) < 0) throw FinFail('BAD_STATE', '這筆交易目前的狀態是「' + row.status + '」，不能' + action);
           checkExpected(row, p.expectedUpdatedAt);
           var now = ts(env.now);
-          FinRepo.updateRow('transactions', row._row, { status: to, updatedAt: now });
-          FinRepo.audit(action, 'transactions', row.id, summarizeTx(row), env.device);
-          var out = pub(row); out.status = to; out.updatedAt = now;
-          return { tx: out };
+          // wholeGroup：拆帳的一整組一起作廢／還原
+          var targets = p.wholeGroup && row.groupId ? c.txRows.filter(function (t) { return t.groupId === row.groupId && from.indexOf(t.status) >= 0; }) : [row];
+          if (!targets.some(function (t) { return t.id === row.id; })) targets.push(row);
+          var outs = targets.map(function (t) {
+            var r2 = t.id === row.id ? row : FinRepo.findById('transactions', t.id);
+            FinRepo.updateRow('transactions', r2._row, { status: to, updatedAt: now });
+            FinRepo.audit(action, 'transactions', r2.id, summarizeTx(r2), env.device);
+            var o = pub(r2); o.status = to; o.updatedAt = now; return o;
+          });
+          var out = outs.filter(function (o) { return o.id === row.id; })[0];
+          return targets.length > 1 ? { tx: out, txs: outs } : { tx: out };
         });
       },
     };

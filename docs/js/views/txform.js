@@ -74,7 +74,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     merchant: editing ? (tx.merchant || '') : '', tags: editing ? (tx.tags || '') : '', fxSymbol: editing ? (tx.fxSymbol || '') : '', fxQty: editing && tx.fxQty ? String(tx.fxQty) : '',
     feeAmount: '', more: false, postDate: editing && (tx.type === '支出' || tx.type === '退款') ? (tx.settleDate || '') : '',
     instOn: false, instTerms: '6', instRemainder: '首期',
-    closeChoice: editing && tx.settleDate && tx.settleDate !== tx.date ? 'custom' : '', // 快結帳提醒的選擇：this／next／custom／auto（依卡片設定預估）
+    closeChoice: editing && tx.settleDate && tx.settleDate !== tx.date ? 'custom' : '',
+    splitOn: false, splits: [{ cat: '', amt: '' }, { cat: '', amt: '' }], // 拆帳：一次刷卡拆成好幾個分類 // 快結帳提醒的選擇：this／next／custom／auto（依卡片設定預估）
   };
 
   const fmtNum = (n) => String(n);
@@ -158,7 +159,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
 
   function amountField(key, label, amtKey, symKey, list, autofocus) {
     const input = h('input', { type: 'text', inputmode: 'decimal', class: 'amount-input', autocomplete: 'off', placeholder: '0', value: f[amtKey], 'aria-label': label,
-      oninput: (e) => { f[amtKey] = e.target.value; paintRate(); } });
+      oninput: (e) => { f[amtKey] = e.target.value; paintRate(); if (f.splitOn) { const sm = bodyBox.querySelector('[data-testid=split-summary]'); if (sm && sm.__paint) sm.__paint(); } } });
     if (autofocus && wantFocus && !editing) { wantFocus = false; setTimeout(() => input.focus(), 60); }
     const dec = decimalsOf(f[symKey]);
     return field(key, label, h('div', { class: 'two' }, input, symbolSelect(symKey, list)),
@@ -272,6 +273,47 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
       status ? h('div', { class: 'small', style: { marginTop: '6px' }, 'data-testid': 'close-status' }, status) : h('div', { class: 'muted small', style: { marginTop: '6px' } }, '不確定可以先不選，之後看到帳單再到「更多」補入帳日')));
   }
 
+  // 拆帳：一次付款（同帳戶、同日期）拆成好幾個分類，例如好市多＝食材＋日用品。存成同一組的多筆支出，各行加起來要等於上面的金額
+  function splitField() {
+    if (editing || type !== '支出') return null;
+    const box = h('div', { style: { display: f.splitOn ? '' : 'none', marginTop: '8px' }, 'data-testid': 'split-box' });
+    const cats = [];
+    sortCategories(d.categories.filter((c) => !c.parentId && c.type === '支出' && c.active)).forEach((p) => {
+      cats.push({ id: p.id, label: p.name });
+      sortCategories(d.categories.filter((c) => c.parentId === p.id && c.active)).forEach((k) => cats.push({ id: k.id, label: `${p.name} › ${k.name}` }));
+    });
+    const summary = h('div', { class: 'small', style: { marginTop: '6px' }, 'data-testid': 'split-summary' });
+    const dec = () => decimalsOf(f.sym);
+    const units = (v) => { const a = parseAmount(v); return a.empty || a.bad ? 0 : Math.round(a.n * Math.pow(10, dec())); };
+    const fromUnits = (u) => FinMoney.fromUnits(u, dec());
+    summary.__paint = () => paintSummary();
+    const paintSummary = () => {
+      const total = units(f.amount), used = f.splits.reduce((sum, x) => sum + units(x.amt), 0);
+      const left = total - used;
+      summary.textContent = !total ? '先在上面填總金額' : left === 0 ? `已分完：${f.splits.length} 個分類，合計 ${money(fromUnits(used), f.sym, { noMask: true })}`
+        : left > 0 ? `還沒分配 ${money(fromUnits(left), f.sym, { noMask: true })}` : `多分了 ${money(fromUnits(-left), f.sym, { noMask: true })}`;
+      summary.style.color = total && left !== 0 ? 'var(--bad)' : '';
+    };
+    const paintLines = () => {
+      mount(box, f.splits.map((ln, i) => {
+        const sel = h('select', { 'aria-label': `第 ${i + 1} 行分類`, 'data-testid': 'split-cat', onchange: (e) => { ln.cat = e.target.value; } },
+          [h('option', { value: '' }, '選分類')].concat(cats.map((c) => h('option', { value: c.id, selected: c.id === ln.cat }, c.label))));
+        const amt = h('input', { type: 'text', inputmode: 'decimal', value: ln.amt, placeholder: '金額', 'aria-label': `第 ${i + 1} 行金額`, 'data-testid': 'split-amt', style: { maxWidth: '110px' }, oninput: (e) => { ln.amt = e.target.value; paintSummary(); } });
+        const rest = h('button', { type: 'button', class: 'chip chip-sm', title: '填入還沒分配的金額', 'data-testid': 'split-rest', onclick: () => {
+          const total = units(f.amount), others = f.splits.reduce((sum, x, j) => sum + (j === i ? 0 : units(x.amt)), 0);
+          if (total - others > 0) { ln.amt = String(fromUnits(total - others)); amt.value = ln.amt; paintSummary(); }
+        } }, '剩下的');
+        const del = f.splits.length > 2 ? h('button', { type: 'button', class: 'icon-btn', 'aria-label': `刪除第 ${i + 1} 行`, onclick: () => { f.splits.splice(i, 1); paintLines(); } }, icon('x')) : null;
+        return field('split' + i, '', h('div', { class: 'row-flex', style: { gap: '6px', alignItems: 'center' } }, h('div', { class: 'grow', style: { minWidth: 0 } }, sel), amt, rest, del));
+      }), f.splits.length < 10 ? h('button', { type: 'button', class: 'chip', 'data-testid': 'split-add', onclick: () => { f.splits.push({ cat: '', amt: '' }); paintLines(); } }, icon('plus'), '再加一個分類') : null, summary);
+      paintSummary();
+    };
+    paintLines();
+    const toggle = h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: f.splitOn, 'data-testid': 'split-toggle', onchange: (e) => { f.splitOn = e.target.checked; if (f.splitOn) f.instOn = false; draw(); } }),
+      '拆成多個分類（例如好市多：食材＋日用品）');
+    return field('splits', '', toggle, box);
+  }
+
   // 分期付款（零利率）：付款帳戶是信用卡、新增時才出現。購買當下記全額，帳單每期只算一份（見 core/creditcard.js）
   function installmentField() {
     const a = accountById(f.acct);
@@ -365,7 +407,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     for (const k of Object.keys(fieldEls)) delete fieldEls[k];
     const parts = [];
     if (type === '支出') {
-      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '付款帳戶', 'acct', 'sym'), closeBox, installmentField(), categoryField('支出'), merchantField(), dateField(), noteField(), moreFields(true));
+      parts.push(amountField('amount', f.splitOn ? '金額（這次刷卡／付款的總額）' : '金額', 'amount', 'sym', null, true), accountSelect('acct', '付款帳戶', 'acct', 'sym'), closeBox,
+        f.splitOn ? null : installmentField(), splitField(), f.splitOn ? null : categoryField('支出'), merchantField(), dateField(), noteField(), moreFields(true));
     } else if (type === '收入') {
       parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '入帳帳戶', 'acct', 'sym'), categoryField('收入'), merchantField(), dateField(), noteField(), moreFields(true));
     } else if (type === '退款') {
@@ -497,6 +540,25 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     if (!FinDates.isValid(f.date)) return { error: { field: 'date', message: '請選擇日期' } };
     if (type === '支出' || type === '收入' || type === '退款') {
       const a = amt('amount', type === '退款' ? '退款金額' : '金額'); if (a.error) return a;
+      if (!editing && type === '支出' && f.splitOn) {
+        const dec = decimalsOf(f.sym), unit = Math.pow(10, dec);
+        const lines = [];
+        let sum = 0;
+        for (let i = 0; i < f.splits.length; i++) {
+          const ln = f.splits[i];
+          if (!ln.cat && String(ln.amt).trim() === '') continue; // 空白行略過
+          if (!ln.cat) return { error: { field: 'split' + i, message: '請選這一行的分類' } };
+          const x = parseAmount(ln.amt);
+          if (x.empty || x.bad || !(x.n > 0)) return { error: { field: 'split' + i, message: '這一行的金額要大於 0' } };
+          if (!FinMoney.fitsDecimals(x.n, dec)) return { error: { field: 'split' + i, message: `${f.sym} 最多 ${dec} 位小數` } };
+          sum += Math.round(x.n * unit);
+          lines.push({ categoryId: ln.cat, amount: x.n });
+        }
+        if (lines.length < 2) return { error: { field: 'splits', message: '拆帳至少要 2 個分類（只有一個分類就取消勾選）' } };
+        if (sum !== Math.round(a.n * unit)) return { error: { field: 'splits', message: '各分類金額加起來要等於上面的總金額' } };
+        const t = { ...base, categoryId: lines[0].categoryId, srcAccount: f.acct, srcSymbol: f.sym, srcQty: a.n, __splits: lines };
+        return { tx: t };
+      }
       if (!f.categoryId) return { error: { field: 'cat', message: '請選擇分類' } };
       const t = { ...base, categoryId: f.categoryId };
       if (type === '支出') Object.assign(t, { srcAccount: f.acct, srcSymbol: f.sym, srcQty: a.n });
@@ -569,6 +631,8 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     if (built.error) { setError(built.error.field, built.error.message); return; }
     const inst = built.tx.__inst || null;
     delete built.tx.__inst;
+    const splits = built.tx.__splits || null;
+    delete built.tx.__splits;
     last.type = type; last.acct = f.acct; if (type === '轉帳' || type === '換匯') last.acct2 = f.acct2;
     const localTx = Object.assign({}, editing ? tx : { status: '有效', createdAt: '', updatedAt: '' }, built.tx, { id: editing ? tx.id : 'tmp-' + Date.now().toString(36) });
     // 合併帳單繳款：後端依各卡欠款分攤成多筆轉帳（畫面上先當一筆轉帳套用，背景更新後會是正式的多筆）
@@ -577,12 +641,20 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
       : cardPay ? { accountIds: cardPay.accountIds, fromAccount: built.tx.srcAccount, amount: built.tx.srcQty, date: built.tx.date, note: built.tx.note, tags: built.tx.tags, requestId }
         : { tx: built.tx, requestId };
     if (inst) { params.terms = inst.terms; params.remainderOn = inst.remainderOn; }
+    if (splits) params.splits = splits;
     const action = editing ? 'updateTransaction' : cardPay ? 'addCardPayment' : inst ? 'addInstallment' : 'addTransaction';
     const reopen = (errors) => openTxForm({ tx, preset, onDone, draft: { type, f: Object.assign({}, f) }, serverErrors: errors || null });
     sheet.close();
     const res = await write(action, params, {
       optimistic: () => applyTxLocal(localTx, editing ? tx : null),
-      onResult: (r) => { if (r && r.tx) { const i = state.data.recent.findIndex((t) => t.id === localTx.id); if (i >= 0) state.data.recent[i] = r.tx; } },
+      onResult: (r) => {
+        if (r && r.split) { // 拆帳：本機那一筆總額換成後端正式的多筆
+          const i = state.data.recent.findIndex((t) => t.id === localTx.id);
+          if (i >= 0) state.data.recent.splice(i, 1, ...r.split);
+          return;
+        }
+        if (r && r.tx) { const i = state.data.recent.findIndex((t) => t.id === localTx.id); if (i >= 0) state.data.recent[i] = r.tx; }
+      },
       retry: () => reopen(null),
       onError: (e) => {
         if (e.code === 'VALIDATION' && e.details && e.details.errors && e.details.errors.length) setTimeout(() => reopen(e.details.errors), 0);
@@ -592,9 +664,11 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     if (onDone && onDone !== refresh) { try { await onDone(); } catch (e) { /* 資料稍後會自動更新 */ } }
     if (cardPay) { toast(`已記錄繳款${res.txs && res.txs.length > 1 ? `（分攤到 ${res.txs.length} 張卡）` : ''}`); return; }
     const saved = res.tx;
-    const msgs = [editing ? '已儲存修改' : inst ? `已新增（分 ${inst.terms} 期）` : '已新增'].concat(res.warnings || []);
+    const msgs = [editing ? '已儲存修改' : inst ? `已新增（分 ${inst.terms} 期）` : splits ? `已新增（拆成 ${splits.length} 個分類）` : '已新增'].concat(res.warnings || []);
     toast(msgs.join('　'), editing ? {} : { action: { label: '復原', fn: async () => {
-      const r = await write('voidTransaction', { id: saved.id, expectedUpdatedAt: saved.updatedAt }, { optimistic: () => applyTxLocal(Object.assign({}, saved, { status: '作廢' }), saved), failPrefix: '復原失敗：' });
+      // 拆帳：整組一起作廢（畫面上先當成一筆總額還原）
+      const undoLocal = splits ? Object.assign({}, localTx, { id: saved.id }) : saved;
+      const r = await write('voidTransaction', { id: saved.id, expectedUpdatedAt: saved.updatedAt, wholeGroup: !!splits }, { optimistic: () => applyTxLocal(Object.assign({}, undoLocal, { status: '作廢' }), undoLocal), failPrefix: '復原失敗：' });
       if (r) toast('已復原');
     } } });
   }

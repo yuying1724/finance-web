@@ -967,6 +967,55 @@ test('快結帳提醒：信用卡結帳日前 3 天內記帳會問這期或下�
   });
 });
 
+test('拆帳：一次刷卡拆成食材＋日用品，加總不對會擋；存成一組，清單合成一列，可整筆作廢', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const card = be.call('upsertAccount', { account: { name: '拆帳卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    void card;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '3500');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '拆帳卡' });
+    await page.check('[data-testid=split-toggle]');
+    await page.waitForSelector('[data-testid=split-box] [data-testid=split-cat]');
+    assert.equal(await page.locator('.sheet .cat-grid').count(), 0, '拆帳時不顯示單一分類');
+    const cats = page.locator('[data-testid=split-cat]');
+    const optVal = async (label) => page.evaluate((l) => [...document.querySelector('[data-testid=split-cat]').options].find((o) => o.textContent === l).value, label);
+    await cats.nth(0).selectOption(await optVal('飲食 › 生鮮雜貨'));
+    await page.locator('[data-testid=split-amt]').nth(0).fill('2300');
+    await cats.nth(1).selectOption(await optVal('購物 › 日用品'));
+    await page.locator('[data-testid=split-amt]').nth(1).fill('1000');
+    assert.match(await page.locator('[data-testid=split-summary]').innerText(), /還沒分配 NT\$200/);
+    await page.fill('input[placeholder^="例如：全聯"]', '好市多');
+    await a.save();
+    await page.waitForSelector('.sheet [data-field=splits].err');
+    assert.match(await page.locator('.sheet [data-field=splits]').innerText(), /加起來要等於/);
+    await page.locator('[data-testid=split-rest]').nth(1).click();
+    assert.equal(await page.locator('[data-testid=split-amt]').nth(1).inputValue(), '1200');
+    assert.match(await page.locator('[data-testid=split-summary]').innerText(), /已分完/);
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    let legs = [];
+    for (let i = 0; i < 50 && legs.length < 2; i++) { await page.waitForTimeout(100); legs = be.call('listTransactions', { filters: { q: '好市多' } }).data.items; }
+    assert.equal(legs.length, 2);
+    assert.equal(legs[0].groupId, legs[1].groupId);
+    assert.deepEqual(legs.map((x) => x.srcQty).sort(), [1200, 2300]);
+    // 交易清單：合成一列
+    await a.tab('tx');
+    await page.waitForSelector('[data-testid=split-row]');
+    assert.match(await page.locator('[data-testid=split-row]').first().innerText(), /好市多[\s\S]*拆 2 類[\s\S]*生鮮雜貨、日用品|好市多[\s\S]*拆 2 類[\s\S]*日用品、生鮮雜貨/);
+    assert.match(await page.locator('[data-testid=split-row]').first().innerText(), /NT\$3,500/);
+    await page.click('[data-testid=split-row]');
+    await page.waitForSelector('[data-testid=split-detail]');
+    await page.click('[data-testid=split-void]');
+    await page.click('.dialog button:text-is("作廢"), .sheet button:text-is("作廢")');
+    for (let i = 0; i < 50; i++) { await page.waitForTimeout(100); const items = be.call('listTransactions', { filters: { q: '好市多', includeVoid: true } }).data.items; if (items.every((x) => x.status === '作廢')) break; }
+    const after = be.call('listTransactions', { filters: { q: '好市多', includeVoid: true } }).data.items;
+    assert.deepEqual(after.map((x) => x.status), ['作廢', '作廢']);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;
