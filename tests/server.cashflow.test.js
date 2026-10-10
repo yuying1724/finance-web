@@ -46,10 +46,10 @@ test('扣款日曆：信用卡上期帳單、本期預估、定期扣款都依�
   assert.equal(cf.unassigned.length, 1);
   assert.match(cf.unassigned[0].name, /沒設扣款帳戶的卡/);
   assert.equal(cf.shortCount, 1);
-  // 首頁摘要
+  // 首頁摘要看 30 天：11/15 才不足，還不提醒；沒設扣款帳戶的卡（10/25 繳）算在 30 天內
   const alert = b.call('bootstrap').data.cashAlert;
-  assert.equal(alert.short.length, 1);
-  assert.equal(alert.short[0].shortDate, '2026-11-15');
+  assert.equal(alert.days, 30);
+  assert.equal(alert.short.length, 0);
   assert.equal(alert.unassigned, 1);
 });
 
@@ -106,4 +106,25 @@ test('扣款日曆：定期刷信用卡不算「不夠扣款」（卡的餘額�
   b.state.mail.length = 0;
   b.ctx.FinRecurringJob.runDaily(b.mock.state.clock.now);
   assert.ok(!b.state.mail.find((m) => /數位生活卡/.test((m.subject || '') + (m.body || m.htmlBody || ''))), '信用卡不寄不足提醒');
+});
+
+test('對帳紀錄：調整交易的日期算「上次對帳」；餘額相符時 markReconciled 記下日子（不能是未來）', () => {
+  const b = fresh('2026-10-09');
+  const bank = b.acct('對帳銀行', '銀行');
+  const other = b.acct('沒對過', '銀行');
+  assert.ok(b.call('addTransaction', { tx: { type: '調整', date: '2026-09-01', dstAccount: bank, dstSymbol: 'TWD', dstQty: 100, categoryId: '' } }).ok);
+  let rec = b.call('bootstrap').data.reconciled;
+  assert.equal(rec[bank], '2026-09-01');
+  assert.equal(rec[other], undefined);
+  assert.equal(b.call('markReconciled', { accountId: bank, date: '2026-10-10' }).error.code, 'VALIDATION');
+  assert.equal(b.call('markReconciled', { accountId: 'A999' }).error.code, 'NOT_FOUND');
+  const r = b.call('markReconciled', { accountId: bank });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(r.data.date, '2026-10-09');
+  assert.ok(b.call('markReconciled', { accountId: other, date: '2026-10-01' }).ok);
+  rec = b.call('bootstrap').data.reconciled;
+  assert.deepEqual([rec[bank], rec[other]], ['2026-10-09', '2026-10-01']);
+  // 比較早的日子不會蓋掉比較晚的
+  assert.ok(b.call('markReconciled', { accountId: bank, date: '2026-09-15' }).ok);
+  assert.equal(b.call('bootstrap').data.reconciled[bank], '2026-10-09');
 });

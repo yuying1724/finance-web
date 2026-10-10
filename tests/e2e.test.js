@@ -740,6 +740,68 @@ test('未來扣款日曆：首頁提醒餘額不足的帳戶；打開日曆依�
     // 待辦卡底下的連結也能打開
     await page.click('[data-testid=open-cashflow]');
     await page.waitForSelector('.sheet [data-testid=cf-item]'); // 記得上次選的「依日期」
+    assert.equal(await page.locator('.sheet .chip.on').first().innerText(), '30 天', '每次打開都是 30 天');
+  });
+});
+
+test('未來扣款日曆：不足時「轉帳補足」帶好轉出（剩最多的帳戶）、轉入與金額，存好後提醒消失；很久沒對帳的提醒先對帳，餘額相符可記為已對帳', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const day = (n) => be.ctx.FinDates.addDays(today, n);
+    const dom = (d) => Number(d.slice(8, 10));
+    const bank = be.call('upsertAccount', { account: { name: '繳卡費小帳戶', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const rich = be.call('upsertAccount', { account: { name: '薪轉大帳戶', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const poor = be.call('upsertAccount', { account: { name: '零錢帳戶', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const card = be.call('upsertAccount', { account: { name: '補足測試卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    const cats = be.call('bootstrap').data.categories;
+    const inc = cats.find((c) => c.type === '收入').id;
+    const food = cats.find((c) => c.name === '午餐' && c.type === '支出').id;
+    // 用收入（不是調整）放錢進去：繳卡費小帳戶從沒對帳過
+    for (const [id, q] of [[bank, 500], [rich, 900000], [poor, 3000]]) assert.ok(be.call('addTransaction', { tx: { type: '收入', date: day(-20), dstAccount: id, dstSymbol: 'TWD', dstQty: q, categoryId: inc } }).ok);
+    assert.ok(be.call('upsertCardSettings', { card: { accountId: card, statementDay: dom(day(-5)), dueDay: dom(day(10)), limit: 50000, payAccountId: bank } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: day(-12), srcAccount: card, srcSymbol: 'TWD', srcQty: 3000, categoryId: food } }).ok);
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.click('[data-testid=open-cashflow]');
+    await page.waitForSelector('.sheet [data-testid=cf-short]');
+    assert.equal(await page.locator('.sheet .chip.on').first().innerText(), '30 天', '預設 30 天');
+    const notice = await page.locator('[data-testid=cf-short]').innerText();
+    assert.match(notice, /建議從「薪轉大帳戶」轉/);
+    assert.match(notice, /還沒對帳過/);
+    assert.equal(await page.locator('[data-testid=cf-reconcile]').count(), 1);
+    // 先對帳：餘額本來就對，按儲存記為已對帳（不新增調整交易）
+    await page.click('[data-testid=cf-reconcile]');
+    await page.waitForSelector('.sheet [data-testid=tx-save]');
+    await page.fill('.sheet input[aria-label="實際餘額"]', '500');
+    assert.match(await page.locator('.sheet').innerText(), /按儲存會記為「已對帳」/);
+    await page.click('.sheet [data-testid=tx-save]');
+    await page.waitForFunction(() => /餘額相符，已記為對帳/.test(document.body.innerText));
+    for (let i = 0; i < 30 && !be.call('bootstrap').data.reconciled[bank]; i++) await page.waitForTimeout(100);
+    assert.equal(be.call('bootstrap').data.reconciled[bank], today);
+    assert.ok(!be.call('listTransactions', { filters: {}, limit: 50 }).data.items.some((t) => t.type === '調整' && (t.dstAccount === bank || t.srcAccount === bank)));
+    // 對帳後重新打開日曆：不再提醒對帳，但還是不足 → 轉帳補足
+    await page.waitForSelector('.sheet [data-testid=cf-short]');
+    assert.equal(await page.locator('[data-testid=cf-reconcile]').count(), 0);
+    assert.match(await page.locator('[data-testid=cf-topup]').innerText(), /轉帳補足 NT\$2,500/);
+    await page.click('[data-testid=cf-topup]');
+    await page.waitForSelector('.sheet [data-testid=tx-save]');
+    await page.click('.sheet [data-testid=tx-save]');
+    let t = null;
+    for (let i = 0; i < 30 && !t; i++) { await page.waitForTimeout(100); t = be.call('listTransactions', { filters: {}, limit: 50 }).data.items.find((x) => x.type === '轉帳' && x.dstAccount === bank); }
+    assert.ok(t, '有轉帳');
+    assert.deepEqual([t.srcAccount, t.dstAccount, t.srcQty, t.date], [rich, bank, 2500, today]);
+    assert.match(t.note, /補足扣款/);
+    await page.waitForSelector('.sheet [data-testid=cf-account][data-account="繳卡費小帳戶"]');
+    assert.equal(await page.locator('[data-testid=cf-short]').count(), 0, '補足後不再不足');
+    assert.match(await page.locator('[data-testid=cf-account][data-account="繳卡費小帳戶"]').innerText(), /上次對帳/);
+    await page.click('.sheet [aria-label="關閉"]'); await page.waitForSelector('.sheet', { state: 'detached' });
+    // 帳戶詳情也看得到對帳狀態
+    await a.tab('accounts');
+    await page.click('text=零錢帳戶');
+    await page.waitForSelector('.sheet [data-testid=reconcile-status]');
+    assert.match(await page.locator('.sheet [data-testid=reconcile-status]').innerText(), /還沒對帳過/);
   });
 });
 

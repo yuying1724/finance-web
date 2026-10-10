@@ -494,6 +494,28 @@ var FinApi = (function () {
     return uniq;
   }
 
+  // ---------- 對帳紀錄：每個帳戶「上次對帳」的日子 ----------
+  // 有兩個來源取比較晚的：①「餘額調整（對帳）」交易的日期 ②餘額本來就對、按「餘額相符，記為已對帳」存在「設定」分頁 reconciledAt（JSON 物件 {帳戶ID: 日期}）
+  var RECONCILED_KEY = 'reconciledAt';
+  function reconciledMarks(settings) {
+    try {
+      var v = (settings || FinRepo.getSettings())[RECONCILED_KEY];
+      var o = v ? JSON.parse(String(v)) : {};
+      return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+    } catch (e) { return {}; }
+  }
+  function reconciledMap(c) {
+    var out = {};
+    var marks = reconciledMarks(c.settings);
+    Object.keys(marks).forEach(function (id) { if (FinDates.isValid(String(marks[id]))) out[id] = String(marks[id]); });
+    c.txRows.forEach(function (t) {
+      if (t.status !== '有效' || t.type !== '調整' || t.date > c.today) return;
+      var id = t.dstAccount || t.srcAccount;
+      if (id && (!out[id] || t.date > out[id])) out[id] = t.date;
+    });
+    return out;
+  }
+
   /** 記帳表單「常用帳戶」：最近 120 天每個帳戶出現在幾筆有效交易（來源或目的） */
   function accountUsage(c) {
     var since = FinDates.addDays(c.today, -120), out = {};
@@ -549,7 +571,7 @@ var FinApi = (function () {
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
         brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
         cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub), cardOverview: cardOv, upcoming: upcoming(c, 30, cardOv),
-        cashAlert: cashAlert(cashflow(c, 60, cardOv, calc)),
+        cashAlert: cashAlert(cashflow(c, 30, cardOv, calc)), reconciled: reconciledMap(c),
         installments: installmentList(c),
         recurring: c.recurringRows.map(pub), recurringNext: recurringNext(c), pendingConfirmations: pendingConfirmations(c),
         prices: c.priceInfo,
@@ -595,6 +617,29 @@ var FinApi = (function () {
    * 商家管理：action = 'hide'（不在建議顯示，交易不動）／'show'（恢復顯示）／'rename'（所有用這個名稱的交易改成 newName；newName 已存在就等於合併）
    * ／'clear'（所有用這個名稱的交易清空商家欄位；moveToNote 時把名稱加到備註前面）
    */
+  /** 餘額本來就和實際一樣（不需要調整）時，記下「這天對過帳」 */
+  H.markReconciled = {
+    fn: function (p, env) {
+      var id = str(p.accountId);
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var a = c.accounts[id];
+        if (!a) throw FinFail('NOT_FOUND', '找不到帳戶 ' + id);
+        var date = str(p.date) || c.today;
+        if (!FinDates.isValid(date)) throw FinFail('VALIDATION', '日期格式不正確', { errors: [{ field: 'date', message: '日期格式不正確' }], warnings: [] });
+        if (date > c.today) throw FinFail('VALIDATION', '對帳日不能是未來的日子', { errors: [{ field: 'date', message: '對帳日不能是未來的日子' }], warnings: [] });
+        var marks = reconciledMarks(c.settings);
+        if (!marks[id] || String(marks[id]) < date) marks[id] = date;
+        var value = JSON.stringify(marks);
+        var row = FinRepo.findById('settings', RECONCILED_KEY);
+        if (row) FinRepo.updateRow('settings', row._row, { value: value });
+        else FinRepo.append('settings', [{ key: RECONCILED_KEY, value: value, note: '各帳戶「餘額相符、已對帳」的日子（App：帳戶 › 對帳）' }]);
+        FinRepo.audit('修改', 'settings', RECONCILED_KEY, '對帳（餘額相符）：' + a.name + ' ' + date, env.device);
+        return { accountId: id, date: reconciledMap(loadContext(env.now))[id] || date };
+      });
+    },
+  };
+
   H.updateMerchant = {
     fn: function (p, env) {
       var name = str(p.name), action = str(p.action);
@@ -1390,7 +1435,7 @@ var FinApi = (function () {
     },
   };
 
-  /** 首頁提醒用的摘要：未來 60 天可能不足的帳戶、還沒指定扣款帳戶的筆數 */
+  /** 首頁提醒用的摘要：未來 30 天可能不足的帳戶、還沒指定扣款帳戶的筆數 */
   function cashAlert(cf) {
     return { days: cf.days, unassigned: cf.unassigned.length,
       short: cf.accounts.filter(function (a) { return a.shortfall > 0; }).map(function (a) { return { accountId: a.accountId, name: a.name, symbol: a.symbol, shortDate: a.shortDate, shortfall: a.shortfall }; }) };

@@ -539,7 +539,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
           if (a.empty || a.bad) { diffBox.textContent = `目前系統餘額 ${money(balanceOf(f.acct, f.sym), f.sym, { noMask: false })}`; return; }
           const dec = decimalsOf(f.sym);
           const diff = FinMoney.toUnits(a.n, dec) - FinMoney.toUnits(balanceOf(f.acct, f.sym), dec);
-          diffBox.textContent = `目前系統餘額 ${money(balanceOf(f.acct, f.sym), f.sym)}，` + (diff === 0 ? '與輸入相同，不需要調整' : `將調整 ${diff > 0 ? '+' : '-'}${FinMoney.format(FinMoney.fromUnits(Math.abs(diff), dec), dec, { trim: dec > 2, trimWhole: FinMoney.billingDecimals(f.sym, dec) < dec })} ${f.sym}`);
+          diffBox.textContent = `目前系統餘額 ${money(balanceOf(f.acct, f.sym), f.sym)}，` + (diff === 0 ? '與輸入相同，按儲存會記為「已對帳」' : `將調整 ${diff > 0 ? '+' : '-'}${FinMoney.format(FinMoney.fromUnits(Math.abs(diff), dec), dec, { trim: dec > 2, trimWhole: FinMoney.billingDecimals(f.sym, dec) < dec })} ${f.sym}`);
         };
         const input = h('input', { type: 'text', inputmode: 'decimal', class: 'amount-input', autocomplete: 'off', placeholder: '0', value: f.actual, 'aria-label': '實際餘額', oninput: (e) => { f.actual = e.target.value; paintDiff(); } });
         if (wantFocus) { wantFocus = false; setTimeout(() => input.focus(), 60); }
@@ -725,7 +725,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
       const dec = decimalsOf(f.sym);
       if (!FinMoney.fitsDecimals(a.n, dec)) return { error: { field: 'actual', message: `${f.sym} 最多 ${dec} 位小數` } };
       const diff = FinMoney.toUnits(a.n, dec) - FinMoney.toUnits(balanceOf(f.acct, f.sym), dec);
-      if (diff === 0) return { error: { field: 'actual', message: '和系統餘額相同，不需要調整' } };
+      if (diff === 0) return { reconcileOnly: { accountId: f.acct, date: f.date || state.data.today } };
       const qty = FinMoney.fromUnits(Math.abs(diff), dec);
       return { tx: { ...base, ...(diff > 0 ? { dstAccount: f.acct, dstSymbol: f.sym, dstQty: qty } : { srcAccount: f.acct, srcSymbol: f.sym, srcQty: qty }) } };
     }
@@ -766,6 +766,16 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     clearErrors();
     const built = buildTx();
     if (built.error) { setError(built.error.field, built.error.message); return; }
+    if (built.reconcileOnly) {
+      // 對帳：餘額本來就對，不用新增調整交易，只記下「這天對過帳」
+      sheet.close();
+      const r = await write('markReconciled', built.reconcileOnly, { failPrefix: '記錄對帳失敗：' });
+      if (!r) return;
+      state.data.reconciled = Object.assign({}, state.data.reconciled, { [built.reconcileOnly.accountId]: r.date });
+      toast('餘額相符，已記為對帳');
+      if (onDone && onDone !== refresh) { try { await onDone(); } catch (e) { /* 資料稍後會自動更新 */ } }
+      return;
+    }
     const inst = built.tx.__inst || null;
     delete built.tx.__inst;
     const splits = built.tx.__splits || null;

@@ -112,6 +112,26 @@ function accountItem(a) {
 }
 
 /** 收回代墊：開一筆轉帳，轉出＝應收帳戶，轉入選錢實際進到哪裡；金額依對方還多少填（可以一個人一個人收） */
+/** 對帳：銀行／電子錢包／現金帳戶多久沒對帳了（系統餘額和實際一樣嗎？） */
+export const RECONCILE_TYPES = ['銀行', '數位錢包', '現金'];
+export const RECONCILE_STALE_DAYS = 30;
+/** 上次對帳到今天幾天；沒對過回傳 null */
+export function reconcileAge(accountId) {
+  const d = (state.data.reconciled || {})[accountId];
+  if (!d) return null;
+  return Math.round((Date.parse(state.data.today + 'T00:00:00Z') - Date.parse(d + 'T00:00:00Z')) / 86400000);
+}
+export function reconcileText(accountId) {
+  const n = reconcileAge(accountId);
+  if (n === null) return '還沒對帳過：系統餘額可能和實際不一樣，按「對帳」輸入實際餘額';
+  const d = state.data.reconciled[accountId];
+  const when = n === 0 ? '今天' : `${n} 天前`;
+  return `上次對帳 ${d.slice(5).replace('-', '/')}（${when}）` + (n > RECONCILE_STALE_DAYS ? '，很久沒對了，建議再對一次' : '');
+}
+export function openReconcile(a, onDone) {
+  openTxForm({ preset: { type: '調整', acct: a.id }, onDone });
+}
+
 export function openCollect(a) {
   openTxForm({ preset: { type: '轉帳', acct: a.id, note: '收回代墊' } });
 }
@@ -128,11 +148,12 @@ function openAccountDetail(a) {
     title: a.name,
     body: h('div', null,
       h('div', { class: 'muted small', style: { marginBottom: '8px' } }, `${a.type}${a.institution ? ' · ' + a.institution : ''}${a.note ? ' · ' + a.note : ''}`),
+      RECONCILE_TYPES.includes(a.type) ? h('div', { class: 'small ' + (reconcileAge(a.id) === null || reconcileAge(a.id) > RECONCILE_STALE_DAYS ? 'amt-due' : 'muted'), style: { marginBottom: '8px' }, 'data-testid': 'reconcile-status' }, reconcileText(a.id)) : null,
       holdings.length ? h('ul', { class: 'list' }, holdings.map((b) => { const inst = state.data.instruments.find((i) => i.symbol === b.symbol); const isShare = isShareSymbol(b.symbol); return h('li', null, h('div', { class: 'item' }, h('div', { class: 'grow' }, isShare && inst ? `${b.symbol}　${inst.name}` : b.symbol), h('div', { class: 'amt' }, isShare ? shares(b.qty, { mask: true, symbol: b.symbol }) : money(b.qty, b.symbol)))); })) : h('div', { class: 'muted' }, '目前沒有餘額'),
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
         ...liabilityBtns,
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); location.hash = '#/tx?acct=' + a.id; } }, '看交易'),
-        h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openTxForm({ preset: { type: '調整', acct: a.id } }), 0); } }, '對帳（輸入實際餘額）'),
+        h('button', { class: 'btn btn-sm', 'data-testid': 'reconcile-btn', onclick: () => { sheet.close(); setTimeout(() => openReconcile(a), 0); } }, '對帳（輸入實際餘額）'),
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openAccountForm({ account: a }), 0); } }, '編輯'),
         h('button', { class: 'btn btn-sm ' + (a.active ? 'btn-danger' : ''), onclick: async () => {
           sheet.close(); // 樂觀更新：先在本機切換，背景送出，失敗自動還原

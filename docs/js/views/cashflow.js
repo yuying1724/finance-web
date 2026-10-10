@@ -4,6 +4,8 @@ import { state } from '../store.js';
 import * as api from '../api.js';
 import { money } from '../fmt.js';
 import { openSheet, errorText } from '../ui.js';
+import { openTxForm } from './txform.js';
+import { RECONCILE_TYPES, RECONCILE_STALE_DAYS, reconcileAge, reconcileText, openReconcile } from './accounts.js';
 
 /**
  * 未來扣款日曆：未來 N 天每個帳戶會被扣（或入帳）多少、餘額夠不夠。
@@ -31,6 +33,46 @@ function itemRow(r, opts = {}) {
       opts.showBalance && r.balanceAfter !== undefined ? h('div', { class: 'small ' + (r.balanceAfter < 0 ? 'amt-due' : 'muted') }, '餘額 ' + money(r.balanceAfter, r.symbol)) : null)));
 }
 
+/**
+ * 補足用的轉出帳戶：同幣別的銀行／電子錢包（不含自己），以「這段期間最低點還剩多少」最多的那個；
+ * 沒出現在日曆裡的帳戶就用目前餘額。都不夠也還是挑剩最多的（表單裡可以改）。
+ */
+export function suggestSource(short, cf) {
+  const byId = {};
+  (cf.accounts || []).forEach((g) => { if (g.symbol === short.symbol) byId[g.accountId] = g; });
+  const cands = (state.data.accounts || []).filter((a) => a.active !== false && a.id !== short.accountId && ['銀行', '數位錢包'].includes(a.type)
+    && (!a.defaultSymbol || a.defaultSymbol === short.symbol));
+  let best = null;
+  cands.forEach((a) => {
+    const g = byId[a.id];
+    const bal = (state.data.balances || []).find((b) => b.accountId === a.id && b.symbol === short.symbol);
+    const spare = g ? Math.min(g.minBalance, g.balance) : (bal ? Number(bal.qty) || 0 : 0);
+    if (spare > 0 && (!best || spare > best.spare)) best = { id: a.id, name: a.name, spare };
+  });
+  return best;
+}
+
+/** 不足的帳戶：「轉帳補足」帶好轉出（剩最多的帳戶）、轉入（不足的帳戶）、金額（最多還差多少）；很久沒對帳的提醒先對帳 */
+function shortActions(a, cf, close, reopen) {
+  const src = suggestSource(a, cf);
+  const first = a.items.find((r) => r.date === a.shortDate);
+  const btns = [h('button', { type: 'button', class: 'btn btn-sm btn-primary', 'data-testid': 'cf-topup', onclick: () => {
+    close();
+    setTimeout(() => openTxForm({ preset: { type: '轉帳', acct: src ? src.id : '', acct2: a.accountId, amount: Math.ceil(a.shortfall), note: '補足扣款' + (first ? '：' + first.name : '') }, onDone: reopen }), 0);
+  } }, '轉帳補足 ' + money(Math.ceil(a.shortfall), a.symbol))];
+  const age = RECONCILE_TYPES.includes(a.type) ? reconcileAge(a.accountId) : 0;
+  const stale = age === null || age > RECONCILE_STALE_DAYS;
+  if (stale) btns.push(h('button', { type: 'button', class: 'btn btn-sm', 'data-testid': 'cf-reconcile', onclick: () => {
+    close();
+    const acct = (state.data.accounts || []).find((x) => x.id === a.accountId);
+    setTimeout(() => openReconcile(acct, reopen), 0);
+  } }, '先對帳'));
+  return h('div', null,
+    src ? h('div', { class: 'small muted', style: { marginTop: '4px' } }, `建議從「${src.name}」轉（這段期間最少還有 ${money(src.spare, a.symbol)}）`) : null,
+    stale ? h('div', { class: 'small', style: { marginTop: '4px' } }, reconcileText(a.accountId) + '。如果實際餘額比較多，對帳後這個提醒可能就不見了。') : null,
+    h('div', { class: 'row-flex wrap', style: { gap: '6px', marginTop: '6px' } }, btns));
+}
+
 function accountBlock(a) {
   if (a.liability) {
     // 信用卡／應付：刷卡不用卡裡有錢，只會加進帳單，所以不算「不足」，改寫成這段期間會刷多少
@@ -51,12 +93,14 @@ function accountBlock(a) {
       short ? h('span', { class: 'badge bad' }, `${md(a.shortDate)} 起不足`) : h('span', { class: 'badge good' }, '餘額足夠')),
     h('div', { class: 'muted small', style: { marginBottom: '6px' } },
       `目前 ${money(a.balance, a.symbol)}　→　期末 ${money(a.endBalance, a.symbol)}` + (short ? `　最多還差 ${money(a.shortfall, a.symbol)}` : '')),
+    !short && RECONCILE_TYPES.includes(a.type) ? h('div', { class: 'muted small', style: { marginBottom: '6px' } }, reconcileText(a.accountId)) : null,
     h('ul', { class: 'list' }, a.items.map((r) => itemRow(r, { showBalance: true }))));
 }
 
-let view = 'account', days = 60;
+let view = 'account';
 
 export function openCashflow() {
+  let days = 30; // 每次打開都從 30 天開始（首頁提醒也是看 30 天）
   const body = h('div', null, h('div', { class: 'empty' }, '載入中…'));
   const sheet = openSheet({ title: '未來扣款日曆', body });
   let data = null;
@@ -77,7 +121,8 @@ export function openCashflow() {
     data.accounts.filter((a) => a.shortfall > 0).forEach((a) => {
       const first = a.items.find((r) => r.date === a.shortDate);
       notices.push(h('div', { class: 'notice bad', style: { marginBottom: '8px' }, 'data-testid': 'cf-short' }, icon('alert'),
-        h('div', null, `${a.name} 在 ${md(a.shortDate)} 可能不夠扣款${first ? `（${first.name}）` : ''}，最多還差 ${money(a.shortfall, a.symbol)}，記得提早轉帳進去。`)));
+        h('div', { class: 'grow' }, `${a.name} 在 ${md(a.shortDate)} 可能不夠扣款${first ? `（${first.name}）` : ''}，最多還差 ${money(a.shortfall, a.symbol)}，記得提早轉帳進去。`,
+          shortActions(a, data, () => sheet.close(), () => openCashflow()))));
     });
     if (data.unassigned.length) {
       notices.push(h('div', { class: 'notice', style: { marginBottom: '8px' }, 'data-testid': 'cf-unassigned' }, icon('alert'),
@@ -87,7 +132,7 @@ export function openCashflow() {
     const empty = !data.items.length ? h('div', { class: 'empty' }, `未來 ${data.days} 天沒有預計的扣款或入帳`) : null;
     let main;
     if (view === 'account') {
-      main = h('div', null, data.accounts.map(accountBlock),
+      main = h('div', null, data.accounts.map((a) => accountBlock(a)),
         data.unassigned.length ? h('div', { class: 'card', style: { padding: '12px' } },
           h('div', { class: 'card-title' }, h('h2', { style: { fontSize: '15px' } }, '未指定扣款帳戶')),
           h('ul', { class: 'list' }, data.unassigned.map((r) => itemRow(r)))) : null);
@@ -102,7 +147,7 @@ export function openCashflow() {
   return sheet;
 }
 
-/** 首頁「待辦」卡用：未來 60 天有帳戶可能不足時的提醒列（沒有就回傳 null） */
+/** 首頁「待辦」卡用：未來 30 天有帳戶可能不足時的提醒列（沒有就回傳 null） */
 export function cashAlertRow() {
   const ca = state.data && state.data.cashAlert;
   if (!ca || !ca.short || !ca.short.length) return null;

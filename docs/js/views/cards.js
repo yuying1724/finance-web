@@ -139,7 +139,7 @@ export function todoCard() {
   const ov = d.cardOverview, up = d.upcoming;
   const pending = (d.pendingConfirmations || []).length;
   const rows = [];
-  const alertRow = cashAlertRow(); // 未來 60 天有帳戶餘額可能不夠扣款：放最上面
+  const alertRow = cashAlertRow(); // 未來 30 天有帳戶餘額可能不夠扣款：放最上面
   if (alertRow) rows.push(alertRow);
   if (pending) {
     rows.push(h('li', null, h('a', { class: 'item', href: '#/todo', 'data-testid': 'pending-notice' },
