@@ -9,7 +9,8 @@ import { openSheet, errorText } from '../ui.js';
  * 每月支出圖表（首頁「本月」卡 → 支出圖表）：
  *  - 上半部：最近 6／12 個月每月支出的長條圖（單一數列、同一個顏色），點長條切換下面看的月份，虛線是期間平均
  *  - 下半部：選定月份的大分類排行（金額、占比、細條），點大分類展開細項，同時上面的圖改成只看這個分類的每月金額
- * 資料來自後端 getMonthlyExpenses（規則跟首頁本月支出一樣：支出加總、退款抵銷，轉帳／買賣／調整不算）。
+ * 資料來自後端 getMonthlyExpenses（支出加總、退款抵銷，轉帳／買賣／調整不算；分期依每期金額算在出帳月份），只顯示開始記帳以後的月份；
+ * 圖下面列出每個月的合計，點一下換月份。
  */
 const RANGES = [[6, '6 個月'], [12, '12 個月']];
 const SVG = 'http://www.w3.org/2000/svg';
@@ -58,7 +59,7 @@ function barChart(months, ui, base, onPick) {
   const W = 320, H = 150, PL = 4, PR = 4, PT = 20, PB = 18;
   const vals = months.map((m) => Math.max(0, valueOf(m, ui.filter)));
   const max = niceMax(Math.max(...vals));
-  const n = months.length, slot = (W - PL - PR) / n, gap = 2, bw = Math.max(4, slot - gap);
+  const n = months.length, slot = (W - PL - PR) / n, gap = 2, bw = Math.max(4, Math.min(slot - gap, 44)); // 月份少時長條不會變得超寬
   const y = (v) => PT + (1 - v / max) * (H - PT - PB);
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'sp-chart', role: 'img', 'aria-label': `每月支出長條圖，${ymLabel(months[0].ym)} 到 ${ymLabel(months[n - 1].ym)}` });
   svg.appendChild(s('line', { x1: PL, x2: W - PR, y1: H - PB, y2: H - PB, class: 'nw-axis' }));
@@ -69,7 +70,7 @@ function barChart(months, ui, base, onPick) {
   }
   months.forEach((m, i) => {
     const v = vals[i];
-    const x0 = PL + i * slot + gap / 2;
+    const x0 = PL + i * slot + (slot - bw) / 2;
     const top = y(v), bottom = H - PB;
     const on = m.ym === ui.ym;
     if (v > 0) {
@@ -104,7 +105,8 @@ export function openSpending() {
   function draw() {
     if (ui.error) { mount(body, h('div', { class: 'notice bad' }, errorText(ui.error))); return; }
     if (!ui.data) return;
-    const all = ui.data.months;
+    // 只顯示開始記帳（startYm）以後的月份
+    const all = ui.data.months.filter((m) => !ui.data.startYm || m.ym >= ui.data.startYm);
     const months = all.slice(-ui.range);
     if (!ui.ym || !months.some((m) => m.ym === ui.ym)) ui.ym = months[months.length - 1].ym;
     const cur = months.find((m) => m.ym === ui.ym);
@@ -152,12 +154,18 @@ export function openSpending() {
       return h('li', null, row, kids);
     });
 
+    // 每個月合計（新到舊），點一下換到那個月
+    const monthList = h('div', { class: 'sp-months', 'data-testid': 'sp-months' }, months.slice().reverse().map((m) =>
+      h('button', { type: 'button', class: 'sp-month' + (m.ym === ui.ym ? ' on' : ''), 'data-ym': m.ym, onclick: () => { ui.ym = m.ym; draw(); } },
+        h('span', { class: 'muted small' }, `${m.ym.slice(0, 4)}/${monthNum(m.ym)} 月`),
+        h('span', { class: 'sp-month-amt' }, money(valueOf(m, ui.filter), base, { whole: true })))));
+
     mount(body,
       h('div', { class: 'row-flex', style: { justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } }, chips, filterChip),
-      chart.svg, ui.tip, head,
+      chart.svg, ui.tip, monthList, head,
       groups.length ? h('ul', { class: 'list' }, rows) : h('div', { class: 'muted', style: { padding: '8px 0' } }, '這個月沒有支出'),
       cur.missing && cur.missing.length ? h('div', { class: 'muted small' }, `有外幣交易查不到匯率，沒算進去：${cur.missing.join('、')}`) : null,
-      h('div', { class: 'muted small', style: { marginTop: '8px' } }, '點長條換月份；點分類展開細項，上面的圖會改成只看這個分類。支出＝支出交易扣掉退款，轉帳、投資買賣、繳卡費都不算。'));
+      h('div', { class: 'muted small', style: { marginTop: '8px' } }, `點長條或月份換月份；點分類展開細項，上面的圖會改成只看這個分類。支出＝支出交易扣掉退款，轉帳、投資買賣、繳卡費都不算；分期付款依每期金額算在出帳的月份。從 ${ui.data.startYm.slice(0, 4)}/${monthNum(ui.data.startYm)} 月（開始記帳）起算。`));
   }
 
   api.call('getMonthlyExpenses', { months: 12 }).then((r) => { ui.data = r; draw(); }).catch((e) => { ui.error = e; draw(); });

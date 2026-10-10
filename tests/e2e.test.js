@@ -900,7 +900,8 @@ test('每月支出圖表：首頁開啟，顯示本月合計與大分類排行�
     const food = await page.locator('.sheet').innerText();
     assert.match(food, /飲食▾[\s\S]*早餐/); assert.match(food, /飲食▾[\s\S]*午餐/); // 展示資料本身也有飲食消費，只檢查細項有展開
     assert.ok(digits(await page.locator('[data-testid=sp-total]').innerText()) >= 3700);
-    // 點上個月的長條
+    // 圖下有每個月合計；點上個月的長條
+    assert.ok(await page.locator(`[data-testid=sp-months] .sp-month[data-ym="${ym}"]`).count() === 1);
     await page.click(`.sp-chart .sp-hit[data-ym="${prevYm}"]`);
     await page.waitForFunction((t) => document.querySelector('[data-testid=sp-total]') && document.querySelector('.sheet').innerText.includes(t), `${Number(prevYm.slice(5))} 月`);
     // 取消只看

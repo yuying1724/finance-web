@@ -144,7 +144,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.24',
+    APP_VERSION: '0.9.25',
   };
   return api;
 })();
@@ -2932,6 +2932,8 @@ var FinApi = (function () {
   /**
    * 每月支出（給「每月支出」圖表）：最近 months 個月（含 endYm，預設本月）每個月的支出合計與各分類金額。
    * 規則同 monthSummary：支出交易加總、退款抵銷同分類；轉帳、買賣、調整、股息都不算。只回傳「支出」分類的金額（收入分類不列）。
+   * 分期付款：不用購買當月的全額，改成每期金額算在該期出帳（結帳日）的月份，比較接近每個月實際要付的錢（帳本身不變）。
+   * startYm：開始記帳的月份＝最早一筆「非分期」支出的月份，前端只顯示這個月以後。
    */
   H.getMonthlyExpenses = {
     fn: function (p, env) {
@@ -2939,14 +2941,37 @@ var FinApi = (function () {
       var months = Math.max(1, Math.min(24, Math.floor(Number(p.months) || 6)));
       var endYm = /^\d{4}-\d{2}$/.test(str(p.endYm)) ? str(p.endYm) : FinDates.ymOf(c.today);
       var ctx = { instruments: c.instruments, prices: c.prices, base: c.base, categories: c.categories };
+      var sched = installmentSchedules(c);
+      var instTx = {};
+      sched.forEach(function (sc) { instTx[sc.txId] = true; });
+      var plainTx = c.txRows.filter(function (t) { return !instTx[t.id]; });
+      var dec = c.instruments[c.base] ? c.instruments[c.base].decimals : 0;
+      // 分期每期：{ ym: { categoryId: 基準幣別金額 } }
+      var instByYm = {};
+      sched.forEach(function (sc) {
+        var up = FinValuation.unitPrice(sc.symbol, c.instruments, c.prices, c.base, 0);
+        if (up === null) return;
+        sc.periods.forEach(function (pr) {
+          var ym = FinDates.ymOf(pr.closeDate);
+          if (!instByYm[ym]) instByYm[ym] = {};
+          instByYm[ym][sc.tx.categoryId] = (instByYm[ym][sc.tx.categoryId] || 0) + pr.amount * up;
+        });
+      });
+      var startYm = '';
+      plainTx.forEach(function (t) { if (t.status === '有效' && t.type === '支出' && (!startYm || t.date.slice(0, 7) < startYm)) startYm = t.date.slice(0, 7); });
       var out = [];
       for (var i = months - 1; i >= 0; i--) {
         var ym = FinDates.addMonths(endYm, -i);
-        var m = FinReport.monthSummary(c.txRows, ctx, ym);
-        var cats = m.byCategory.filter(function (x) { var k = c.categories[x.categoryId]; return (!k || k.type === '支出') && x.amount !== 0; });
-        out.push({ ym: ym, expense: m.expense, byCategory: cats, missing: m.missing });
+        var m = FinReport.monthSummary(plainTx, ctx, ym);
+        var byCat = {};
+        m.byCategory.forEach(function (x) { byCat[x.categoryId] = (byCat[x.categoryId] || 0) + x.amount; });
+        var instAmt = 0;
+        Object.keys(instByYm[ym] || {}).forEach(function (cid) { byCat[cid] = (byCat[cid] || 0) + instByYm[ym][cid]; instAmt += instByYm[ym][cid]; });
+        var cats = Object.keys(byCat).map(function (cid) { return { categoryId: cid, amount: FinMoney.round(byCat[cid], dec) }; })
+          .filter(function (x) { var k = c.categories[x.categoryId]; return (!k || k.type === '支出') && x.amount !== 0; });
+        out.push({ ym: ym, expense: FinMoney.round(m.expense + instAmt, dec), installment: FinMoney.round(instAmt, dec), byCategory: cats, missing: m.missing });
       }
-      return { base: c.base, today: c.today, months: out };
+      return { base: c.base, today: c.today, startYm: startYm || FinDates.ymOf(c.today), months: out };
     },
   };
 
