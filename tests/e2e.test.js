@@ -1233,6 +1233,38 @@ test('付款帳戶：帳戶多時依類型分組、常用快捷、類型篩選�
   });
 });
 
+test('每月支出圖表明細：點細項分類列出這個月算進去的每一筆，分期標第幾期，加起來等於細項金額', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const ym = today.slice(0, 7);
+    const bank = be.call('upsertAccount', { account: { name: '明細銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const card = be.call('upsertAccount', { account: { name: '明細卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('upsertCardSettings', { card: { accountId: card, statementDay: 25, dueDay: 10, limit: 300000, payAccountId: bank } }).ok);
+    const cat = be.call('bootstrap').data.categories.find((c) => c.name === '3C 電子').id;
+    const buy = be.ctx.FinDates.addMonths(ym, -5) + '-08';
+    assert.ok(be.call('addInstallment', { tx: { type: '支出', date: buy, srcAccount: card, srcSymbol: 'TWD', srcQty: 95988, categoryId: cat, merchant: '華碩官方購物' }, terms: 12 }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: ym + '-01', srcAccount: card, srcSymbol: 'TWD', srcQty: 8400, categoryId: cat, merchant: 'SET 硬碟資料救援' } }).ok);
+    const m = be.call('getMonthlyExpenses', { months: 1 }).data.months[0];
+    const c3 = m.byCategory.find((x) => x.categoryId === cat).amount;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.click('[data-testid=open-spending]');
+    await page.waitForSelector('[data-testid=sp-total]');
+    await page.click('[data-testid=sp-cat][data-cat="購物"]');
+    await page.waitForSelector('[data-testid=sp-kid][data-cat="3C 電子"]');
+    await page.click('[data-testid=sp-kid][data-cat="3C 電子"]');
+    await page.waitForSelector('[data-testid=sp-items]');
+    const items = page.locator('[data-testid=sp-items] [data-testid=sp-item]');
+    assert.ok(await items.count() >= 2, '展示資料本身可能也有 3C 消費');
+    const txt = await page.locator('[data-testid=sp-items]').innerText();
+    assert.match(txt, /SET 硬碟資料救援[\s\S]*NT\$8,400/);
+    assert.match(txt, /華碩官方購物[\s\S]*分期 第 \d+\/12 期[\s\S]*總額 NT\$95,988/);
+    const sum = (await items.allInnerTexts()).reduce((acc, t) => acc + Number((t.match(/NT\$([\d,]+)\s*$/) || [0, '0'])[1].replace(/,/g, '')), 0);
+    assert.equal(sum, c3);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

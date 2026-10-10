@@ -1,6 +1,6 @@
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
-import { state } from '../store.js';
+import { state, accountById } from '../store.js';
 import * as api from '../api.js';
 import { money, catIconStyle } from '../fmt.js';
 import { openSheet, errorText } from '../ui.js';
@@ -40,6 +40,23 @@ function groupMonth(month) {
   out.forEach((g) => g.children.sort((a, b) => b.amount - a.amount));
   out.sort((a, b) => b.amount - a.amount);
   return out;
+}
+
+/** 明細一列：日期、商家（沒有就用備註／分類）、分期第幾期或付款帳戶、金額 */
+function itemRow(x, base) {
+  const md = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+  const title = x.merchant || x.note || (catById(x.categoryId) || {}).name || '未分類';
+  const acct = (accountById(x.account) || {}).name || '';
+  const sub = x.kind === '分期' ? `分期 第 ${x.n}/${x.terms} 期 · ${md(x.date)} 購買，總額 ${money(x.total, x.symbol || base, { whole: true })}`
+    : [x.kind === '退款' ? '退款' : '', acct, x.merchant && x.note ? x.note : ''].filter(Boolean).join(' · ');
+  return h('li', { 'data-testid': 'sp-item', 'data-kind': x.kind }, h('div', { class: 'item' },
+    h('div', { class: 'muted small', style: { minWidth: '38px' } }, md(x.kind === '分期' ? x.closeDate : x.date)),
+    h('div', { class: 'grow', style: { minWidth: 0 } }, h('div', { class: 't', style: { fontWeight: 500 } }, title, x.kind === '分期' ? h('span', { class: 'badge', style: { marginLeft: '6px' } }, '分期') : null), sub ? h('div', { class: 's' }, sub) : null),
+    h('div', { class: 'amt small' }, money(x.amount, base, { whole: true }))));
+}
+function itemList(items, base) {
+  const sorted = items.slice().sort((a, b) => b.amount - a.amount || (a.date < b.date ? 1 : -1));
+  return h('ul', { class: 'list sp-items', 'data-testid': 'sp-items' }, sorted.map((x) => itemRow(x, base)));
 }
 
 function valueOf(month, filter) {
@@ -155,7 +172,7 @@ function donut(groups, slots, total, ui, base, onPick) {
 
 export function openSpending() {
   const base = state.data.base;
-  const ui = { range: 6, ym: '', filter: '', open: '', data: null, error: null, tip: h('div', { class: 'muted small sp-tip', 'aria-live': 'polite' }), defaultTip: '',
+  const ui = { range: 6, ym: '', filter: '', open: '', kid: '', data: null, error: null, tip: h('div', { class: 'muted small sp-tip', 'aria-live': 'polite' }), defaultTip: '',
     dtip: h('div', { class: 'small sp-dtip', 'aria-live': 'polite' }) };
   const body = h('div', { 'data-testid': 'spending' }, h('div', { class: 'muted' }, '載入中…'));
 
@@ -197,18 +214,29 @@ export function openSpending() {
       const name = c ? c.name : '未分類';
       const pct = cur.expense > 0 ? Math.round((g.amount / cur.expense) * 1000) / 10 : 0;
       const isOpen = ui.open === g.id;
+      const its = (cur.items || []).filter((x) => parentOf(x.categoryId) === g.id);
       const row = h('button', { type: 'button', class: 'item sp-row' + (ui.filter === g.id ? ' on' : ''), 'data-testid': 'sp-cat', 'data-cat': name,
-        onclick: () => { const same = ui.open === g.id; ui.open = same ? '' : g.id; ui.filter = same ? '' : g.id; draw(); } },
+        onclick: () => { const same = ui.open === g.id; ui.open = same ? '' : g.id; ui.filter = same ? '' : g.id; ui.kid = ''; draw(); } },
         h('div', { class: 'ico', style: catIconStyle(c ? c.color : '') }, icon((c && c.icon) || 'dots')),
         h('div', { class: 'grow' },
-          h('div', { class: 't' }, h('span', { class: 'sp-dot', style: { background: colorVar(slots.get(g.id)) } }), name, g.children.length ? h('span', { class: 'muted small', style: { marginLeft: '6px', fontWeight: 400 } }, isOpen ? '▾' : '▸') : null),
+          h('div', { class: 't' }, h('span', { class: 'sp-dot', style: { background: colorVar(slots.get(g.id)) } }), name, g.children.length || its.length ? h('span', { class: 'muted small', style: { marginLeft: '6px', fontWeight: 400 } }, isOpen ? '▾' : '▸') : null),
           h('div', { class: 'sp-meter' }, h('div', { class: 'sp-meter-fill', style: { width: `${Math.max(2, Math.round((g.amount / maxG) * 100))}%` } }))),
         h('div', { style: { textAlign: 'right' } }, h('div', { class: 'amt' }, money(g.amount, base, { whole: true })), h('div', { class: 'muted small' }, `${pct}%`)));
-      const kids = isOpen && g.children.length
-        ? h('ul', { class: 'list sp-kids' }, g.children.map((k) => h('li', null, h('div', { class: 'item' },
-          h('div', { class: 'grow' }, h('div', { class: 's', style: { color: 'var(--text)' } }, (catById(k.id) || {}).name || '未分類')),
-          h('div', { class: 'amt small' }, money(k.amount, base, { whole: true }))))))
-        : null;
+      // 展開：細項分類（點一下列出這個月算進去的每一筆，分期會標第幾期）；沒有細項的大分類直接列明細
+      let kids = null;
+      if (isOpen && g.children.length) {
+        const kidList = g.children.slice();
+        const direct = its.filter((x) => x.categoryId === g.id);
+        if (direct.length) kidList.push({ id: g.id, amount: direct.reduce((sum, x) => sum + x.amount, 0), direct: true });
+        kids = h('ul', { class: 'list sp-kids' }, kidList.map((k) => {
+          const kOpen = ui.kid === k.id;
+          const kItems = its.filter((x) => x.categoryId === k.id);
+          return h('li', null, h('button', { type: 'button', class: 'item', 'data-testid': 'sp-kid', 'data-cat': k.direct ? '' : (catById(k.id) || {}).name, onclick: () => { ui.kid = kOpen ? '' : k.id; draw(); } },
+            h('div', { class: 'grow' }, h('div', { class: 's', style: { color: 'var(--text)' } }, k.direct ? '（沒有細項）' : (catById(k.id) || {}).name || '未分類',
+              h('span', { class: 'muted small', style: { marginLeft: '6px' } }, `${kItems.length} 筆 ${kOpen ? '▾' : '▸'}`))),
+            h('div', { class: 'amt small' }, money(k.amount, base, { whole: true }))), kOpen ? itemList(kItems, base) : null);
+        }));
+      } else if (isOpen && its.length) kids = itemList(its, base);
       return h('li', null, row, kids);
     });
 
@@ -225,7 +253,7 @@ export function openSpending() {
         return pie ? h('div', { class: 'sp-donut-wrap', 'data-testid': 'sp-donut' }, pie, ui.dtip) : null; })(),
       groups.length ? h('ul', { class: 'list' }, rows) : h('div', { class: 'muted', style: { padding: '8px 0' } }, '這個月沒有支出'),
       cur.missing && cur.missing.length ? h('div', { class: 'muted small' }, `有外幣交易查不到匯率，沒算進去：${cur.missing.join('、')}`) : null,
-      h('div', { class: 'muted small', style: { marginTop: '8px' } }, `點長條或月份換月份；點分類展開細項，上面的圖會改成只看這個分類。支出＝支出交易扣掉退款，轉帳、投資買賣、繳卡費都不算；分期付款依每期金額算在出帳的月份。從 ${ui.data.startYm.slice(0, 4)}/${monthNum(ui.data.startYm)} 月（開始記帳）起算。`));
+      h('div', { class: 'muted small', style: { marginTop: '8px' } }, `點長條或月份換月份；點分類展開細項，再點細項可以看這個月算進去的每一筆（分期會標第幾期），上面的圖會改成只看這個分類。支出＝支出交易扣掉退款，轉帳、投資買賣、繳卡費都不算；分期付款依每期金額算在出帳的月份。從 ${ui.data.startYm.slice(0, 4)}/${monthNum(ui.data.startYm)} 月（開始記帳）起算。`));
   }
 
   api.call('getMonthlyExpenses', { months: 12 }).then((r) => { ui.data = r; draw(); }).catch((e) => { ui.error = e; draw(); });

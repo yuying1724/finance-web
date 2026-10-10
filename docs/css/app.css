@@ -281,6 +281,10 @@ a.item { color: inherit; text-decoration: none; }
 .sp-meter-fill { height: 100%; border-radius: 2px; background: var(--accent); }
 .sp-kids { margin: -4px 0 4px 50px; }
 .sp-kids .item { padding: 6px 2px; }
+.sp-items { margin: 0 0 6px 0; padding-left: 8px; border-left: 2px solid var(--line, #e8dcc6); }
+.sp-items .item { padding: 6px 2px; align-items: flex-start; }
+.sp-items .item .t { font-size: 13.5px; }
+.sp-items .item .s { white-space: normal; overflow: visible; text-overflow: clip; }
 .sp-months { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; margin: 0 0 10px; }
 .sp-month { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 6px 9px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); text-align: left; }
 .sp-month.on { border-color: var(--accent-strong); background: var(--accent-soft); }

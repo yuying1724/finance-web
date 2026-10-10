@@ -49,4 +49,10 @@ test('每月支出：分期改用每期金額算在出帳的月份；startYm＝�
   ]);
   const sep = Object.fromEntries(d.months[5].byCategory.map((x) => [x.categoryId, x.amount]));
   assert.deepEqual(sep, { [cat('3C 電子')]: 1000, [cat('早餐')]: 250 });
+  // 明細：9 月＝早餐 250（一般）＋分期第 5/12 期 1,000，加起來等於合計
+  const items = d.months[5].items;
+  assert.deepEqual(items.map((x) => [x.kind, x.amount, x.categoryId, x.n || null, x.terms || null]).sort(), [['分期', 1000, cat('3C 電子'), 5, 12], ['支出', 250, cat('早餐'), null, null]].sort());
+  assert.equal(items.find((x) => x.kind === '分期').date, '2026-05-08');
+  assert.equal(items.find((x) => x.kind === '分期').total, 12000);
+  d.months.forEach((m) => assert.equal(m.items.reduce((sum, x) => sum + x.amount, 0), m.expense, m.ym + ' 明細加總＝合計'));
 });
