@@ -74,6 +74,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     merchant: editing ? (tx.merchant || '') : '', tags: editing ? (tx.tags || '') : '', fxSymbol: editing ? (tx.fxSymbol || '') : '', fxQty: editing && tx.fxQty ? String(tx.fxQty) : '',
     feeAmount: '', more: false, postDate: editing && (tx.type === '支出' || tx.type === '退款') ? (tx.settleDate || '') : '',
     instOn: false, instTerms: '6', instRemainder: '首期',
+    closeChoice: editing && tx.settleDate && tx.settleDate !== tx.date ? 'custom' : '', // 快結帳提醒的選擇：this／next／custom／auto（依卡片設定預估）
   };
 
   const fmtNum = (n) => String(n);
@@ -174,10 +175,10 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
   }
 
   function dateField() {
-    const input = h('input', { type: 'date', value: f.date, 'aria-label': '日期', onchange: (e) => { f.date = e.target.value; autoSettleDate(); } });
+    const input = h('input', { type: 'date', value: f.date, 'aria-label': '日期', onchange: (e) => { f.date = e.target.value; autoSettleDate(); paintClose(); } });
     const quick = h('div', { class: 'chips', style: { marginTop: '6px' } },
       [['今天', today], ['昨天', FinDates.addDays(today, -1)], ['前天', FinDates.addDays(today, -2)]].map(([t, v]) =>
-        h('button', { type: 'button', class: 'chip', onclick: () => { f.date = v; input.value = v; autoSettleDate(); } }, t)));
+        h('button', { type: 'button', class: 'chip', onclick: () => { f.date = v; input.value = v; autoSettleDate(); paintClose(); } }, t)));
     return field('date', '日期', input, quick);
   }
   const noteField = () => field('note', '備註（選填）', h('input', { type: 'text', maxlength: 500, value: f.note, placeholder: '例如：和同事聚餐', oninput: (e) => { f.note = e.target.value; } }));
@@ -205,12 +206,72 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     }
     if (withPost) {
       // 信用卡「入帳日」（選填）：銀行請款入帳那天。結帳日前刷、隔幾天才入帳的消費，銀行會列入下一期帳單；填了系統就照入帳日算帳單
-      const postInput = h('input', { type: 'date', value: f.postDate, 'aria-label': '信用卡入帳日', onchange: (e) => { f.postDate = e.target.value; } });
+      const postInput = h('input', { type: 'date', value: f.postDate, 'aria-label': '信用卡入帳日', onchange: (e) => { f.postDate = e.target.value; f.closeChoice = f.postDate ? 'custom' : ''; paintClose(); } });
+      postInputRef = postInput; moreRef = { box, toggle };
       box.appendChild(field('postDate', '信用卡入帳日（選填）', postInput,
         h('div', { class: 'muted small', style: { marginTop: '3px' } }, '銀行帳單上的「入帳日」。只有結帳日前幾天刷的卡才需要填，填了帳單期別就會跟銀行一樣；不是信用卡不用填')));
     }
     return h('div', { style: { margin: '4px 0 12px' } }, toggle, box);
   }
+  // 快結帳提醒：用信用卡記支出、離結帳日只剩 3 天內（含當天）時，問這筆是「這期」還是「下期」才請款，一鍵填好入帳日
+  const CLOSE_PROMPT_DAYS = 3;
+  let postInputRef = null, moreRef = null;
+  const closeBox = h('div', { 'data-testid': 'close-prompt' });
+  function statementCloseFor(day, date) {
+    const lastDay = (ym) => FinDates.monthRange(ym).to;
+    const at = (ym) => { const end = lastDay(ym); const dd = String(Math.min(Number(day), Number(end.slice(8, 10)))).padStart(2, '0'); return ym + '-' + dd; };
+    let close = at(date.slice(0, 7));
+    if (date > close) close = at(FinDates.addMonths(date.slice(0, 7), 1));
+    return close;
+  }
+  const mmddOf = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+  function setPostDate(v, choice) {
+    f.postDate = v; f.closeChoice = choice;
+    if (postInputRef) postInputRef.value = v;
+    paintClose();
+  }
+  function clearAuto() { if (f.closeChoice === 'auto') { f.postDate = ''; f.closeChoice = ''; if (postInputRef) postInputRef.value = ''; } }
+  function paintClose() {
+    mount(closeBox);
+    closeBox.style.display = 'none';
+    const hide = () => { clearAuto(); };
+    if (type !== '支出' || f.instOn) return hide();
+    const a = accountById(f.acct);
+    if (!a || a.type !== '信用卡') return hide();
+    const cs = (d.cardSettings || []).find((c) => c.accountId === a.id);
+    if (!cs || !cs.statementDay || !FinDates.isValid(f.date)) return hide();
+    const close = statementCloseFor(cs.statementDay, f.date);
+    const left = Math.round((Date.parse(close) - Date.parse(f.date)) / 86400000);
+    if (left < 0 || left > CLOSE_PROMPT_DAYS) return hide();
+    const next = FinDates.addDays(close, 1);
+    const when = left === 0 ? '今天就是結帳日' : `${mmddOf(close)} 結帳（還有 ${left} 天）`;
+    // 卡片設定了「通常幾天後請款」：新增時先依天數預估（使用者還沒自己選、也沒填入帳日才帶）
+    const delay = cs.postDelayDays === null || cs.postDelayDays === undefined || cs.postDelayDays === '' ? null : Number(cs.postDelayDays);
+    if (!editing && delay !== null && isFinite(delay) && (!f.closeChoice || f.closeChoice === 'auto')) {
+      const est = FinDates.addDays(f.date, delay);
+      if (est > close) { f.postDate = est; f.closeChoice = 'auto'; } else if (f.closeChoice === 'auto' || !f.postDate) { f.postDate = ''; f.closeChoice = 'auto'; }
+      if (postInputRef) postInputRef.value = f.postDate;
+    }
+    const chip = (label, on, fn, tid) => h('button', { type: 'button', class: 'chip chip-sm' + (on ? ' on' : ''), 'data-testid': tid, onclick: fn }, label);
+    const status = f.closeChoice === 'auto' ? (f.postDate ? `依卡片設定（刷卡後 ${delay} 天請款），預估 ${mmddOf(f.postDate)} 入帳，會列入下一期帳單` : `依卡片設定（刷卡後 ${delay} 天請款），會在結帳日前入帳，列入這一期帳單`)
+      : f.closeChoice === 'next' ? `入帳日 ${mmddOf(f.postDate)}，會列入下一期帳單`
+      : f.closeChoice === 'this' ? '列入這一期帳單'
+        : f.closeChoice === 'custom' && f.postDate ? `入帳日 ${mmddOf(f.postDate)}${f.postDate > close ? '，會列入下一期帳單' : '，列入這一期帳單'}` : '';
+    closeBox.style.display = '';
+    mount(closeBox, h('div', { class: 'notice', style: { marginBottom: '12px', display: 'block' } },
+      h('div', null, `這張卡${when}。結帳日前刷的消費，銀行常常隔幾天才請款，會列到下一期帳單。這筆是？`),
+      h('div', { class: 'chips', style: { marginTop: '8px', gap: '6px' } },
+        chip('這期請款', f.closeChoice === 'this' || (f.closeChoice === 'auto' && !f.postDate), () => setPostDate('', 'this'), 'close-this'),
+        chip('下期請款', f.closeChoice === 'next' || (f.closeChoice === 'auto' && !!f.postDate), () => setPostDate(f.closeChoice === 'auto' && f.postDate ? f.postDate : next, 'next'), 'close-next'),
+        chip('自己選入帳日', f.closeChoice === 'custom', () => {
+          f.closeChoice = 'custom';
+          if (moreRef && !f.more) moreRef.toggle.click();
+          if (postInputRef) setTimeout(() => { postInputRef.focus(); if (postInputRef.showPicker) try { postInputRef.showPicker(); } catch (e) { /* 有些瀏覽器不允許 */ } }, 50);
+          paintClose();
+        }, 'close-custom')),
+      status ? h('div', { class: 'small', style: { marginTop: '6px' }, 'data-testid': 'close-status' }, status) : h('div', { class: 'muted small', style: { marginTop: '6px' } }, '不確定可以先不選，之後看到帳單再到「更多」補入帳日')));
+  }
+
   // 分期付款（零利率）：付款帳戶是信用卡、新增時才出現。購買當下記全額，帳單每期只算一份（見 core/creditcard.js）
   function installmentField() {
     const a = accountById(f.acct);
@@ -232,7 +293,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     const remSel = h('select', { 'aria-label': '零頭', style: { maxWidth: '140px' }, onchange: (e) => { f.instRemainder = e.target.value; paintPreview(); } },
       ['首期', '末期'].map((v) => h('option', { value: v, selected: v === f.instRemainder }, `零頭放${v}`)));
     box.append(h('div', { class: 'row-flex wrap', style: { gap: '8px', alignItems: 'center' } }, termsInput, h('span', null, '期'), remSel), h('div', { style: { marginTop: '6px' } }, chips), preview);
-    const toggle = h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: f.instOn, 'data-testid': 'inst-toggle', disabled: !hasSettings, onchange: (e) => { f.instOn = e.target.checked; box.style.display = f.instOn ? '' : 'none'; paintPreview(); } }),
+    const toggle = h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: f.instOn, 'data-testid': 'inst-toggle', disabled: !hasSettings, onchange: (e) => { f.instOn = e.target.checked; box.style.display = f.instOn ? '' : 'none'; paintPreview(); paintClose(); } }),
       hasSettings ? '分期付款（零利率）' : '分期付款（這張卡要先設定結帳日／繳款日）');
     paintPreview();
     return field('inst', '', toggle, box);
@@ -304,7 +365,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     for (const k of Object.keys(fieldEls)) delete fieldEls[k];
     const parts = [];
     if (type === '支出') {
-      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '付款帳戶', 'acct', 'sym'), installmentField(), categoryField('支出'), merchantField(), dateField(), noteField(), moreFields(true));
+      parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '付款帳戶', 'acct', 'sym'), closeBox, installmentField(), categoryField('支出'), merchantField(), dateField(), noteField(), moreFields(true));
     } else if (type === '收入') {
       parts.push(amountField('amount', '金額', 'amount', 'sym', null, true), accountSelect('acct', '入帳帳戶', 'acct', 'sym'), categoryField('收入'), merchantField(), dateField(), noteField(), moreFields(true));
     } else if (type === '退款') {
@@ -383,6 +444,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
         dateField(), noteField(),
       );
     }
+    paintClose(); // 快結帳提醒要等「更多」裡的入帳日欄位建好才畫
     mount(bodyBox, ...parts);
     paintRate(); paintImplied();
   }

@@ -34,7 +34,7 @@ function fieldHelpers() {
 
 // ---------- 信用卡設定 ----------
 export function openCardSettingsForm({ account, card, onDone } = {}) {
-  const f = card ? { ...card } : { statementDay: '5', dueDay: '20', limit: '', payAccountId: '', note: '', limitGroup: '' };
+  const f = card ? { ...card } : { statementDay: '5', dueDay: '20', limit: '', payAccountId: '', note: '', limitGroup: '', postDelayDays: '' };
   Object.keys(f).forEach((k) => { if (f[k] === null || f[k] === undefined) f[k] = ''; else f[k] = String(f[k]); });
   const { banner, fld, showErr, clearErr } = fieldHelpers();
 
@@ -53,7 +53,7 @@ export function openCardSettingsForm({ account, card, onDone } = {}) {
     clearErr();
     await withBusy(e.currentTarget, async () => {
       try {
-        const r = await api.call('upsertCardSettings', { card: { accountId: account.id, statementDay: f.statementDay, dueDay: f.dueDay, limit: f.limit, payAccountId: f.payAccountId, note: f.note, limitGroup: f.limitGroup } });
+        const r = await api.call('upsertCardSettings', { card: { accountId: account.id, statementDay: f.statementDay, dueDay: f.dueDay, limit: f.limit, payAccountId: f.payAccountId, note: f.note, limitGroup: f.limitGroup, postDelayDays: f.postDelayDays } });
         sheet.close();
         mergeRow('cardSettings', 'accountId', r.card); refreshInBackground();
         if (onDone) await onDone();
@@ -74,6 +74,7 @@ export function openCardSettingsForm({ account, card, onDone } = {}) {
       fld('limit', '額度（選填）', numInput('limit'), '這張卡的額度；如果跟其他卡共用額度，這裡請填「共用的總額度」'),
       fld('limitGroup', '額度群組（選填）', groupInput, '同一群組的卡片會共用這個額度，可用額度＝總額度－群組內所有卡片欠款加總'),
       fld('payAccountId', '預設繳款帳戶（選填）', payAcctSel),
+      fld('postDelayDays', '通常刷卡後幾天請款（選填）', numInput('postDelayDays', '例如 2；不知道就留空'), '快結帳時記帳，系統會依這個天數預估入帳日，自動判斷這筆會列入這期還是下期帳單（記帳時仍可改）'),
       fld('note', '備註（選填）', noteInput)),
     footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save],
   });

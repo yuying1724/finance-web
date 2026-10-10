@@ -36,7 +36,8 @@ var FinSchema = (function () {
     cardSettings: {
       sheet: '信用卡設定', idKey: 'accountId',
       cols: [c('accountId', '帳戶ID'), c('limit', '額度', 'num'), c('statementDay', '結帳日', 'num'), c('dueDay', '繳款日', 'num'),
-        c('expiry', '到期年月'), c('payAccountId', '預設繳款帳戶ID'), c('note', '備註'), c('limitGroup', '額度群組')],
+        c('expiry', '到期年月'), c('payAccountId', '預設繳款帳戶ID'), c('note', '備註'), c('limitGroup', '額度群組'),
+        c('postDelayDays', '通常幾天後請款', 'num', true)],
     },
     loanSettings: {
       sheet: '貸款設定', idKey: 'accountId',
@@ -138,7 +139,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.26',
+    APP_VERSION: '0.9.27',
   };
   return api;
 })();

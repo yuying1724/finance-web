@@ -42,7 +42,8 @@ var FinSchema = (function () {
     cardSettings: {
       sheet: '信用卡設定', idKey: 'accountId',
       cols: [c('accountId', '帳戶ID'), c('limit', '額度', 'num'), c('statementDay', '結帳日', 'num'), c('dueDay', '繳款日', 'num'),
-        c('expiry', '到期年月'), c('payAccountId', '預設繳款帳戶ID'), c('note', '備註'), c('limitGroup', '額度群組')],
+        c('expiry', '到期年月'), c('payAccountId', '預設繳款帳戶ID'), c('note', '備註'), c('limitGroup', '額度群組'),
+        c('postDelayDays', '通常幾天後請款', 'num', true)],
     },
     loanSettings: {
       sheet: '貸款設定', idKey: 'accountId',
@@ -144,7 +145,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.26',
+    APP_VERSION: '0.9.27',
   };
   return api;
 })();
@@ -3384,7 +3385,10 @@ var FinApi = (function () {
     var payAccountId = str(a.payAccountId);
     if (payAccountId && !c.accounts[payAccountId]) errors.push({ field: 'payAccountId', message: '找不到預設繳款帳戶' });
     var limitGroup = FinValidate.safeText(str(a.limitGroup));
-    var value = { accountId: accountId, limit: limitVal, statementDay: statementDay, dueDay: dueDay, expiry: str(a.expiry), payAccountId: payAccountId, note: FinValidate.safeText(str(a.note)), limitGroup: limitGroup };
+    // 通常幾天後請款（選填）：結帳日前刷的消費，記帳表單會依這個天數預估入帳日、判斷會不會列入下一期
+    var pdRaw = a.postDelayDays, postDelayDays = pdRaw === undefined || pdRaw === null || pdRaw === '' ? null : Number(pdRaw);
+    if (postDelayDays !== null && (!isFinite(postDelayDays) || postDelayDays < 0 || postDelayDays > 10 || Math.floor(postDelayDays) !== postDelayDays)) { errors.push({ field: 'postDelayDays', message: '請款天數請填 0～10 的整數（不知道可以留空）' }); postDelayDays = null; }
+    var value = { accountId: accountId, limit: limitVal, statementDay: statementDay, dueDay: dueDay, expiry: str(a.expiry), payAccountId: payAccountId, note: FinValidate.safeText(str(a.note)), limitGroup: limitGroup, postDelayDays: postDelayDays };
     return { errors: errors, value: value };
   }
 

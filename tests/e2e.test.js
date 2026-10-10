@@ -915,6 +915,58 @@ test('每月支出圖表：首頁開啟，顯示本月合計與大分類排行�
   });
 });
 
+test('快結帳提醒：信用卡結帳日前 3 天內記帳會問這期或下期請款；選下期自動填入帳日；卡片設定「幾天後請款」時自動預估', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const day = (n) => be.ctx.FinDates.addDays(today, n);
+    const dom = (d) => Number(d.slice(8, 10));
+    // 結帳日＝後天（月底附近會被調整，所以用實際算出的日期）
+    const closeDay = dom(day(2));
+    const cardA = be.call('upsertAccount', { account: { name: '快結帳卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    const cardB = be.call('upsertAccount', { account: { name: '設定延遲卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    const far = be.call('upsertAccount', { account: { name: '還很久卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('upsertCardSettings', { card: { accountId: cardA, statementDay: closeDay, dueDay: 25, limit: 50000 } }).ok);
+    assert.ok(be.call('upsertCardSettings', { card: { accountId: cardB, statementDay: closeDay, dueDay: 25, limit: 50000, postDelayDays: 3 } }).ok);
+    assert.ok(be.call('upsertCardSettings', { card: { accountId: far, statementDay: dom(day(10)), dueDay: 25, limit: 50000 } }).ok);
+    assert.equal(be.call('upsertCardSettings', { card: { accountId: far, statementDay: 5, dueDay: 25, postDelayDays: 99 } }).error.code, 'VALIDATION');
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '120');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '還很久卡' });
+    assert.equal(await page.locator('[data-testid=close-prompt]').isVisible(), false, '離結帳日還很久：不問');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '快結帳卡' });
+    await page.waitForSelector('[data-testid=close-prompt] .notice');
+    assert.match(await page.locator('[data-testid=close-prompt]').innerText(), /結帳（還有 2 天）[\s\S]*這筆是/);
+    await page.click('[data-testid=close-next]');
+    assert.match(await page.locator('[data-testid=close-status]').innerText(), /會列入下一期帳單/);
+    await a.pickCategory('飲食', '午餐');
+    await page.fill('input[placeholder^="例如：和同事"]', '快結帳測試A');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    let tx = null;
+    for (let i = 0; i < 50 && !tx; i++) { await page.waitForTimeout(100); tx = be.call('listTransactions', { filters: { q: '快結帳測試A' } }).data.items[0]; }
+    assert.equal(tx.settleDate, day(3), '入帳日＝結帳日隔天');
+    // 卡片設定 3 天後請款：自動預估，不用選
+    await a.fab();
+    await page.fill('input[aria-label="金額"]', '80');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '設定延遲卡' });
+    await page.waitForSelector('[data-testid=close-status]');
+    assert.match(await page.locator('[data-testid=close-status]').innerText(), /依卡片設定（刷卡後 3 天請款）[\s\S]*會列入下一期帳單/);
+    // 改成這期請款
+    await page.click('[data-testid=close-this]');
+    assert.match(await page.locator('[data-testid=close-status]').innerText(), /列入這一期帳單/);
+    await a.pickCategory('飲食', '午餐');
+    await page.fill('input[placeholder^="例如：和同事"]', '快結帳測試B');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    tx = null;
+    for (let i = 0; i < 50 && !tx; i++) { await page.waitForTimeout(100); tx = be.call('listTransactions', { filters: { q: '快結帳測試B' } }).data.items[0]; }
+    assert.equal(tx.settleDate || '', '', '選了這期：不填入帳日');
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

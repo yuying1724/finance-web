@@ -973,7 +973,10 @@ var FinApi = (function () {
     var payAccountId = str(a.payAccountId);
     if (payAccountId && !c.accounts[payAccountId]) errors.push({ field: 'payAccountId', message: '找不到預設繳款帳戶' });
     var limitGroup = FinValidate.safeText(str(a.limitGroup));
-    var value = { accountId: accountId, limit: limitVal, statementDay: statementDay, dueDay: dueDay, expiry: str(a.expiry), payAccountId: payAccountId, note: FinValidate.safeText(str(a.note)), limitGroup: limitGroup };
+    // 通常幾天後請款（選填）：結帳日前刷的消費，記帳表單會依這個天數預估入帳日、判斷會不會列入下一期
+    var pdRaw = a.postDelayDays, postDelayDays = pdRaw === undefined || pdRaw === null || pdRaw === '' ? null : Number(pdRaw);
+    if (postDelayDays !== null && (!isFinite(postDelayDays) || postDelayDays < 0 || postDelayDays > 10 || Math.floor(postDelayDays) !== postDelayDays)) { errors.push({ field: 'postDelayDays', message: '請款天數請填 0～10 的整數（不知道可以留空）' }); postDelayDays = null; }
+    var value = { accountId: accountId, limit: limitVal, statementDay: statementDay, dueDay: dueDay, expiry: str(a.expiry), payAccountId: payAccountId, note: FinValidate.safeText(str(a.note)), limitGroup: limitGroup, postDelayDays: postDelayDays };
     return { errors: errors, value: value };
   }
 
