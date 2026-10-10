@@ -874,6 +874,42 @@ test('待辦頁：到期的待確認與 7 天內的信用卡帳單在「現在�
   });
 });
 
+test('每月支出圖表：首頁開啟，顯示本月合計與大分類排行；點分類展開細項並只看這個分類；點長條換月份', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const ym = today.slice(0, 7), prevYm = be.ctx.FinDates.addMonths(ym, -1);
+    const bank = be.call('upsertAccount', { account: { name: '圖表銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const cats = be.call('bootstrap').data.categories;
+    const id = (n) => cats.find((c) => c.name === n && c.type === '支出').id;
+    assert.ok(be.call('addTransaction', { tx: { type: '調整', date: prevYm + '-01', dstAccount: bank, dstSymbol: 'TWD', dstQty: 100000, categoryId: '' } }).ok);
+    const add = (date, n, amt) => assert.ok(be.call('addTransaction', { tx: { type: '支出', date, srcAccount: bank, srcSymbol: 'TWD', srcQty: amt, categoryId: id(n) } }).ok);
+    add(prevYm + '-05', '早餐', 1000); add(ym + '-01', '早餐', 3000); add(ym + '-01', '午餐', 700);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    const before = be.call('getMonthlyExpenses', { months: 6 }).data.months;
+    const curTotal = before[before.length - 1].expense, prevTotal = before[before.length - 2].expense;
+    await page.click('[data-testid=open-spending]');
+    await page.waitForSelector('[data-testid=sp-total]');
+    assert.equal(digits(await page.locator('[data-testid=sp-total]').innerText()), curTotal);
+    assert.ok(await page.locator('.sp-chart .sp-bar').count() >= 1);
+    // 點「飲食」：展開早餐／午餐，圖改成只看飲食
+    await page.click('[data-testid=sp-cat][data-cat="飲食"]');
+    await page.waitForSelector('[data-testid=sp-filter]');
+    assert.match(await page.locator('[data-testid=sp-filter]').innerText(), /只看：飲食/);
+    const food = await page.locator('.sheet').innerText();
+    assert.match(food, /飲食▾[\s\S]*早餐/); assert.match(food, /飲食▾[\s\S]*午餐/); // 展示資料本身也有飲食消費，只檢查細項有展開
+    assert.ok(digits(await page.locator('[data-testid=sp-total]').innerText()) >= 3700);
+    // 點上個月的長條
+    await page.click(`.sp-chart .sp-hit[data-ym="${prevYm}"]`);
+    await page.waitForFunction((t) => document.querySelector('[data-testid=sp-total]') && document.querySelector('.sheet').innerText.includes(t), `${Number(prevYm.slice(5))} 月`);
+    // 取消只看
+    await page.click('[data-testid=sp-filter]');
+    await page.waitForSelector('[data-testid=sp-filter]', { state: 'detached' });
+    assert.equal(digits(await page.locator('[data-testid=sp-total]').innerText()), prevTotal);
+  });
+});
+
 test('新增帳戶與分類', { skip }, async () => {
   await withApp({ demo: false }, async (a) => {
     const { page } = a;

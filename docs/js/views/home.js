@@ -1,4 +1,5 @@
 import { h, mount } from '../dom.js';
+import { openSpending } from './spending.js';
 import { icon } from '../icons.js';
 import { prefs, state, notify } from '../store.js';
 import { money, monthLabel, ACCOUNT_ICON, amountClass, holdingText, isShareSymbol } from '../fmt.js';
@@ -56,7 +57,10 @@ export function renderHome(root) {
 
   const m = d.month;
   children.push(h('div', { class: 'card' },
-    h('div', { class: 'card-title' }, h('h2', null, monthLabel(m.ym)), h('a', { class: 'link-btn', href: '#/tx' }, '看明細')),
+    h('div', { class: 'card-title' }, h('h2', null, monthLabel(m.ym)),
+      h('div', { class: 'row-flex', style: { gap: '12px' } },
+        h('button', { class: 'link-btn', type: 'button', 'data-testid': 'open-spending', onclick: () => openSpending() }, '支出圖表'),
+        h('a', { class: 'link-btn', href: '#/tx' }, '看明細'))),
     h('div', { class: 'stats' },
       stat('收入', money(m.income, base, { whole: true }), 'pos'),
       stat('支出', money(m.expense, base, { whole: true })),

@@ -265,3 +265,19 @@ a.item { color: inherit; text-decoration: none; }
 .nw-dot { fill: var(--accent-strong); stroke: var(--card); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .nw-tick { fill: var(--sub); font-size: 9px; }
 .nw-tip { min-height: 2.8em; margin-top: 2px; white-space: pre-line; }
+/* 每月支出圖表 */
+.sp-chart { display: block; width: 100%; height: auto; margin-top: 10px; touch-action: pan-y; }
+.sp-bar { fill: var(--accent); opacity: .45; }
+.sp-bar.on { fill: var(--accent-strong); opacity: 1; }
+.sp-avg { stroke: var(--sub); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.sp-val { fill: var(--text); font-size: 10px; font-weight: 600; }
+.sp-tick-on { fill: var(--text); font-weight: 600; }
+.sp-hit { cursor: pointer; }
+.sp-tip { min-height: 1.4em; margin: 2px 0 8px; }
+.sp-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; padding: 6px 0 4px; border-top: 1px solid var(--line); }
+.sp-total { font-size: 22px; font-weight: 650; }
+.sp-row.on .t { color: var(--accent-strong); }
+.sp-meter { height: 4px; border-radius: 2px; background: var(--line); margin-top: 5px; overflow: hidden; }
+.sp-meter-fill { height: 100%; border-radius: 2px; background: var(--accent); }
+.sp-kids { margin: -4px 0 4px 50px; }
+.sp-kids .item { padding: 6px 2px; }

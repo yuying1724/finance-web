@@ -144,7 +144,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.23',
+    APP_VERSION: '0.9.24',
   };
   return api;
 })();
@@ -2926,6 +2926,27 @@ var FinApi = (function () {
       if (!/^\d{4}-\d{2}$/.test(ym)) throw FinFail('BAD_REQUEST', '月份格式應為 yyyy-MM');
       var c = loadContext(env.now);
       return FinReport.monthSummary(c.txRows, { instruments: c.instruments, prices: c.prices, base: c.base, categories: c.categories }, ym);
+    },
+  };
+
+  /**
+   * 每月支出（給「每月支出」圖表）：最近 months 個月（含 endYm，預設本月）每個月的支出合計與各分類金額。
+   * 規則同 monthSummary：支出交易加總、退款抵銷同分類；轉帳、買賣、調整、股息都不算。只回傳「支出」分類的金額（收入分類不列）。
+   */
+  H.getMonthlyExpenses = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var months = Math.max(1, Math.min(24, Math.floor(Number(p.months) || 6)));
+      var endYm = /^\d{4}-\d{2}$/.test(str(p.endYm)) ? str(p.endYm) : FinDates.ymOf(c.today);
+      var ctx = { instruments: c.instruments, prices: c.prices, base: c.base, categories: c.categories };
+      var out = [];
+      for (var i = months - 1; i >= 0; i--) {
+        var ym = FinDates.addMonths(endYm, -i);
+        var m = FinReport.monthSummary(c.txRows, ctx, ym);
+        var cats = m.byCategory.filter(function (x) { var k = c.categories[x.categoryId]; return (!k || k.type === '支出') && x.amount !== 0; });
+        out.push({ ym: ym, expense: m.expense, byCategory: cats, missing: m.missing });
+      }
+      return { base: c.base, today: c.today, months: out };
     },
   };
 
