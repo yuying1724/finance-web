@@ -4297,7 +4297,8 @@ var FinApi = (function () {
         var row = FinRepo.findById('settings', CARD_RECON_KEY);
         if (row) FinRepo.updateRow('settings', row._row, { value: value });
         else FinRepo.append('settings', [{ key: CARD_RECON_KEY, value: value, note: '信用卡對帳：已勾選的明細與銀行帳單金額（App：信用卡 › 對帳）' }]);
-        return cardReconOf(loadContext(env.now), accountId, p.closeDate);
+        c.settings[CARD_RECON_KEY] = value; // 直接用剛寫入的值回傳（重新讀可能拿到同一次執行預載的舊設定）
+        return cardReconOf(c, accountId, p.closeDate);
       });
     },
   };
