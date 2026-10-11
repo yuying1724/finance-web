@@ -299,6 +299,11 @@ a.item { color: inherit; text-decoration: none; }
 .sp-donut-sub { fill: var(--sub); font-size: 9.5px; }
 .sp-donut-total { fill: var(--text); font-size: 13px; font-weight: 650; }
 .sp-dtip { min-height: 1.4em; color: var(--text); }
+.yr-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 8px 0 4px; }
+.yr-tile { padding: 9px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); min-width: 0; }
+.yr-num { font-size: 16px; font-weight: 650; margin: 2px 0; overflow-wrap: anywhere; }
+@media (max-width: 420px) { .yr-tiles { grid-template-columns: 1fr; } .yr-tile { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; } .yr-tile .yr-num { margin: 0; } .yr-tile > div:last-child { flex-basis: 100%; } }
+.yr-prev { stroke: var(--text); stroke-width: 1.5; opacity: .55; vector-effect: non-scaling-stroke; }
 .sp-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
 /* 定期頁分組標題 */
 .rec-group-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 2px; border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer; text-align: left; }

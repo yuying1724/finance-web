@@ -4,6 +4,7 @@ import { state, accountById } from '../store.js';
 import * as api from '../api.js';
 import { money, catIconStyle } from '../fmt.js';
 import { errorText } from '../ui.js';
+import { renderYear } from './yearview.js';
 
 /**
  * 每月支出圖表（首頁「本月」卡 → 支出圖表）：
@@ -171,7 +172,7 @@ function donut(groups, slots, total, ui, base, onPick) {
 }
 
 // 圖表的狀態放在模組裡：資料重新整理、切換分頁回來時，保留看到哪個月、展開哪個分類
-const UI = { range: 6, ym: '', filter: '', open: '', kid: '' };
+const UI = { range: 6, ym: '', filter: '', open: '', kid: '', mode: 'month' }; // mode：month（6／12 個月）或 year（年度總覽）
 let CACHE = { stamp: null, data: null, error: null };
 
 /** 首頁「支出圖表」按鈕：到「交易 › 圖表」 */
@@ -190,7 +191,20 @@ export function mountSpending(container, opts = {}) {
   mount(container, body);
   const setYm = (ym) => { ui.ym = ym; if (opts.onMonth) opts.onMonth(ym); draw(); };
 
+  /** 最上面那排：6 個月／12 個月／年度 */
+  function rangeChips(extra) {
+    return h('div', { class: 'row-flex', style: { justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+      h('div', { class: 'chips', style: { gap: '6px' } },
+        RANGES.map(([n, label]) => h('button', { type: 'button', class: 'chip chip-sm' + (ui.mode !== 'year' && ui.range === n ? ' on' : ''), onclick: () => { ui.mode = 'month'; ui.range = n; draw(); } }, label)),
+        h('button', { type: 'button', class: 'chip chip-sm' + (ui.mode === 'year' ? ' on' : ''), 'data-testid': 'sp-year', onclick: () => { ui.mode = 'year'; draw(); } }, '年度')),
+      extra || null);
+  }
+
   function draw() {
+    if (ui.mode === 'year') {
+      renderYear(body, { header: rangeChips(), onPickMonth: (ym) => { ui.mode = 'month'; ui.range = 12; ui.filter = ''; ui.open = ''; setYm(ym); } });
+      return;
+    }
     const data = CACHE.data;
     if (!data && CACHE.error) { mount(body, h('div', { class: 'notice bad' }, errorText(CACHE.error))); return; }
     if (!data) return;
@@ -211,8 +225,6 @@ export function mountSpending(container, opts = {}) {
     const slots = slotMap(months); // 依目前看的期間（6／12 個月）排名，換月份顏色不變
     const filterCat = ui.filter ? catById(ui.filter) : null;
 
-    const chips = h('div', { class: 'chips', style: { gap: '6px' } }, RANGES.map(([n, label]) =>
-      h('button', { type: 'button', class: 'chip chip-sm' + (ui.range === n ? ' on' : ''), onclick: () => { ui.range = n; draw(); } }, label)));
     const filterChip = filterCat
       ? h('button', { type: 'button', class: 'chip chip-sm on', 'data-testid': 'sp-filter', onclick: () => { ui.filter = ''; draw(); } }, `只看：${filterCat.name}`, icon('x'))
       : null;
@@ -270,7 +282,7 @@ export function mountSpending(container, opts = {}) {
         h('span', { class: 'sp-month-amt' }, money(valueOf(m, ui.filter), base, { whole: true })))));
 
     mount(body,
-      h('div', { class: 'row-flex', style: { justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } }, chips, filterChip),
+      rangeChips(filterChip),
       chart.svg, ui.tip, monthList, head,
       (() => { const pie = donut(groups, slots, cur.expense, ui, base, (id) => { const same = ui.open === id; ui.open = same ? '' : id; ui.filter = same ? '' : id; draw(); });
         return pie ? h('div', { class: 'sp-donut-wrap', 'data-testid': 'sp-donut' }, pie, ui.dtip) : null; })(),

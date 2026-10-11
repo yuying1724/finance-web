@@ -1327,6 +1327,49 @@ test('每月支出圖表明細：點細項分類列出這個月算進去的每�
   });
 });
 
+test('年度總覽：圖表切到「年度」看今年支出／收入／結餘、各分類、最大筆；可以換年份，點長條回到那個月', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const y = Number(today.slice(0, 4));
+    const bank = be.call('upsertAccount', { account: { name: '年度銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const cat = be.call('bootstrap').data.categories.find((c) => c.name === '早餐').id;
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: `${y}-01-15`, srcAccount: bank, srcSymbol: 'TWD', srcQty: 987654, categoryId: cat, merchant: '年度大筆測試' } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '支出', date: `${y - 1}-01-15`, srcAccount: bank, srcSymbol: 'TWD', srcQty: 1234, categoryId: cat, merchant: '去年早餐' } }).ok);
+    const ys = be.call('getYearSummary', {}).data;
+    const exp = ys.months.slice(0, ys.cutoffMonth).reduce((t, m) => t + m.expense, 0);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.click('[data-testid=open-spending]');
+    await page.waitForSelector('[data-testid=sp-total]');
+    await page.click('[data-testid=sp-year]');
+    await page.waitForSelector('[data-testid=yr-expense]');
+    assert.equal(await page.locator('[data-testid=yr-title]').innerText(), `${y} 年`);
+    assert.equal(digits(await page.locator('[data-testid=yr-expense] .yr-num').innerText()), Math.round(exp));
+    assert.match(await page.locator('[data-testid=yr-expense]').innerText(), /去年同期|沒有資料/);
+    assert.match(await page.locator('[data-testid=yr-top]').innerText(), /年度大筆測試[\s\S]*NT\$987,654/);
+    assert.ok(await page.locator('[data-testid=yr-cat]').count() >= 1);
+    await page.click('[data-testid=yr-cat][data-cat="飲食"]');
+    await page.waitForSelector('[data-testid=yr-kid]');
+    // 換到去年
+    await page.click('[data-testid=yr-prev]');
+    await page.waitForFunction((t) => document.querySelector('[data-testid=yr-title]') && document.querySelector('[data-testid=yr-title]').innerText === t, `${y - 1} 年`);
+    await page.waitForSelector('[data-testid=yr-top]');
+    assert.match(await page.locator('[data-testid=yr-top]').innerText(), /去年早餐/);
+    await page.click('[data-testid=yr-next]');
+    await page.waitForFunction((t) => document.querySelector('[data-testid=yr-title]').innerText === t, `${y} 年`);
+    // 點 1 月的長條 → 回到月圖表、看 1 月（12 個月範圍內才看得到）
+    await page.click(`.sp-chart .sp-hit[data-ym="${y}-01"]`);
+    await page.waitForSelector('[data-testid=sp-total]');
+    assert.equal(await page.locator('[data-testid=sp-year].on').count(), 0);
+    // 窄螢幕不會橫向溢出
+    await page.click('[data-testid=sp-year]');
+    await page.waitForSelector('[data-testid=yr-expense]');
+    const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    assert.ok(over <= 0, `年度總覽橫向溢出 ${over}px`);
+  });
+});
+
 test('交易分頁「明細｜圖表」：首頁按鈕開圖表、共用月份、圖表分類可跳到同月同分類的明細', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page, s } = a;

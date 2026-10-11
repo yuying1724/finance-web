@@ -77,3 +77,39 @@ test('常用交易：新增、修改、刪除，驗證帳戶／分類，bootstra
   assert.deepEqual(b.call('deleteQuickTx', { id: 'Q1' }).data.items.map((q) => q.id), ['Q2']);
   assert.equal(b.call('saveQuickTx', { item: { name: '新的', type: '收入' } }).data.item.id, 'Q3', '編號不重複使用');
 });
+
+test('年度總覽 getYearSummary：今年／去年每月支出與收入、分類、今年最大筆；今年只算到這個月', () => {
+  const b = fresh('2026-10-11');
+  const bank = b.acct('綜存', '銀行');
+  const lunch = b.cat('午餐');
+  const salaryCat = b.call('bootstrap').data.categories.find((c) => c.type === '收入').id;
+  const add = (date, type, qty, cat) => { const tx = type === '收入' ? { type, date, dstAccount: bank, dstSymbol: 'TWD', dstQty: qty, categoryId: cat } : { type, date, srcAccount: bank, srcSymbol: 'TWD', srcQty: qty, categoryId: cat }; const r = b.call('addTransaction', { tx }); assert.ok(r.ok, JSON.stringify(r)); };
+  add('2025-03-05', '支出', 1000, lunch);
+  add('2025-11-05', '支出', 9999, lunch); // 去年 11 月：不在「去年同期」（1～10 月）
+  add('2026-01-10', '支出', 55500, lunch);
+  add('2026-03-02', '支出', 300, lunch);
+  add('2026-10-01', '收入', 54000, salaryCat);
+  add('2026-12-20', '支出', 777, lunch); // 未來：今年只算到 10 月，不列進最大筆
+  const r = b.call('getYearSummary', {});
+  assert.ok(r.ok, JSON.stringify(r));
+  const d = r.data;
+  assert.equal(d.year, 2026);
+  assert.equal(d.cutoffMonth, 10);
+  assert.equal(d.months.length, 12);
+  assert.equal(d.prevMonths.length, 12);
+  assert.equal(d.months[0].expense, 55500);
+  assert.equal(d.months[9].income, 54000);
+  assert.equal(d.prevMonths[2].expense, 1000);
+  assert.equal(d.prevMonths[10].expense, 9999);
+  assert.deepEqual(d.topItems.map((x) => x.amount), [55500, 300]);
+  assert.equal(d.months[0].byCategory[0].categoryId, lunch);
+  assert.equal(d.months[9].incomeByCategory[0].amount, 54000);
+  const past = b.call('getYearSummary', { year: 2025 }).data;
+  assert.equal(past.cutoffMonth, 12);
+  assert.deepEqual(past.topItems.map((x) => x.amount), [9999, 1000]);
+  assert.equal(b.call('getYearSummary', { year: 2027 }).error.code, 'VALIDATION');
+  // 月圖表的結果不變
+  const m = b.call('getMonthlyExpenses', { months: 12 }).data;
+  assert.equal(m.months.find((x) => x.ym === '2026-01').expense, 55500);
+  assert.equal(m.months.find((x) => x.ym === '2026-01').items.length, 1);
+});
