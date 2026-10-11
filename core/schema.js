@@ -95,7 +95,9 @@ var FinSchema = (function () {
         c('active', '啟用', 'bool'), c('lastRun', '上次執行日', 'date'), c('note', '備註'),
         c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts'),
         // 2026-10-10 新增：「每N天」頻率的起算方式（固定＝從起始日每 N 天；實際日期＝從上一次實際付款／略過的日子再算 N 天）；2026-10-11 起「每N個月」也適用
-        c('anchor', '起算方式')],
+        c('anchor', '起算方式'),
+        // 2026-10-11 新增：各月預估（「1月:2500、3月:670」＝哪個月大約付多少；電費這種有季節的帳單用，確認入帳時自動更新成實際金額）
+        c('monthEstimates', '各月預估')],
     },
     prices: {
       sheet: '價格', idKey: 'symbol',
@@ -139,7 +141,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.42',
+    APP_VERSION: '0.9.43',
   };
   return api;
 })();

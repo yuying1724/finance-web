@@ -445,24 +445,58 @@ function openTradeConfirm(item) {
   const sheet = openSheet({ title: '確認' + (item.templateName || ''), dismissable: false, body, footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save] });
 }
 
+/** 從起始月份開始每 step 個月，一年裡會落在哪幾個月（由小到大） */
+function monthsOf(startDate, step) {
+  const m0 = Number(String(startDate || '').slice(5, 7)) || 1;
+  const out = [];
+  for (let m = m0, i = 0; i < 12 / step; i++, m += step) out.push(((m - 1) % 12) + 1);
+  return out.sort((a, b) => a - b);
+}
 function freqLabel(t) {
+  const dayList = String(t.days || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const startDay = Number(String(t.startDate || '').slice(8, 10)) || '';
   if (t.freq === '每N天') return `每 ${t.days} 天${t.anchor === '實際日期' ? '（從實際付款日起算）' : ''}`;
-  if (t.freq === '每N個月') return `每 ${t.days} 個月${t.anchor === '實際日期' ? '（從實際付款日起算）' : `・${Number(String(t.startDate || '').slice(8, 10)) || ''}號`}`;
-  return `${t.freq}・${t.days}號`;
+  if (t.freq === '每N個月') {
+    const n = Number(t.days) || 1;
+    if (t.anchor === '實際日期') return `每 ${n} 個月（從實際付款日起算）`;
+    // 一年整除的（2、3、4、6、12 個月）就把是哪幾個月寫出來，例如「每 6 個月（1、7 月）26號」
+    return 12 % n === 0 ? `每 ${n} 個月（${monthsOf(t.startDate, n).join('、')} 月）${startDay}號` : `每 ${n} 個月・${startDay}號`;
+  }
+  if (t.freq === '每季') return `每季（${monthsOf(t.startDate, 3).join('、')} 月）${(dayList.length ? dayList : [startDay]).join('、')}號`;
+  if (t.freq === '每年') {
+    const m = Number(String(t.startDate || '').slice(5, 7)) || '';
+    const ds = dayList.length ? dayList : [startDay];
+    return ds.length === 1 ? `每年 ${m}/${ds[0]}` : `每年 ${m} 月 ${ds.join('、')}號`;
+  }
+  return `${t.freq}・${dayList.join('、')}號`;
+}
+
+// ---------- 各月預估（電費這種有季節的帳單）：「1月:2500、3月:670」 ----------
+function parseME(s) {
+  const out = {};
+  String(s || '').split(/[,，、;；]/).forEach((part) => {
+    const m = /^\s*(\d{1,2})\s*月?\s*[:：=]?\s*([\d.]+)\s*$/.exec(part);
+    if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] > 0) out[+m[1]] = +m[2];
+  });
+  return out;
+}
+function formatME(obj) {
+  return Object.keys(obj).map(Number).filter((m) => obj[m] > 0).sort((a, b) => a - b).map((m) => `${m}月:${obj[m]}`).join('、');
 }
 
 // ==================== 範本列表 ====================
 function templateRow(t) {
   const n = t.active ? nextOf(t) : null;
   const a = amountOf(t);
-  const nextTxt = n ? `下次 ${dateLabel(n.date, state.data.today)}${n.pending ? '（待確認）' : ''}` : '';
+  const seasonal = !!(t.monthEstimates && Object.keys(parseME(t.monthEstimates)).length);
+  const nextTxt = n ? `下次 ${dateLabel(n.date, state.data.today)}${n.pending ? '（待確認）' : ''}${seasonal && !n.pending && n.amount !== null && n.amount !== undefined ? ` 約 ${money(n.amount, n.symbol)}` : ''}` : '';
   // 點整列＝編輯；右邊只留停用／啟用
   return h('div', { class: 'item', 'data-testid': 'recurring-item', 'data-name': t.name },
     h('div', { class: 'ico' }, icon('refresh')),
     h('button', { type: 'button', class: 'grow rec-row-main', 'aria-label': `編輯 ${t.name}`, 'data-testid': 'recurring-edit', onclick: () => openRecurringForm({ recurring: t }) },
       h('div', { class: 't' }, t.name, t.active ? '' : h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '已停用')),
       h('div', { class: 's' }, [freqLabel(t), t.mode].join(' · ')),
-      h('div', { class: 's' }, [a.amount === null ? '金額每次不同' : ((t.type === '收入' || t.type === '股息') ? '+' : '') + money(a.amount, a.symbol), nextTxt].filter(Boolean).join(' · '))),
+      h('div', { class: 's' }, [a.amount === null ? '金額每次不同' : ((t.type === '收入' || t.type === '股息') ? '+' : '') + money(a.amount, a.symbol) + (seasonal ? '（平均，各月不同）' : ''), nextTxt].filter(Boolean).join(' · '))),
     h('button', { class: 'btn btn-sm ' + (t.active ? 'btn-danger' : ''), onclick: () => {
       // 樂觀更新：先在本機切換，背景送出，失敗自動還原
       patchRow('setRecurringActive', { id: t.id, active: !t.active }, { list: 'recurring', idField: 'id', id: t.id, patch: { active: !t.active }, toast: t.active ? '已停用' : '已啟用' });
@@ -480,10 +514,11 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
     dstAccount: recurring.dstAccount || '', dstSymbol: recurring.dstSymbol || '', dstQty: recurring.dstQty !== null && recurring.dstQty !== undefined ? String(recurring.dstQty) : '',
     categoryId: recurring.categoryId || '', remindDays: String(recurring.remindDays ?? 1), settleDays: recurring.settleDays !== null && recurring.settleDays !== undefined ? String(recurring.settleDays) : '',
     note: recurring.note || '', anchor: recurring.anchor || '固定',
+    me: parseME(recurring.monthEstimates), meOn: Object.keys(parseME(recurring.monthEstimates)).length > 0,
   } : {
     name: '', freq: '每月', days: '', holiday: '順延', startDate: d.today, endDate: '', type: '支出', mode: '自動入帳',
     srcAccount: '', srcSymbol: 'TWD', srcQty: '', dstAccount: '', dstSymbol: 'TWD', dstQty: '',
-    categoryId: '', remindDays: '1', settleDays: '', note: '', anchor: '固定',
+    categoryId: '', remindDays: '1', settleDays: '', note: '', anchor: '固定', me: {}, meOn: false,
   };
   const { banner, fld, showErr, clearErr } = fieldHelpers();
   const accounts = d.accounts.filter((a) => a.active);
@@ -569,6 +604,19 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
       }
       parts.push(fld('settleDays', '交割天數（選填，留空用預設值：券商定期定額＝0、手動下單＝證券帳戶設定）', h('input', { type: 'text', inputmode: 'numeric', value: f.settleDays, oninput: (e) => { f.settleDays = e.target.value; } })));
     }
+    if (['收入', '支出', '轉帳'].includes(f.type)) {
+      // 各月預估：電費這種夏天高、冬天低的帳單，每個月填大約多少；確認入帳時會自動改成實際金額（明年就是去年同期）
+      const grid = f.meOn ? h('div', { class: 'rec-me-grid', 'data-testid': 'rec-me-grid' }, Array.from({ length: 12 }, (_, i) => i + 1).map((m) =>
+        h('label', { class: 'rec-me-cell' }, h('span', { class: 'muted small' }, `${m} 月`),
+          h('input', { type: 'text', inputmode: 'decimal', value: f.me[m] ? String(f.me[m]) : '', placeholder: '—', 'aria-label': `${m} 月預估`, 'data-month': m,
+            oninput: (e) => { const v = Number(e.target.value.replace(/,/g, '')); if (e.target.value.trim() && v > 0) f.me[m] = v; else delete f.me[m]; } })))) : null;
+      // 不用 fld()：fld 外層是 <label>，裡面再放勾選框和 12 個輸入框會變成巢狀 label
+      parts.push(h('div', { class: 'field', 'data-testid': 'rec-me' }, h('span', { class: 'lbl' }, '每個月的金額不一樣嗎？'),
+        h('label', { class: 'check' },
+          h('input', { type: 'checkbox', checked: f.meOn, 'data-testid': 'rec-me-toggle', onchange: (e) => { f.meOn = e.target.checked; draw(); } }), '依月份填預估金額（例如電費夏天比較高）'),
+        grid,
+        f.meOn ? h('div', { class: 'muted small', style: { marginTop: '3px' } }, '只填會付款的月份就好（兩個月一期就填單月或雙月）。確認入帳時，那個月會自動改成實際付的金額，明年同一期就用它；沒填的月份用上面的「預計金額」。') : null));
+    }
     parts.push(fld('note', '備註（選填）', h('input', { type: 'text', maxlength: 200, value: f.note, oninput: (e) => { f.note = e.target.value; } })));
     mount(body, banner, ...parts);
   }
@@ -578,7 +626,8 @@ export function openRecurringForm({ recurring = null, onDone } = {}) {
     clearErr();
     await withBusy(e.currentTarget, async () => {
       try {
-        const payload = { ...f, days: f.days.split(',').map((s) => s.trim()).filter(Boolean).map(Number) };
+        const payload = { ...f, days: f.days.split(',').map((s) => s.trim()).filter(Boolean).map(Number), monthEstimates: f.meOn && ['收入', '支出', '轉帳'].includes(f.type) ? formatME(f.me) : '' };
+        delete payload.me; delete payload.meOn;
         if (payload.type === '轉帳') { payload.dstSymbol = payload.srcSymbol; payload.dstQty = payload.srcQty; }
         if (recurring) payload.id = recurring.id;
         const r = await api.call('upsertRecurring', { recurring: payload, expectedUpdatedAt: recurring ? recurring.updatedAt : undefined });

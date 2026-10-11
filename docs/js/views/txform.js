@@ -5,6 +5,7 @@ import * as api from '../api.js';
 import { money, decimalsOf, categoryInfo, catIconStyle, sortCategories } from '../fmt.js';
 import { openSheet, toast } from '../ui.js';
 import { refresh, write, applyTxLocal } from '../data.js';
+import { QUICK_TYPES, quickItems, openSaveQuick } from './quicktx.js';
 
 const last = { type: '支出', acct: '', acct2: '' };
 const PRIMARY = ['支出', '收入', '轉帳', '換匯'];
@@ -596,6 +597,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     }
     paintClose(); // 快結帳提醒要等「更多」裡的入帳日欄位建好才畫
     mount(bodyBox, ...parts);
+    if (typeof paintQuickSave === 'function') paintQuickSave();
     paintRate(); paintImplied();
   }
 
@@ -830,6 +832,38 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
   }
 
   // ---------- 視窗 ----------
+  // 常用交易：只有一般「記一筆」才顯示（編輯、退款、繳卡費、對帳這些有帶好資料的不顯示）
+  const plain = !editing && !preset.type && !preset.related && !preset.cardPay && !draft;
+  let quickOn = '';
+  const quickRow = h('div', { 'data-testid': 'quick-row' });
+  function applyQuick(q) {
+    quickOn = q.id;
+    type = q.type;
+    const okAcct = (id) => id && accounts.some((a) => a.id === id && a.active);
+    if (okAcct(q.acct)) { f.acct = q.acct; f.sym = accountById(q.acct).defaultSymbol || f.sym; f.acctTouched = true; f.acctAuto = null; }
+    if (q.type === '轉帳' && okAcct(q.acct2)) { f.acct2 = q.acct2; f.sym2 = accountById(q.acct2).defaultSymbol || f.sym2; }
+    Object.assign(f, { categoryId: q.categoryId || '', merchant: q.merchant || '', note: q.note || '', tags: q.tags || '', amount: q.amount ? String(q.amount) : '', splitOn: false, payOn: false, instOn: false });
+    wantFocus = true;
+    paintQuick(); drawTypes(); draw();
+  }
+  function paintQuick() {
+    const items = plain ? quickItems() : [];
+    if (!items.length) { mount(quickRow); return; }
+    mount(quickRow, h('div', { class: 'chips', style: { gap: '6px', marginBottom: '10px', flexWrap: 'nowrap', overflowX: 'auto', paddingBottom: '2px' } },
+      h('span', { class: 'muted small', style: { alignSelf: 'center', flexShrink: 0 } }, '常用'),
+      items.map((q) => h('button', { type: 'button', class: 'chip chip-sm' + (quickOn === q.id ? ' on' : ''), style: { flexShrink: 0, whiteSpace: 'nowrap' }, 'data-testid': 'quick-chip', 'data-name': q.name, onclick: () => applyQuick(q) }, q.name))));
+  }
+  const quickSaveBox = h('div', { style: { marginTop: '6px' } });
+  function paintQuickSave() {
+    if (editing || !QUICK_TYPES.includes(type)) { mount(quickSaveBox); return; }
+    mount(quickSaveBox, h('button', { type: 'button', class: 'link-btn', 'data-testid': 'save-quick', onclick: () => {
+      const amt = parseAmount(f.amount);
+      openSaveQuick({ type, acct: f.acct, acct2: type === '轉帳' ? f.acct2 : '', categoryId: type === '轉帳' ? '' : f.categoryId, merchant: (f.merchant || '').trim(), note: (f.note || '').trim(), tags: (f.tags || '').trim(), amount: amt.empty || amt.bad ? '' : amt.n },
+        () => paintQuick());
+    } }, '＋ 存成常用交易（下次按一下就帶好）'));
+  }
+  paintQuick();
+
   const typeSeg = h('div', { class: 'seg', role: 'tablist' });
   const extraRow = h('div', { class: 'chips', style: { margin: '8px 0 12px' } });
   function drawTypes() {
@@ -842,7 +876,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
 
   const sheet = openSheet({
     title: editing ? `編輯${type}` : '記一筆',
-    body: h('div', null, banner, editing ? null : [typeSeg, extraRow], bodyBox),
+    body: h('div', null, banner, editing ? null : [quickRow, typeSeg, extraRow], bodyBox, quickSaveBox),
     footer: [cancelBtn, submitBtn],
     dismissable: false,
   });

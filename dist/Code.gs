@@ -101,7 +101,9 @@ var FinSchema = (function () {
         c('active', '啟用', 'bool'), c('lastRun', '上次執行日', 'date'), c('note', '備註'),
         c('createdAt', '建立時間', 'ts'), c('updatedAt', '更新時間', 'ts'),
         // 2026-10-10 新增：「每N天」頻率的起算方式（固定＝從起始日每 N 天；實際日期＝從上一次實際付款／略過的日子再算 N 天）；2026-10-11 起「每N個月」也適用
-        c('anchor', '起算方式')],
+        c('anchor', '起算方式'),
+        // 2026-10-11 新增：各月預估（「1月:2500、3月:670」＝哪個月大約付多少；電費這種有季節的帳單用，確認入帳時自動更新成實際金額）
+        c('monthEstimates', '各月預估')],
     },
     prices: {
       sheet: '價格', idKey: 'symbol',
@@ -145,7 +147,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.42',
+    APP_VERSION: '0.9.43',
   };
   return api;
 })();
@@ -551,6 +553,51 @@ var FinRecurring = (function () {
     return out;
   }
 
+  // ---------- 各月預估（電費這種夏天高、冬天低的帳單）----------
+  // 範本「各月預估」欄位：「1月:2500、3月:670、5月:1800」＝哪個月付大約多少（存成有「月」字的文字，試算表不會誤判成時間）；確認入帳時自動把那個月改成實際金額（明年就是「去年同期」）
+
+  /** 「1月:2500、3月:670」（也接受 1:2500,3:670）→ {1:2500, 3:670}；格式不對的部分略過 */
+  function parseMonthEstimates(s) {
+    var out = {};
+    String(s === null || s === undefined ? '' : s).split(/[,，、;；]/).forEach(function (part) {
+      var m = /^\s*(\d{1,2})\s*月?\s*[:：=]?\s*([\d.]+)\s*$/.exec(part);
+      if (!m) return;
+      var mon = Number(m[1]), amt = Number(m[2]);
+      if (mon >= 1 && mon <= 12 && isFinite(amt) && amt > 0) out[mon] = amt;
+    });
+    return out;
+  }
+  function formatMonthEstimates(obj) {
+    return Object.keys(obj || {}).map(Number).filter(function (m) { return m >= 1 && m <= 12 && obj[m] > 0; })
+      .sort(function (a, b) { return a - b; }).map(function (m) { return m + '月:' + obj[m]; }).join('、');
+  }
+  /** 只有收入／支出／轉帳這種「一個金額」的範本才用各月預估 */
+  function usesMonthEstimates(tpl) { return ['收入', '支出', '轉帳'].indexOf(tpl.type) >= 0 && Object.keys(parseMonthEstimates(tpl.monthEstimates)).length > 0; }
+  /**
+   * 這一次（預定日 planned）的預估金額：有填各月預估就用那個月的；那個月沒填就看前一個月、再看後一個月
+   * （兩個月一期、繳費日前後飄幾天也找得到）；都沒有就用範本金額。回傳 {amount, basis:'各月'|'範本'}
+   */
+  function estimateFor(tpl, planned) {
+    var base = tpl.type === '收入' ? tpl.dstQty : tpl.srcQty;
+    if (!usesMonthEstimates(tpl) || !planned) return { amount: base, basis: '範本' };
+    var m = parseMonthEstimates(tpl.monthEstimates), mon = Number(String(planned).slice(5, 7));
+    var tries = [mon, mon === 1 ? 12 : mon - 1, mon === 12 ? 1 : mon + 1];
+    for (var i = 0; i < tries.length; i++) if (m[tries[i]] > 0) return { amount: m[tries[i]], basis: '各月', month: tries[i] };
+    return { amount: base, basis: '範本' };
+  }
+  /** 確認入帳後更新各月預估：實際付款日那個月改成實際金額（同一期如果之前記在前後一個月，就更新那個月，避免同一期變兩筆） */
+  function learnMonthEstimate(tpl, date, amount) {
+    if (!usesMonthEstimates(tpl) || !(Number(amount) > 0) || !FinDates.isValid(date)) return null;
+    var m = parseMonthEstimates(tpl.monthEstimates), mon = Number(date.slice(5, 7));
+    var key = mon;
+    if (!(m[mon] > 0)) {
+      var prev = mon === 1 ? 12 : mon - 1, next = mon === 12 ? 1 : mon + 1;
+      if (m[prev] > 0) key = prev; else if (m[next] > 0) key = next;
+    }
+    m[key] = Number(amount);
+    return formatMonthEstimates(m);
+  }
+
   // ---------- 交割天數與交割日 ----------
 
   /** 範本的交割天數：範本本身有填就優先；否則券商定期定額固定 0（扣款當天）、手動下單取證券帳戶設定的買入交割天數 */
@@ -612,6 +659,7 @@ var FinRecurring = (function () {
     occurrences: occurrences, defaultSettleDays: defaultSettleDays, computeSettleDate: computeSettleDate,
     wasSettleDateAuto: wasSettleDateAuto, recalcSettleDateOnTradeChange: recalcSettleDateOnTradeChange,
     dedupKey: dedupKey, suggestedAmount: suggestedAmount,
+    parseMonthEstimates: parseMonthEstimates, formatMonthEstimates: formatMonthEstimates, usesMonthEstimates: usesMonthEstimates, estimateFor: estimateFor, learnMonthEstimate: learnMonthEstimate,
     intervalDays: intervalDays, intervalMonths: intervalMonths, intervalLabel: intervalLabel, addMonthsToDate: addMonthsToDate, isActualAnchored: isActualAnchored, actualAnchoredNext: actualAnchoredNext, actualAnchoredProjection: actualAnchoredProjection,
     SUGGEST_THRESHOLD_PCT: SUGGEST_THRESHOLD_PCT, SUGGEST_STEP_RATIO: SUGGEST_STEP_RATIO,
   };
@@ -2749,6 +2797,7 @@ var FinApi = (function () {
           var la = c.accounts[tpl.dstAccount || tpl.srcAccount], ls = la && c.loanByAccount[la.id];
           if (la && ls) { var li = c.instruments[la.defaultSymbol]; var per = FinLoan.findPeriod(FinLoan.schedule(ls, FinMoney.billingDecimals(la.defaultSymbol, li ? li.decimals : 0)), next.due); if (per) { amount = per.payment; symbol = la.defaultSymbol; } }
         }
+        if (FinRecurring.usesMonthEstimates(tpl)) amount = FinRecurring.estimateFor(tpl, next.planned).amount;
         out[tpl.id] = { date: next.due, amount: amount === undefined ? null : amount, symbol: symbol, pending: false };
       } catch (e) { /* 推算失敗就不顯示下一次 */ }
     });
@@ -2772,6 +2821,7 @@ var FinApi = (function () {
         if (generated) return;
         var isIncome = tpl.type === '收入' || tpl.type === '股息';
         var amount = tpl.type === '貸款還款' ? null : (isIncome ? tpl.dstQty : tpl.srcQty);
+        if (FinRecurring.usesMonthEstimates(tpl)) amount = FinRecurring.estimateFor(tpl, o.planned).amount;
         var symbol = isIncome ? tpl.dstSymbol : tpl.srcSymbol;
         if (tpl.type === '貸款還款') {
           var la = c.accounts[tpl.dstAccount || tpl.srcAccount], ls = la && c.loanByAccount[la.id];
@@ -2959,6 +3009,46 @@ var FinApi = (function () {
     return out;
   }
 
+  // ---------- 常用交易範本：記帳時按一下就帶好類型、帳戶、分類、商家（存在「設定」分頁 quickTx，JSON 陣列） ----------
+  var QUICK_KEY = 'quickTx', QUICK_MAX = 30, QUICK_TYPES = ['支出', '收入', '轉帳'];
+  function quickList(settings) {
+    try {
+      var v = (settings || FinRepo.getSettings())[QUICK_KEY];
+      var a = v ? JSON.parse(String(v)) : [];
+      return Array.isArray(a) ? a.filter(function (x) { return x && x.id && x.name && QUICK_TYPES.indexOf(x.type) >= 0; }) : [];
+    } catch (e) { return []; }
+  }
+  function saveQuickList(list) {
+    var value = JSON.stringify(list);
+    var row = FinRepo.findById('settings', QUICK_KEY);
+    if (row) FinRepo.updateRow('settings', row._row, { value: value });
+    else FinRepo.append('settings', [{ key: QUICK_KEY, value: value, note: '記帳表單上方的「常用」按鈕（App：記一筆 › 存成常用；設定 › 常用交易）' }]);
+    return list;
+  }
+  function validateQuick(a, c) {
+    var errors = [];
+    function err(field, message) { errors.push({ field: field, message: message }); }
+    var name = FinValidate.safeText(str(a.name)).slice(0, 20);
+    if (!name) err('name', '請輸入名稱');
+    var type = str(a.type);
+    if (QUICK_TYPES.indexOf(type) < 0) err('type', '常用交易只支援支出、收入、轉帳');
+    var acct = str(a.acct), acct2 = type === '轉帳' ? str(a.acct2) : '';
+    if (acct && !c.accounts[acct]) err('acct', '找不到帳戶');
+    if (acct2 && !c.accounts[acct2]) err('acct2', '找不到轉入帳戶');
+    if (acct && acct2 && acct === acct2) err('acct2', '轉出和轉入不能是同一個帳戶');
+    var categoryId = type === '轉帳' ? '' : str(a.categoryId);
+    if (categoryId) {
+      var cat = c.categories[categoryId];
+      if (!cat) err('categoryId', '找不到分類');
+      else if (cat.type !== type) err('categoryId', type + '請選「' + type + '」分類');
+    }
+    var amount = a.amount === '' || a.amount === null || a.amount === undefined ? null : Number(a.amount);
+    if (amount !== null && (!isFinite(amount) || amount <= 0)) err('amount', '金額必須大於 0');
+    var value = { name: name, type: type, acct: acct, acct2: acct2, categoryId: categoryId, amount: amount,
+      merchant: FinValidate.safeText(str(a.merchant)).slice(0, 40), note: FinValidate.safeText(str(a.note)).slice(0, 200), tags: FinValidate.safeText(str(a.tags)).slice(0, 200) };
+    return { errors: errors, value: value };
+  }
+
   /** 記帳表單「常用帳戶」：最近 120 天每個帳戶出現在幾筆有效交易（來源或目的） */
   function accountUsage(c) {
     var since = FinDates.addDays(c.today, -120), out = {};
@@ -3014,7 +3104,7 @@ var FinApi = (function () {
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
         brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
         cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub), cardOverview: cardOv, upcoming: upcoming(c, 30, cardOv),
-        cashAlert: cashAlert(cashflow(c, 30, cardOv, calc)), reconciled: reconciledMap(c),
+        cashAlert: cashAlert(cashflow(c, 30, cardOv, calc)), reconciled: reconciledMap(c), quickTx: quickList(c.settings),
         installments: installmentList(c),
         recurring: c.recurringRows.map(pub), recurringNext: recurringNext(c), pendingConfirmations: pendingConfirmations(c),
         prices: c.priceInfo,
@@ -3060,6 +3150,48 @@ var FinApi = (function () {
    * 商家管理：action = 'hide'（不在建議顯示，交易不動）／'show'（恢復顯示）／'rename'（所有用這個名稱的交易改成 newName；newName 已存在就等於合併）
    * ／'clear'（所有用這個名稱的交易清空商家欄位；moveToNote 時把名稱加到備註前面）
    */
+  /** 新增或修改一個常用交易（有 id 就是修改） */
+  H.saveQuickTx = {
+    fn: function (p, env) {
+      var a = p.item;
+      if (!a || typeof a !== 'object') throw FinFail('BAD_REQUEST', '缺少常用交易資料');
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var v = validateQuick(a, c);
+        if (v.errors.length) throw FinFail('VALIDATION', v.errors[0].message, { errors: v.errors, warnings: [] });
+        var list = quickList(c.settings), id = str(a.id), item;
+        if (id) {
+          var i = list.map(function (x) { return x.id; }).indexOf(id);
+          if (i < 0) throw FinFail('NOT_FOUND', '找不到這個常用交易');
+          item = Object.assign({ id: id }, v.value); list[i] = item;
+        } else {
+          if (list.length >= QUICK_MAX) throw FinFail('VALIDATION', '常用交易最多 ' + QUICK_MAX + ' 個，請先刪掉不用的', { errors: [{ field: 'name', message: '最多 ' + QUICK_MAX + ' 個' }], warnings: [] });
+          var n = 1; list.forEach(function (x) { var m = /^Q(\d+)$/.exec(x.id); if (m && +m[1] >= n) n = +m[1] + 1; });
+          item = Object.assign({ id: 'Q' + n }, v.value); list.push(item);
+        }
+        saveQuickList(list);
+        FinRepo.audit(id ? '修改' : '新增', 'settings', QUICK_KEY, '常用交易：' + item.name, env.device);
+        return { item: item, items: list };
+      });
+    },
+  };
+
+  /** 刪除常用交易 */
+  H.deleteQuickTx = {
+    fn: function (p, env) {
+      var id = str(p.id);
+      return FinRepo.withLock(function () {
+        var list = quickList();
+        var gone = list.filter(function (x) { return x.id === id; })[0];
+        if (!gone) throw FinFail('NOT_FOUND', '找不到這個常用交易');
+        list = list.filter(function (x) { return x.id !== id; });
+        saveQuickList(list);
+        FinRepo.audit('刪除', 'settings', QUICK_KEY, '常用交易：' + gone.name, env.device);
+        return { items: list };
+      });
+    },
+  };
+
   /** 餘額本來就和實際一樣（不需要調整）時，記下「這天對過帳」 */
   H.markReconciled = {
     fn: function (p, env) {
@@ -4156,6 +4288,14 @@ var FinApi = (function () {
     var note = str(a.note);
     if (note.length > 200) err('note', '備註最多 200 字');
     var anchor = freq === '每N天' || freq === '每N個月' ? (str(a.anchor) || '固定') : '';
+    var meRaw = str(a.monthEstimates);
+    var monthEstimates = '';
+    if (meRaw && ['收入', '支出', '轉帳'].indexOf(type) >= 0) {
+      var meObj = FinRecurring.parseMonthEstimates(meRaw);
+      monthEstimates = FinRecurring.formatMonthEstimates(meObj);
+      var badPart = meRaw.split(/[,，、;；]/).filter(function (x) { return x.trim(); }).length !== Object.keys(meObj).length;
+      if (badPart) err('monthEstimates', '各月預估的格式是「月:金額」，例如 1月:2500、3月:670（金額要大於 0）');
+    }
     if (anchor && FinSchema.ENUMS.recurAnchor.indexOf(anchor) < 0) err('anchor', '起算方式請選擇：' + FinSchema.ENUMS.recurAnchor.join('、'));
     if (anchor === '實際日期') {
       if (mode !== '提醒確認') err('anchor', '「從實際付款日起算」要搭配「提醒確認」（才知道你實際哪天付款）');
@@ -4166,7 +4306,7 @@ var FinApi = (function () {
       name: FinValidate.safeText(name), freq: freq, days: daysArr.slice().sort(function (x, y) { return x - y; }).join(','), holiday: holiday,
       startDate: startDate, endDate: endDate, type: type, srcAccount: srcAccount, srcSymbol: srcSymbol, srcQty: srcQty,
       dstAccount: dstAccount, dstSymbol: dstSymbol, dstQty: dstQty, categoryId: categoryId, mode: mode,
-      remindDays: remindDays, settleDays: settleDays, note: FinValidate.safeText(note), anchor: anchor,
+      remindDays: remindDays, settleDays: settleDays, note: FinValidate.safeText(note), anchor: anchor, monthEstimates: monthEstimates,
     };
     return { errors: errors, value: value };
   }
@@ -4187,7 +4327,7 @@ var FinApi = (function () {
         if (existing) {
           var patch = { name: v.name, freq: v.freq, days: v.days, holiday: v.holiday, startDate: v.startDate, endDate: v.endDate,
             type: v.type, srcAccount: v.srcAccount, srcSymbol: v.srcSymbol, srcQty: v.srcQty, dstAccount: v.dstAccount, dstSymbol: v.dstSymbol,
-            dstQty: v.dstQty, categoryId: v.categoryId, mode: v.mode, remindDays: v.remindDays, settleDays: v.settleDays, note: v.note, anchor: v.anchor, updatedAt: now };
+            dstQty: v.dstQty, categoryId: v.categoryId, mode: v.mode, remindDays: v.remindDays, settleDays: v.settleDays, note: v.note, anchor: v.anchor, monthEstimates: v.monthEstimates, updatedAt: now };
           FinRepo.updateRow('recurring', existing._row, patch);
           out = pub(existing); Object.keys(patch).forEach(function (k) { out[k] = patch[k]; });
           FinRepo.audit('修改', 'recurring', out.id, out.name, env.device);
@@ -4195,7 +4335,7 @@ var FinApi = (function () {
           out = { id: FinRepo.nextIds('recurring', 1)[0], name: v.name, freq: v.freq, days: v.days, holiday: v.holiday,
             startDate: v.startDate, endDate: v.endDate, type: v.type, srcAccount: v.srcAccount, srcSymbol: v.srcSymbol, srcQty: v.srcQty,
             dstAccount: v.dstAccount, dstSymbol: v.dstSymbol, dstQty: v.dstQty, categoryId: v.categoryId, mode: v.mode,
-            remindDays: v.remindDays, settleDays: v.settleDays, active: true, lastRun: '', note: v.note, anchor: v.anchor, createdAt: now, updatedAt: now };
+            remindDays: v.remindDays, settleDays: v.settleDays, active: true, lastRun: '', note: v.note, anchor: v.anchor, monthEstimates: v.monthEstimates, createdAt: now, updatedAt: now };
           FinRepo.append('recurring', [out]);
           FinRepo.audit('新增', 'recurring', out.id, out.name, env.device);
         }
@@ -4325,6 +4465,16 @@ var FinApi = (function () {
           }
           FinRepo.updateRow('transactions', row._row, patch);
           FinRepo.audit('確認', 'transactions', row.id, (row.recurringId ? '定期確認入帳：' : '確認入帳：') + summarizeTx(row), env.device);
+          // 各月預估：實際付了多少就記到那個月，明年同一期就用這個金額
+          var etpl = row.recurringId ? FinRepo.findById('recurring', row.recurringId) : null;
+          if (etpl && !etpl._bad) {
+            var paid = row.type === '收入' ? (patch.dstQty !== undefined ? patch.dstQty : row.dstQty) : (patch.srcQty !== undefined ? patch.srcQty : row.srcQty);
+            var learned = FinRecurring.learnMonthEstimate(etpl, patch.date || row.date, paid);
+            if (learned !== null && learned !== String(etpl.monthEstimates || '')) {
+              FinRepo.updateRow('recurring', etpl._row, { monthEstimates: learned, updatedAt: now });
+              FinRepo.audit('修改', 'recurring', etpl.id, '各月預估更新：' + etpl.name + ' ' + learned, env.device);
+            }
+          }
           var oo = pub(row); Object.keys(patch).forEach(function (k) { oo[k] = patch[k]; }); out.push(oo);
         }
         var res = { transactions: out };
@@ -4765,6 +4915,12 @@ var FinRecurringJob = (function () {
       relatedSymbol: '', groupId: '', relatedTxId: '', recurringId: tpl.id, plannedDate: occ.planned,
       note: '定期：' + tpl.name, status: status, createdAt: now, updatedAt: now,
     };
+    if (FinRecurring.usesMonthEstimates(tpl)) {
+      // 各月預估：這個月大約多少（例如夏天的電費比較高）
+      var est = FinRecurring.estimateFor(tpl, occ.planned).amount;
+      if (tpl.type === '收入') row.dstQty = est;
+      else { row.srcQty = est; if (tpl.type === '轉帳') row.dstQty = est; }
+    }
     if (tpl.type === '股息') {
       // 股息範本：來源標的＝這筆股息屬於哪個標的；金額（目的數量）沒填代表等入帳再填
       var divCat = c.categoryRows.filter(function (x) { return x.type === '系統' && x.name === '股息'; })[0];

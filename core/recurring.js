@@ -212,6 +212,51 @@ var FinRecurring = (function () {
     return out;
   }
 
+  // ---------- 各月預估（電費這種夏天高、冬天低的帳單）----------
+  // 範本「各月預估」欄位：「1月:2500、3月:670、5月:1800」＝哪個月付大約多少（存成有「月」字的文字，試算表不會誤判成時間）；確認入帳時自動把那個月改成實際金額（明年就是「去年同期」）
+
+  /** 「1月:2500、3月:670」（也接受 1:2500,3:670）→ {1:2500, 3:670}；格式不對的部分略過 */
+  function parseMonthEstimates(s) {
+    var out = {};
+    String(s === null || s === undefined ? '' : s).split(/[,，、;；]/).forEach(function (part) {
+      var m = /^\s*(\d{1,2})\s*月?\s*[:：=]?\s*([\d.]+)\s*$/.exec(part);
+      if (!m) return;
+      var mon = Number(m[1]), amt = Number(m[2]);
+      if (mon >= 1 && mon <= 12 && isFinite(amt) && amt > 0) out[mon] = amt;
+    });
+    return out;
+  }
+  function formatMonthEstimates(obj) {
+    return Object.keys(obj || {}).map(Number).filter(function (m) { return m >= 1 && m <= 12 && obj[m] > 0; })
+      .sort(function (a, b) { return a - b; }).map(function (m) { return m + '月:' + obj[m]; }).join('、');
+  }
+  /** 只有收入／支出／轉帳這種「一個金額」的範本才用各月預估 */
+  function usesMonthEstimates(tpl) { return ['收入', '支出', '轉帳'].indexOf(tpl.type) >= 0 && Object.keys(parseMonthEstimates(tpl.monthEstimates)).length > 0; }
+  /**
+   * 這一次（預定日 planned）的預估金額：有填各月預估就用那個月的；那個月沒填就看前一個月、再看後一個月
+   * （兩個月一期、繳費日前後飄幾天也找得到）；都沒有就用範本金額。回傳 {amount, basis:'各月'|'範本'}
+   */
+  function estimateFor(tpl, planned) {
+    var base = tpl.type === '收入' ? tpl.dstQty : tpl.srcQty;
+    if (!usesMonthEstimates(tpl) || !planned) return { amount: base, basis: '範本' };
+    var m = parseMonthEstimates(tpl.monthEstimates), mon = Number(String(planned).slice(5, 7));
+    var tries = [mon, mon === 1 ? 12 : mon - 1, mon === 12 ? 1 : mon + 1];
+    for (var i = 0; i < tries.length; i++) if (m[tries[i]] > 0) return { amount: m[tries[i]], basis: '各月', month: tries[i] };
+    return { amount: base, basis: '範本' };
+  }
+  /** 確認入帳後更新各月預估：實際付款日那個月改成實際金額（同一期如果之前記在前後一個月，就更新那個月，避免同一期變兩筆） */
+  function learnMonthEstimate(tpl, date, amount) {
+    if (!usesMonthEstimates(tpl) || !(Number(amount) > 0) || !FinDates.isValid(date)) return null;
+    var m = parseMonthEstimates(tpl.monthEstimates), mon = Number(date.slice(5, 7));
+    var key = mon;
+    if (!(m[mon] > 0)) {
+      var prev = mon === 1 ? 12 : mon - 1, next = mon === 12 ? 1 : mon + 1;
+      if (m[prev] > 0) key = prev; else if (m[next] > 0) key = next;
+    }
+    m[key] = Number(amount);
+    return formatMonthEstimates(m);
+  }
+
   // ---------- 交割天數與交割日 ----------
 
   /** 範本的交割天數：範本本身有填就優先；否則券商定期定額固定 0（扣款當天）、手動下單取證券帳戶設定的買入交割天數 */
@@ -273,6 +318,7 @@ var FinRecurring = (function () {
     occurrences: occurrences, defaultSettleDays: defaultSettleDays, computeSettleDate: computeSettleDate,
     wasSettleDateAuto: wasSettleDateAuto, recalcSettleDateOnTradeChange: recalcSettleDateOnTradeChange,
     dedupKey: dedupKey, suggestedAmount: suggestedAmount,
+    parseMonthEstimates: parseMonthEstimates, formatMonthEstimates: formatMonthEstimates, usesMonthEstimates: usesMonthEstimates, estimateFor: estimateFor, learnMonthEstimate: learnMonthEstimate,
     intervalDays: intervalDays, intervalMonths: intervalMonths, intervalLabel: intervalLabel, addMonthsToDate: addMonthsToDate, isActualAnchored: isActualAnchored, actualAnchoredNext: actualAnchoredNext, actualAnchoredProjection: actualAnchoredProjection,
     SUGGEST_THRESHOLD_PCT: SUGGEST_THRESHOLD_PCT, SUGGEST_STEP_RATIO: SUGGEST_STEP_RATIO,
   };

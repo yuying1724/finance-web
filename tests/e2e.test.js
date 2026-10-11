@@ -1416,7 +1416,7 @@ test('定期轉帳表單：金額只填一次（沒有第二個金額欄），�
   });
 });
 
-test('定期表單「每N個月」：每 6 個月的房租一個範本就好，列表寫「每 6 個月・29號」', { skip }, async () => {
+test('定期表單「每N個月」：每 6 個月的房租一個範本就好，列表寫「每 6 個月（1、7 月）29號」', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page, s } = a;
     const be = s.backend;
@@ -1442,7 +1442,100 @@ test('定期表單「每N個月」：每 6 個月的房租一個範本就好，�
     const t = be.call('bootstrap').data.recurring.find((x) => x.name === '房租');
     assert.deepEqual([t.freq, t.days, t.startDate, t.anchor], ['每N個月', '6', '2027-01-29', '固定']);
     await page.waitForSelector('[data-testid=recurring-item][data-name="房租"]');
-    assert.match(await page.locator('[data-testid=recurring-item][data-name="房租"]').innerText(), /每 6 個月・29號/);
+    assert.match(await page.locator('[data-testid=recurring-item][data-name="房租"]').innerText(), /每 6 個月（1、7 月）29號/);
+  });
+});
+
+test('常用交易：記一筆時「存成常用交易」，下次按一下就帶好類型、帳戶、分類、商家；設定裡可以刪除', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.fab();
+    assert.equal(await page.locator('[data-testid=quick-chip]').count(), 0, '還沒有常用交易');
+    await page.fill('input[aria-label="金額"]', '85');
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '錢包現金' });
+    await a.pickCategory('飲食', '午餐');
+    await page.fill('input[placeholder^="例如"]', '池上便當');
+    await page.click('[data-testid=save-quick]');
+    await page.waitForSelector('[data-testid=quick-name]');
+    assert.equal(await page.inputValue('[data-testid=quick-name]'), '池上便當');
+    await page.fill('[data-testid=quick-name]', '便當');
+    await page.click('[data-testid=quick-save]');
+    await page.waitForSelector('[data-testid=quick-chip][data-name="便當"]');
+    const q = be.call('bootstrap').data.quickTx[0];
+    assert.deepEqual([q.name, q.type, q.merchant, q.amount], ['便當', '支出', '池上便當', 85]);
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    // 下一次：先切到收入，再按常用 → 回到支出並帶好
+    await a.fab();
+    await page.click('.sheet button[data-type="收入"]');
+    await page.click('[data-testid=quick-chip][data-name="便當"]');
+    assert.equal(await page.locator('.sheet .seg button.on').innerText(), '支出');
+    assert.equal(await page.inputValue('input[aria-label="金額"]'), '85');
+    assert.equal(await page.inputValue('input[placeholder^="例如"]'), '池上便當');
+    await page.fill('input[aria-label="金額"]', '95');
+    await a.save();
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    let t = null;
+    for (let i = 0; i < 30 && !t; i++) { await page.waitForTimeout(100); t = be.call('listTransactions', { filters: {}, limit: 50 }).data.items.find((x) => x.merchant === '池上便當' && x.srcQty === 95); }
+    assert.ok(t);
+    assert.equal(t.categoryId, q.categoryId);
+    assert.equal(t.srcAccount, q.acct);
+    // 設定 › 常用交易 → 刪除
+    await a.tab('settings');
+    await page.click('[data-testid=open-quick]');
+    await page.waitForSelector('[data-testid=quick-item][data-name="便當"]');
+    await page.click('[data-testid=quick-delete]');
+    await page.locator('.sheet-foot .btn-danger').last().click();
+    await page.waitForFunction(() => !document.querySelector('[data-testid=quick-item]'));
+    assert.equal(be.call('bootstrap').data.quickTx.length, 0);
+  });
+});
+
+test('定期：每年／每季寫出月份；支出可以依月份填預估金額，列表顯示下次約多少', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const card = be.call('upsertAccount', { account: { name: '電費卡', type: '信用卡', defaultSymbol: 'TWD' } }).data.account.id;
+    const cat = be.call('bootstrap').data.categories.find((c) => c.type === '支出' && !c.parentId).id;
+    const y = Number(today.slice(0, 4)) + 1;
+    assert.ok(be.call('upsertRecurring', { recurring: { name: '保險年繳', freq: '每年', days: [24], holiday: '不調整', startDate: `${y}-12-24`, type: '支出', srcAccount: card, srcSymbol: 'TWD', srcQty: 25858, categoryId: cat, mode: '提醒確認' } }).ok);
+    assert.ok(be.call('upsertRecurring', { recurring: { name: '季繳', freq: '每季', days: [15], holiday: '不調整', startDate: `${y}-02-15`, type: '支出', srcAccount: card, srcSymbol: 'TWD', srcQty: 100, categoryId: cat, mode: '自動入帳' } }).ok);
+    assert.ok(be.call('upsertRecurring', { recurring: { name: '半年', freq: '每N個月', days: [6], holiday: '不調整', startDate: `${y}-01-26`, type: '支出', srcAccount: card, srcSymbol: 'TWD', srcQty: 100, categoryId: cat, mode: '自動入帳' } }).ok);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('recurring');
+    await page.waitForSelector('[data-testid=recurring-item][data-name="保險年繳"]');
+    assert.match(await page.locator('[data-testid=recurring-item][data-name="保險年繳"]').innerText(), /每年 12\/24/);
+    assert.match(await page.locator('[data-testid=recurring-item][data-name="季繳"]').innerText(), /每季（2、5、8、11 月）15號/);
+    assert.match(await page.locator('[data-testid=recurring-item][data-name="半年"]').innerText(), /每 6 個月（1、7 月）26號/);
+    // 新增一個依月份預估的電費
+    await page.click('[data-testid=add-recurring]');
+    await page.waitForSelector('.sheet [data-testid=recurring-freq]');
+    const field = (label) => page.locator(`.sheet label.field:has(span.lbl:text-is("${label}"))`);
+    await field('名稱').locator('input').fill('電費');
+    await page.selectOption('.sheet [data-testid=recurring-freq]', '每N個月');
+    await page.fill('.sheet [data-testid=recurring-days]', '2');
+    await field('起始日').locator('input').fill(`${y}-01-09`);
+    await field('付款帳戶').locator('select').selectOption(card);
+    await field('預計金額').locator('input').fill('4300');
+    const catSel = field('分類').locator('select');
+    await catSel.selectOption(await catSel.locator('option').nth(1).getAttribute('value'));
+    await page.check('[data-testid=rec-me-toggle]');
+    await page.waitForSelector('[data-testid=rec-me-grid]');
+    await page.fill('[data-testid=rec-me-grid] input[data-month="1"]', '2500');
+    await page.fill('[data-testid=rec-me-grid] input[data-month="7"]', '5,730');
+    await page.click('.sheet [data-testid=recurring-save]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    const t = be.call('bootstrap').data.recurring.find((x) => x.name === '電費');
+    assert.equal(t.monthEstimates, '1月:2500、7月:5730');
+    await page.waitForSelector('[data-testid=recurring-item][data-name="電費"]');
+    assert.match(await page.locator('[data-testid=recurring-item][data-name="電費"]').innerText(), /平均，各月不同[\s\S]*約 NT\$2,500/);
+    // 編輯時帶回各月預估
+    await page.click('[data-testid=recurring-item][data-name="電費"] [data-testid=recurring-edit]');
+    await page.waitForSelector('[data-testid=rec-me-grid]');
+    assert.equal(await page.inputValue('[data-testid=rec-me-grid] input[data-month="7"]'), '5730');
   });
 });
 
@@ -1481,7 +1574,7 @@ test('定期頁分組：收入／支出／轉帳分組並寫每月約多少（�
     assert.equal(await page.locator('[data-testid=rec-sub-all]').innerText(), '全部展開');
     await page.click('[data-testid=rec-sub-all]');
     await page.waitForSelector('[data-testid=recurring-item][data-name="分組-保險"]');
-    assert.match(await page.locator('[data-testid=recurring-item][data-name="分組-保險"]').innerText(), /每年・\d+號 · 提醒確認[\s\S]*NT\$12,000 · 下次/);
+    assert.match(await page.locator('[data-testid=recurring-item][data-name="分組-保險"]').innerText(), /每年 \d+\/\d+ · 提醒確認[\s\S]*NT\$12,000 · 下次/);
     // 停用的在最後、預設收合
     assert.equal(await page.locator('[data-testid=recurring-item][data-name="分組-停用的"]').count(), 0);
     await page.click('[data-testid=rec-group][data-group="inactive"]');

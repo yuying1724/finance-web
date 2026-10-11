@@ -6,6 +6,7 @@ import { money } from '../fmt.js';
 import { openSheet, toast, errorText, withBusy } from '../ui.js';
 import { lock } from '../app.js';
 import { openMerchants } from './merchants.js';
+import { openQuickManager } from './quicktx.js';
 
 export function renderSettings(root) {
   const d = state.data;
@@ -36,7 +37,8 @@ export function renderSettings(root) {
       h('div', { class: 'card' }, h('h2', null, '資料'),
         h('div', { class: 'row-flex wrap' },
           d.sheetUrl ? h('a', { class: 'btn btn-sm', href: d.sheetUrl, target: '_blank', rel: 'noopener noreferrer' }, icon('external'), '開啟試算表') : null,
-          h('button', { class: 'btn btn-sm', 'data-testid': 'open-merchants', onclick: openMerchants }, icon('receipt'), '商家管理')),
+          h('button', { class: 'btn btn-sm', 'data-testid': 'open-merchants', onclick: openMerchants }, icon('receipt'), '商家管理'),
+          h('button', { class: 'btn btn-sm', 'data-testid': 'open-quick', onclick: openQuickManager }, icon('stars'), '常用交易')),
         backupBlock(),
         h('h3', { style: { fontSize: '14px', margin: '14px 0 4px' } }, '匯率與價格'),
         prices.length ? h('ul', { class: 'list' }, prices) : h('div', { class: 'muted small' }, '沒有價格資料'),

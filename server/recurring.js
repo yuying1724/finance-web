@@ -47,6 +47,12 @@ var FinRecurringJob = (function () {
       relatedSymbol: '', groupId: '', relatedTxId: '', recurringId: tpl.id, plannedDate: occ.planned,
       note: '定期：' + tpl.name, status: status, createdAt: now, updatedAt: now,
     };
+    if (FinRecurring.usesMonthEstimates(tpl)) {
+      // 各月預估：這個月大約多少（例如夏天的電費比較高）
+      var est = FinRecurring.estimateFor(tpl, occ.planned).amount;
+      if (tpl.type === '收入') row.dstQty = est;
+      else { row.srcQty = est; if (tpl.type === '轉帳') row.dstQty = est; }
+    }
     if (tpl.type === '股息') {
       // 股息範本：來源標的＝這筆股息屬於哪個標的；金額（目的數量）沒填代表等入帳再填
       var divCat = c.categoryRows.filter(function (x) { return x.type === '系統' && x.name === '股息'; })[0];
