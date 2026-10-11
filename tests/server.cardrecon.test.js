@@ -75,3 +75,22 @@ test('信用卡對帳：列出上期明細與合計、勾選與銀行金額會�
   // 不是信用卡
   assert.equal(b.call('getCardRecon', { accountId: bank }).error.code, 'NOT_FOUND');
 });
+
+test('信用卡對帳：刷卡回饋（收入轉進卡片）列成負的明細、算進合計；繳款不算', () => {
+  const b = loadBackend().setup();
+  b.mock.state.clock.now = new Date('2026-10-15T09:00:00+08:00').getTime(); b.login();
+  const ok = (r) => { assert.ok(r.ok, JSON.stringify(r)); return r.data; };
+  const acct = (name, type) => ok(b.call('upsertAccount', { account: { name, type, defaultSymbol: 'TWD', institution: name } })).account.id;
+  const bank = acct('銀行', '銀行'), card = acct('聯邦-LINEBank卡', '信用卡');
+  ok(b.call('upsertCardSettings', { card: { accountId: card, statementDay: 9, dueDay: 24, limit: 100000 } }));
+  const cats = b.call('bootstrap').data.categories;
+  const food = cats.find((c) => c.name === '午餐' && c.type === '支出').id;
+  const other = cats.find((c) => c.name === '其他收入' && c.type === '收入').id;
+  ok(b.call('addTransaction', { tx: { type: '支出', date: '2026-09-04', srcAccount: card, srcSymbol: 'TWD', srcQty: 1120, categoryId: food } }));
+  ok(b.call('addTransaction', { tx: { type: '收入', date: '2026-08-15', dstAccount: card, dstSymbol: 'TWD', dstQty: 288, categoryId: other, note: '刷卡現金回饋' } }));
+  ok(b.call('addTransaction', { tx: { type: '轉帳', date: '2026-09-01', srcAccount: bank, srcSymbol: 'TWD', srcQty: 500, dstAccount: card, dstSymbol: 'TWD', dstQty: 500 } }));
+  const r = ok(b.call('getCardRecon', { accountId: card, closeDate: '2026-09-09' }));
+  assert.deepEqual(r.lines.map((l) => [l.kind, l.amount]), [['credit', -288], ['spend', 1120]]);
+  assert.equal(r.total, 832);
+  assert.deepEqual(r.payments.map((x) => x.amount), [500]);
+});

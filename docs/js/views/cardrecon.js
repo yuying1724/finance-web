@@ -10,7 +10,7 @@ import { refreshInBackground } from '../data.js';
  * 銀行沒列進這期的，按「移到下期」（改這筆的信用卡入帳日）；勾選狀態與銀行金額存在後端，換裝置也看得到。
  */
 const md = (d) => (d ? `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}` : '');
-const KIND = { refund: '退款', installment: '分期', transfer: '轉出' };
+const KIND = { refund: '退款', installment: '分期', transfer: '轉出', credit: '回饋' };
 const addDays = (d, n) => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
 const r2 = (x) => Math.round(x * 100) / 100;
 

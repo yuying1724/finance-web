@@ -1746,6 +1746,11 @@ var FinApi = (function () {
         lines.push({ key: t.id, txId: t.id, kind: refund ? 'refund' : (t.type === '轉帳' ? 'transfer' : 'spend'), date: t.date, settleDate: t.settleDate || '', billDate: bd,
           accountId: acc.id, cardName: acc.name, label: labelOf(t), category: catOf(t), note: t.merchant && t.note ? t.note : '',
           amount: refund ? -Number(t.dstQty) : Number(t.srcQty), checked: !!rec.c[t.id], movable: t.type !== '轉帳', updatedAt: t.updatedAt });
+      } else if (t.type === '收入' && idSet[t.dstAccount] && t.dstSymbol === symbol) {
+        // 刷卡回饋、現金回饋折抵：銀行帳單會列在本期明細裡（負數），所以也算進對帳合計
+        var cacc = c.accounts[t.dstAccount];
+        lines.push({ key: t.id, txId: t.id, kind: 'credit', date: t.date, settleDate: '', billDate: bd, accountId: cacc.id, cardName: cacc.name, label: labelOf(t) === t.type ? '回饋' : labelOf(t), category: catOf(t), note: '',
+          amount: -Number(t.dstQty), checked: !!rec.c[t.id], movable: false, updatedAt: t.updatedAt });
       } else if (idSet[t.dstAccount] && t.dstSymbol === symbol) {
         payments.push({ txId: t.id, date: bd, type: t.type, label: t.type === '調整' ? '餘額調整' : (c.accounts[t.srcAccount] ? '從 ' + c.accounts[t.srcAccount].name : t.type), amount: Number(t.dstQty), cardName: (c.accounts[t.dstAccount] || {}).name || '' });
       }
