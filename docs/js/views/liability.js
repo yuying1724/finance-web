@@ -6,6 +6,7 @@ import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
 import { mergeRow, refreshInBackground } from '../data.js';
 import { installmentListBlock } from './installments.js';
 import { nearCloseNotice } from './cards.js';
+import { openCardRecon } from './cardrecon.js';
 
 const LOAN_METHODS = ['本息平均攤還', '本金平均攤還', '只繳息'];
 
@@ -163,6 +164,7 @@ export function openCardStatement(account) {
       groupBlock,
       installmentListBlock(s.installments),
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
+        h('button', { class: 'btn btn-sm', 'data-testid': 'statement-recon', onclick: () => { sheet.close(); setTimeout(() => openCardRecon(account.id), 0); } }, '對帳'),
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account, card: s.cardSettings }), 0); } }, '設定信用卡')));
   }).catch((e) => { clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e)),
     h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },

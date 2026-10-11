@@ -1691,6 +1691,148 @@ var FinApi = (function () {
     },
   };
 
+  // ---------- 信用卡對帳模式 ----------
+  // 對著銀行帳單一筆一筆打勾：勾選狀態與「銀行帳單金額」存在「設定」分頁 cardRecon（JSON {c: {明細鍵: 勾選日}, b: {帳單鍵: 金額}}）。
+  // 明細鍵：一般交易＝交易ID；分期的某一期＝「分期ID#期數」。帳單鍵＝「群組名或帳戶ID|結帳日」。
+  var CARD_RECON_KEY = 'cardRecon';
+  function cardReconData(settings) {
+    try {
+      var v = (settings || FinRepo.getSettings())[CARD_RECON_KEY];
+      var o = v ? JSON.parse(String(v)) : {};
+      return { c: (o && o.c && typeof o.c === 'object') ? o.c : {}, b: (o && o.b && typeof o.b === 'object') ? o.b : {} };
+    } catch (e) { return { c: {}, b: {} }; }
+  }
+  /** 這張卡所在的合併帳單（同額度群組）：{ ids, cs, key, name, isGroup } */
+  function cardBill(c, accountId) {
+    var acct = c.accounts[accountId];
+    if (!acct || acct.type !== '信用卡') throw FinFail('NOT_FOUND', '找不到信用卡帳戶');
+    var cs = c.cardByAccount[accountId];
+    if (!cs) throw FinFail('NOT_FOUND', '這個帳戶還沒有信用卡設定，請先設定結帳日與繳款日');
+    var ids = [accountId];
+    if (cs.limitGroup) {
+      var sib = c.cardRows.filter(function (r) { return r.limitGroup === cs.limitGroup && c.accounts[r.accountId]; }).map(function (r) { return r.accountId; });
+      if (sib.length > 1) ids = sib;
+    }
+    var isGroup = ids.length > 1;
+    return { ids: ids, cs: cs, key: isGroup ? cs.limitGroup : accountId, name: isGroup ? cs.limitGroup : acct.name, isGroup: isGroup, symbol: acct.defaultSymbol };
+  }
+  function cardReconOf(c, accountId, closeDate) {
+    var bill = cardBill(c, accountId), cs = bill.cs, symbol = bill.symbol;
+    var inst = c.instruments[symbol];
+    if (!inst) throw FinFail('DATA_BAD', '找不到幣別 ' + symbol);
+    var dec = inst.decimals;
+    var cur = FinCreditCard.periodContaining(cs.statementDay, c.today);
+    var end = FinDates.isValid(str(closeDate)) ? FinCreditCard.periodContaining(cs.statementDay, str(closeDate)).end : FinCreditCard.prevStatementEnd(cs.statementDay, cur.end);
+    if (end > cur.end) end = cur.end;
+    var start = FinDates.addDays(FinCreditCard.prevStatementEnd(cs.statementDay, end), 1);
+    var periods = [], e = cur.end;
+    for (var i = 0; i < 7; i++) { periods.push({ end: e, start: FinDates.addDays(FinCreditCard.prevStatementEnd(cs.statementDay, e), 1), current: e === cur.end }); e = FinCreditCard.prevStatementEnd(cs.statementDay, e); }
+    var idSet = {}; bill.ids.forEach(function (id) { idSet[id] = true; });
+    var rec = cardReconData(c.settings);
+    var sched = installmentSchedules(c).filter(function (x) { return idSet[x.accountId] && x.symbol === symbol; });
+    var instTx = {}; sched.forEach(function (x) { instTx[x.txId] = true; });
+    var lines = [], payments = [];
+    var labelOf = function (t) { var cat = c.categories[t.categoryId]; return t.merchant || t.note || (cat ? cat.name : t.type); };
+    var catOf = function (t) { var cat = c.categories[t.categoryId]; if (!cat) return ''; var par = cat.parentId ? c.categories[cat.parentId] : null; return par ? par.name + ' › ' + cat.name : cat.name; };
+    c.txRows.forEach(function (t) {
+      if (t.status !== '有效') return;
+      var bd = FinCreditCard.billDate(t);
+      if (bd < start || bd > end) return;
+      var out = (t.type === '支出' || t.type === '轉帳') && idSet[t.srcAccount] && t.srcSymbol === symbol && t.srcQty !== null && t.srcQty !== '';
+      var refund = t.type === '退款' && idSet[t.dstAccount] && t.dstSymbol === symbol;
+      if (out || refund) {
+        if (instTx[t.id]) return; // 分期：只列這期輪到的那一期（下面另外加）
+        var acc = c.accounts[out ? t.srcAccount : t.dstAccount];
+        lines.push({ key: t.id, txId: t.id, kind: refund ? 'refund' : (t.type === '轉帳' ? 'transfer' : 'spend'), date: t.date, settleDate: t.settleDate || '', billDate: bd,
+          accountId: acc.id, cardName: acc.name, label: labelOf(t), category: catOf(t), note: t.merchant && t.note ? t.note : '',
+          amount: refund ? -Number(t.dstQty) : Number(t.srcQty), checked: !!rec.c[t.id], movable: t.type !== '轉帳', updatedAt: t.updatedAt });
+      } else if (idSet[t.dstAccount] && t.dstSymbol === symbol) {
+        payments.push({ txId: t.id, date: bd, type: t.type, label: t.type === '調整' ? '餘額調整' : (c.accounts[t.srcAccount] ? '從 ' + c.accounts[t.srcAccount].name : t.type), amount: Number(t.dstQty), cardName: (c.accounts[t.dstAccount] || {}).name || '' });
+      }
+    });
+    sched.forEach(function (x) {
+      x.periods.forEach(function (pp) {
+        if (pp.closeDate !== end) return;
+        var t = x.tx, key = x.id + '#' + pp.n, acc = c.accounts[x.accountId];
+        lines.push({ key: key, txId: x.txId, kind: 'installment', date: t.date, settleDate: t.settleDate || '', billDate: end, accountId: x.accountId, cardName: acc ? acc.name : '',
+          label: labelOf(t), category: catOf(t), note: '分期第 ' + pp.n + '/' + x.terms + ' 期（總額 ' + x.total + '）', amount: pp.amount, checked: !!rec.c[key], movable: false });
+      });
+    });
+    lines.sort(function (a, b) { return a.billDate < b.billDate ? -1 : a.billDate > b.billDate ? 1 : (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
+    var tot = 0, chk = 0, chkN = 0;
+    lines.forEach(function (l) { var u = FinMoney.toUnits(l.amount, dec); tot += u; if (l.checked) { chk += u; chkN++; } });
+    var bankKey = bill.key + '|' + end;
+    var bank = rec.b[bankKey] === undefined || rec.b[bankKey] === null || rec.b[bankKey] === '' ? null : Number(rec.b[bankKey]);
+    var total = FinMoney.fromUnits(tot, dec);
+    return {
+      accountId: accountId, accountIds: bill.ids, name: bill.name, isGroup: bill.isGroup, symbol: symbol,
+      period: { start: start, end: end }, current: end === cur.end, dueDate: FinCreditCard.dueDateFor(cs.dueDay, end), periods: periods,
+      lines: lines, payments: payments, total: total, checkedTotal: FinMoney.fromUnits(chk, dec), checkedCount: chkN,
+      bankAmount: bank, diff: bank === null ? null : FinMoney.round(bank - total, dec),
+    };
+  }
+  H.getCardRecon = {
+    fn: function (p, env) { return cardReconOf(loadContext(env.now), str(p.accountId), p.closeDate); },
+  };
+  H.setCardRecon = {
+    fn: function (p, env) {
+      var accountId = str(p.accountId);
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var bill = cardBill(c, accountId);
+        var rec = cardReconData(c.settings);
+        var keyOk = function (k) { return typeof k === 'string' && k.length > 0 && k.length <= 40; };
+        (Array.isArray(p.check) ? p.check : []).forEach(function (k) { if (keyOk(k)) rec.c[k] = c.today; });
+        (Array.isArray(p.uncheck) ? p.uncheck : []).forEach(function (k) { if (keyOk(k)) delete rec.c[k]; });
+        if (p.bankAmount !== undefined) {
+          var end = FinDates.isValid(str(p.closeDate)) ? FinCreditCard.periodContaining(bill.cs.statementDay, str(p.closeDate)).end : '';
+          if (!end) throw FinFail('VALIDATION', '缺少結帳日', { errors: [{ field: 'closeDate', message: '缺少結帳日' }], warnings: [] });
+          var bk = bill.key + '|' + end;
+          if (p.bankAmount === null || p.bankAmount === '') delete rec.b[bk];
+          else {
+            var n = Number(p.bankAmount);
+            if (!isFinite(n)) throw FinFail('VALIDATION', '銀行帳單金額請輸入數字', { errors: [{ field: 'bankAmount', message: '銀行帳單金額請輸入數字' }], warnings: [] });
+            rec.b[bk] = n;
+          }
+        }
+        // 清掉已經不存在／作廢的交易，和兩年前的帳單金額，避免越存越多
+        Object.keys(rec.c).forEach(function (k) {
+          if (k.indexOf('#') >= 0) return;
+          var t = c.txById[k]; if (!t || t.status === '作廢') delete rec.c[k];
+        });
+        var old = FinDates.addDays(c.today, -730);
+        Object.keys(rec.b).forEach(function (k) { var d = k.split('|').pop(); if (d < old) delete rec.b[k]; });
+        var value = JSON.stringify(rec);
+        var row = FinRepo.findById('settings', CARD_RECON_KEY);
+        if (row) FinRepo.updateRow('settings', row._row, { value: value });
+        else FinRepo.append('settings', [{ key: CARD_RECON_KEY, value: value, note: '信用卡對帳：已勾選的明細與銀行帳單金額（App：信用卡 › 對帳）' }]);
+        return cardReconOf(loadContext(env.now), accountId, p.closeDate);
+      });
+    },
+  };
+  /** 對帳時把一筆消費移到下一期（或移回來）：改這筆支出／退款的「信用卡入帳日」 */
+  H.moveCardTx = {
+    fn: function (p, env) {
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var row = loadTxForWrite(c, str(p.txId));
+        if (row.status !== '有效') throw FinFail('BAD_STATE', '只有有效的交易可以調整入帳日');
+        if (row.type !== '支出' && row.type !== '退款') throw FinFail('BAD_STATE', '只有支出和退款可以調整信用卡入帳日');
+        var cardAcct = c.accounts[row.type === '支出' ? row.srcAccount : row.dstAccount];
+        if (!cardAcct || cardAcct.type !== '信用卡') throw FinFail('BAD_STATE', '這筆不是信用卡的交易');
+        checkExpected(row, p.expectedUpdatedAt);
+        var sd = str(p.settleDate);
+        if (sd && !FinDates.isValid(sd)) throw FinFail('VALIDATION', '入帳日格式不正確', { errors: [{ field: 'settleDate', message: '入帳日格式不正確' }], warnings: [] });
+        if (sd && sd < row.date) throw FinFail('VALIDATION', '入帳日不能早於消費日', { errors: [{ field: 'settleDate', message: '入帳日不能早於消費日' }], warnings: [] });
+        if (sd === row.date) sd = '';
+        var now = ts(env.now);
+        FinRepo.updateRow('transactions', row._row, { settleDate: sd, updatedAt: now });
+        FinRepo.audit('修改', 'transactions', row.id, '信用卡入帳日改為 ' + (sd || '（同消費日）'), env.device);
+        return { txId: row.id, settleDate: sd, updatedAt: now };
+      });
+    },
+  };
+
   // ---------- 貸款設定與還款 ----------
   function validateLoanSettingsInput(a, c) {
     var errors = [];

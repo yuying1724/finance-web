@@ -7,6 +7,7 @@ import { openTxForm } from './txform.js';
 import { openCardStatement, openCardSettingsForm } from './liability.js';
 import { installmentListBlock } from './installments.js';
 import { openCashflow, cashAlertRow } from './cashflow.js';
+import { openCardRecon } from './cardrecon.js';
 
 /**
  * 信用卡總覽：參考 MOZE 的「主帳戶／合併帳單」與麻布記帳「依銀行看帳單」的做法——
@@ -88,6 +89,7 @@ export function openCardGroupSheet(item) {
       h('div', { class: 'row-flex wrap', style: { marginTop: '14px', marginBottom: '6px' } },
         item.hasSettings && item.statementAmountDue > 0 ? h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'card-pay', onclick: () => { sheet.close(); setTimeout(() => openPayForm(item), 0); } }, '記一筆繳款') : null,
         item.hasSettings ? h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardStatement(first), 0); } }, '帳單明細') : null,
+        item.hasSettings ? h('button', { class: 'btn btn-sm', 'data-testid': 'card-recon', onclick: () => { sheet.close(); setTimeout(() => openCardRecon(first.id), 0); } }, '對帳') : null,
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account: first, card: state.data.cardSettings.find((c) => c.accountId === first.id) }), 0); } }, item.hasSettings ? '設定' : '設定信用卡')),
       h('div', { class: 'day-head' }, h('span', null, item.isGroup ? '這張帳單包含的卡片' : '卡片')),
       h('ul', { class: 'list' }, members)),

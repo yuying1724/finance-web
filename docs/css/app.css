@@ -327,3 +327,10 @@ a.item { color: inherit; text-decoration: none; }
 .al-items .item .s { white-space: normal; }
 .al-notes { display: grid; gap: 4px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
 .al-warn { color: var(--text); }
+
+/* 信用卡對帳 */
+.recon-list li.done .t, .recon-list li.done .amt { color: var(--sub); }
+.recon-list .item { align-items: flex-start; }
+.recon-list .check { padding-top: 2px; }
+.recon-list .grow { cursor: pointer; }
+.recon-list .s { white-space: normal; }

@@ -1756,3 +1756,47 @@ test('首頁資產配置：類別占比加起來 100%，點一列展開明細；
     if (al.top) assert.match(await page.locator('[data-testid=alloc-top]').innerText(), new RegExp(al.top.symbol));
   });
 });
+
+test('信用卡對帳：從信用卡總覽打開合併帳單的對帳，填銀行金額看差額、全部勾選、把一筆移到下期後對上；重開還記得勾選', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const acct = (name) => be.call('upsertAccount', { account: { name, type: '信用卡', defaultSymbol: 'TWD', institution: '富邦' } }).data.account.id;
+    const fA = acct('富邦-J卡'), fB = acct('富邦-數位生活卡');
+    const today = be.ctx.FinDates.today(Date.now());
+    const day = (n) => be.ctx.FinDates.addDays(today, n);
+    const dom = (d) => Number(d.slice(8, 10));
+    const statementDay = dom(day(-5)), dueDay = dom(day(7));
+    for (const id of [fA, fB]) assert.ok(be.call('upsertCardSettings', { card: { accountId: id, statementDay, dueDay, limit: 320000, limitGroup: '富邦' } }).ok);
+    const food = be.call('bootstrap').data.categories.find((c) => c.name === '午餐' && c.type === '支出').id;
+    const spend = (acc, d, amt, merchant) => be.call('addTransaction', { tx: { type: '支出', date: d, srcAccount: acc, srcSymbol: 'TWD', srcQty: amt, categoryId: food, merchant } }).data.tx.id;
+    spend(fA, day(-20), 4000, 'Costco'); spend(fB, day(-15), 6000, 'IKEA');
+    const near = spend(fA, day(-5), 300, '全家');
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('accounts');
+    await page.click('[data-card-group="富邦"]');
+    await page.click('[data-testid=card-recon]');
+    await page.waitForSelector('[data-testid=recon-lines] li');
+    assert.equal(await page.locator('[data-testid=recon-lines] li').count(), 3);
+    assert.match(await page.locator('[data-testid=recon-total]').innerText(), /10,300/);
+    await page.fill('[data-testid=recon-bank]', '10,000');
+    await page.locator('[data-testid=recon-bank]').press('Tab');
+    await page.waitForFunction(() => /300/.test(document.querySelector('[data-testid=recon-diff]')?.innerText || ''));
+    await page.click('[data-testid=recon-all]');
+    await page.waitForFunction(() => /3\/3/.test(document.querySelector('[data-testid=recon-checked]').innerText));
+    // 銀行把結帳日那天的全家列到下期
+    await page.click(`[data-key="${near}"] [data-testid=recon-move]`);
+    await page.waitForFunction(() => /對上了/.test(document.querySelector('[data-testid=recon-diff]')?.innerText || ''));
+    assert.equal(await page.locator('[data-testid=recon-lines] li').count(), 2);
+    assert.equal(be.call('bootstrap').data.recent.find((t) => t.id === near).settleDate, day(-4));
+    // 勾選和銀行金額存在後端
+    const r = be.call('getCardRecon', { accountId: fB }).data;
+    assert.equal(r.checkedCount, 2); assert.equal(r.bankAmount, 10000); assert.equal(r.diff, 0);
+    await page.reload(); await page.waitForSelector('[data-card-group="富邦"]'); // 重新整理後還在帳戶頁
+    await page.click('[data-card-group="富邦"]');
+    await page.click('[data-testid=card-recon]');
+    await page.waitForFunction(() => /2\/2/.test(document.querySelector('[data-testid=recon-checked]')?.innerText || ''));
+    assert.equal(await page.locator('[data-testid=recon-bank]').inputValue(), '10000');
+  });
+});
