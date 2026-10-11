@@ -1729,3 +1729,30 @@ test('版面：各頁在 360px 寬度不會左右捲動；電腦寬度顯示側�
     await page.waitForSelector('[data-testid=add-account]');
   });
 });
+
+test('首頁資產配置：類別占比加起來 100%，點一列展開明細；切到幣別會記住；負債比與最大一檔', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page } = a;
+    await a.login(); await page.waitForSelector('[data-testid=allocation]');
+    const al = a.bootstrap().allocation;
+    assert.ok(al.assets > 0);
+    const pcts = await page.locator('[data-testid=allocation] [data-testid=alloc-pct]').allInnerTexts();
+    assert.equal(pcts.length, al.byClass.length);
+    const sum = pcts.reduce((s, t) => s + Number(t.replace('%', '')), 0);
+    assert.ok(Math.abs(sum - 100) < 0.6, '百分比加起來約 100%：' + sum);
+    assert.equal(await page.locator('[data-testid=alloc-bar] .al-seg').count(), al.byClass.length);
+    // 點最大的一列展開明細
+    await page.locator('[data-testid=alloc-row]').first().click();
+    await page.waitForSelector('[data-testid=alloc-items] li');
+    const biggest = al.byClass.slice().sort((x, y) => y.value - x.value)[0];
+    assert.equal(await page.locator('[data-testid=alloc-items] li').count(), biggest.items.length);
+    // 切到幣別，重新整理後還是幣別
+    await page.click('[data-testid=alloc-mode-currency]');
+    await page.waitForFunction(() => document.querySelector('[data-testid=alloc-mode-currency]').classList.contains('on'));
+    assert.equal(await page.locator('[data-testid=alloc-row]').count(), al.byCurrency.length);
+    await page.reload(); await page.waitForSelector('[data-testid=allocation]');
+    assert.ok(await page.locator('[data-testid=alloc-mode-currency].on').count());
+    if (al.liabilities > 0) assert.match(await page.locator('[data-testid=alloc-debt]').innerText(), /負債比/);
+    if (al.top) assert.match(await page.locator('[data-testid=alloc-top]').innerText(), new RegExp(al.top.symbol));
+  });
+});

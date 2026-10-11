@@ -315,3 +315,15 @@ a.item { color: inherit; text-decoration: none; }
 .rec-me-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
 .rec-me-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .rec-me-cell input { width: 100%; min-width: 0; padding: 6px 8px; }
+
+/* 資產配置（首頁）：100% 堆疊橫條，片間 2px，兩端圓角 */
+.al-bar { display: flex; gap: 2px; height: 16px; margin: 4px 0 2px; border-radius: 4px; overflow: hidden; cursor: pointer; touch-action: pan-y; }
+.al-seg { min-width: 3px; flex-basis: 0; }
+.al-seg.dim { opacity: .35; }
+.al-tip { min-height: 1.4em; margin: 2px 0 4px; color: var(--text); }
+.al-row.on .t { color: var(--accent-strong); }
+.al-items { margin: -4px 0 6px 16px; padding-left: 8px; border-left: 2px solid var(--line); }
+.al-items .item { padding: 6px 2px; }
+.al-items .item .s { white-space: normal; }
+.al-notes { display: grid; gap: 4px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.al-warn { color: var(--text); }

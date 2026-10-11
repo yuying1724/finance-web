@@ -147,7 +147,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.44',
+    APP_VERSION: '0.9.45',
   };
   return api;
 })();
@@ -2619,6 +2619,66 @@ var FinApi = (function () {
     return { balances: list, netWorth: nw, ledgerIssues: bal.issues, pending: pending };
   }
 
+  /**
+   * 資產配置：把「正的」餘額依類別與幣別分組（負的是負債，另外依帳戶類型列出）。
+   * 類別：台幣現金與存款／台股／海外股票／加密貨幣／外幣現金／應收與代墊／其他（點數等）。
+   * 幣別：股票用計價幣別（VOO 算美金），加密貨幣自成一組。金額四捨五入到整數元。
+   */
+  var ALLOC_CLASS = [['twdCash', '台幣現金與存款'], ['twStock', '台股'], ['usStock', '海外股票'], ['crypto', '加密貨幣'], ['fxCash', '外幣現金'], ['receivable', '應收與代墊'], ['other', '其他']];
+  function allocation(c, nw) {
+    var cls = {}, cur = {}, liab = {}, assets = 0, liabilities = 0;
+    function add(map, key, itemId, label, v, extra) {
+      var g = map[key] || (map[key] = { value: 0, items: {} });
+      g.value += v;
+      var it = g.items[itemId] || (g.items[itemId] = Object.assign({ id: itemId, label: label, value: 0 }, extra || {}));
+      it.value += v;
+    }
+    nw.rows.forEach(function (r) {
+      if (r.value === null || r.value === undefined || !r.value) return;
+      var acct = c.accounts[r.accountId], at = acct ? acct.type : '', an = acct ? acct.name : r.accountId;
+      var v = r.value;
+      if (v < 0) {
+        liabilities += -v;
+        add(liab, (at === '信用卡' || at === '貸款' || at === '應付') ? at : '其他', r.accountId, an, -v);
+        return;
+      }
+      assets += v;
+      var inst = c.instruments[r.symbol] || {}, it = inst.type || '', quote = inst.quote || c.base;
+      var isShare = it === '台股' || it === '美股' || it === 'ETF';
+      var instLabel = r.symbol + (inst.name && inst.name !== r.symbol ? ' ' + inst.name : '');
+      // 類別
+      if (at === '應收') add(cls, 'receivable', r.accountId, an, v);
+      else if (it === '法幣') add(cls, r.symbol === c.base ? 'twdCash' : 'fxCash', r.accountId + '|' + r.symbol, r.symbol === c.base ? an : an + '（' + r.symbol + '）', v);
+      else if (it === '加密') add(cls, 'crypto', r.symbol, instLabel, v, { symbol: r.symbol });
+      else if (isShare) add(cls, quote === c.base ? 'twStock' : 'usStock', r.symbol, instLabel, v, { symbol: r.symbol });
+      else add(cls, 'other', r.accountId + '|' + r.symbol, an, v);
+      // 幣別
+      var ck = it === '加密' ? 'CRYPTO' : it === '法幣' ? r.symbol : quote;
+      var ckLabel = ck === 'CRYPTO' ? '加密貨幣' : ((c.instruments[ck] && c.instruments[ck].name) || ck);
+      add(cur, ck, isShare || it === '加密' ? r.symbol : r.accountId + '|' + r.symbol, isShare || it === '加密' ? instLabel : (ck === r.symbol ? an : an + '（' + r.symbol + '）'), v);
+      cur[ck].label = ckLabel;
+    });
+    function out(g) {
+      var items = Object.keys(g.items).map(function (k) { var x = g.items[k]; x.value = Math.round(x.value); return x; })
+        .filter(function (x) { return x.value; }).sort(function (a, b) { return b.value - a.value; });
+      return { value: Math.round(g.value), items: items };
+    }
+    var byClass = ALLOC_CLASS.filter(function (k) { return cls[k[0]]; }).map(function (k) { return Object.assign({ key: k[0], label: k[1] }, out(cls[k[0]])); });
+    var curOrder = Object.keys(cur).sort(function (a, b) {
+      var rank = function (k) { return k === c.base ? 0 : k === 'USD' ? 1 : k === 'JPY' ? 2 : k === 'CRYPTO' ? 3 : 4; };
+      return rank(a) - rank(b) || cur[b].value - cur[a].value;
+    });
+    var byCurrency = curOrder.map(function (k) { return Object.assign({ key: k, label: cur[k].label }, out(cur[k])); });
+    var byLiability = ['信用卡', '貸款', '應付', '其他'].filter(function (k) { return liab[k]; }).map(function (k) { return Object.assign({ key: k, label: k }, out(liab[k])); });
+    // 單一持股／幣最大的一檔（看集中度）
+    var top = null;
+    byClass.forEach(function (g) {
+      if (g.key !== 'twStock' && g.key !== 'usStock' && g.key !== 'crypto') return;
+      g.items.forEach(function (x) { if (!top || x.value > top.value) top = { symbol: x.symbol, label: x.label, value: x.value }; });
+    });
+    return { base: c.base, assets: Math.round(assets), liabilities: Math.round(liabilities), byClass: byClass, byCurrency: byCurrency, byLiability: byLiability, top: top, missing: nw.missing };
+  }
+
   function failValidation(res) {
     var first = res.errors.length ? res.errors[0].message : '資料不正確';
     return FinFail('VALIDATION', first, { errors: res.errors, warnings: res.warnings });
@@ -3111,6 +3171,7 @@ var FinApi = (function () {
         balances: calc.balances.map(function (b) { return { accountId: b.accountId, symbol: b.symbol, qty: b.qty }; }),
         pending: calc.pending,
         netWorth: { base: nw.base, total: nw.total, assets: nw.assets, liabilities: nw.liabilities, byAccount: nw.byAccount, byType: nw.byType, missing: nw.missing },
+        allocation: allocation(c, nw),
         month: month, recent: recent,
         issues: { count: c.bad.length + calc.ledgerIssues.length, items: c.bad.slice(0, 20), ledger: calc.ledgerIssues.slice(0, 20) },
         enabledTxTypes: FinSchema.ENABLED_TX_TYPES,
