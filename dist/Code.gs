@@ -147,7 +147,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.47',
+    APP_VERSION: '0.9.48',
   };
   return api;
 })();
@@ -2153,6 +2153,13 @@ var FinRepo = (function () {
     invalidate();
   }
 
+  /** 刪掉一整列（目前只給「刪除定期範本」用；刪除前呼叫端要自己檢查沒有其他資料引用它） */
+  function deleteRow(tableKey, rowNumber) {
+    if (!(rowNumber > 1)) throw new Error('不能刪除標題列');
+    sheetOf(tableKey).deleteRow(rowNumber);
+    invalidate();
+  }
+
   /** 單一儲存格寫入（用於不能覆蓋公式的欄位，例如價格表的「現價」旁邊的欄位） */
   function setCells(tableKey, rowNumber, patch, opts) {
     var allowFormula = !!(opts && opts.allowFormulas);
@@ -2192,7 +2199,7 @@ var FinRepo = (function () {
   return {
     reset: reset, invalidate: invalidate, preload: preload, PRELOAD_TABLES: PRELOAD_TABLES, spreadsheet: spreadsheet, sheetOf: sheetOf, readTable: readTable, goodRows: goodRows,
     findById: findById, allIds: allIds, nextIds: nextIds, readOptions: readOptions, getSettings: getSettings, append: append,
-    updateRow: updateRow, setCells: setCells, withLock: withLock, audit: audit, headerIndex: headerIndex,
+    updateRow: updateRow, deleteRow: deleteRow, setCells: setCells, withLock: withLock, audit: audit, headerIndex: headerIndex,
     applyTextFormats: applyTextFormats, sheetUrl: sheetUrl, encodeCell: encodeCell, parseCell: parseCell,
   };
 })();
@@ -4604,6 +4611,25 @@ var FinApi = (function () {
         FinRepo.audit(active ? '啟用' : '停用', 'recurring', row.id, row.name, env.device);
         var out = pub(row); out.active = active; out.updatedAt = now;
         return { recurring: out };
+      });
+    },
+  };
+
+  /** 刪除定期範本：只能刪「已停用」而且從來沒有產生過交易（含待確認、作廢）的範本，避免交易找不到來源 */
+  H.deleteRecurring = {
+    fn: function (p, env) {
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var row = FinRepo.findById('recurring', str(p.id));
+        if (!row) throw FinFail('NOT_FOUND', '找不到定期範本');
+        if (row._bad) throw FinFail('DATA_BAD', '這筆定期範本的資料有問題，請直接在試算表修正');
+        checkExpected(row, p.expectedUpdatedAt);
+        if (row.active) throw FinFail('BAD_STATE', '請先停用這個範本，再刪除');
+        var used = c.txRows.filter(function (t) { return t.recurringId === row.id; }).length;
+        if (used) throw FinFail('BAD_STATE', '這個範本已經產生過 ' + used + ' 筆交易，刪掉會讓那些交易找不到來源，只能停用');
+        FinRepo.deleteRow('recurring', row._row);
+        FinRepo.audit('刪除', 'recurring', row.id, row.name, env.device);
+        return { id: row.id, deleted: true };
       });
     },
   };

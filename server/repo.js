@@ -318,6 +318,13 @@ var FinRepo = (function () {
     invalidate();
   }
 
+  /** 刪掉一整列（目前只給「刪除定期範本」用；刪除前呼叫端要自己檢查沒有其他資料引用它） */
+  function deleteRow(tableKey, rowNumber) {
+    if (!(rowNumber > 1)) throw new Error('不能刪除標題列');
+    sheetOf(tableKey).deleteRow(rowNumber);
+    invalidate();
+  }
+
   /** 單一儲存格寫入（用於不能覆蓋公式的欄位，例如價格表的「現價」旁邊的欄位） */
   function setCells(tableKey, rowNumber, patch, opts) {
     var allowFormula = !!(opts && opts.allowFormulas);
@@ -357,7 +364,7 @@ var FinRepo = (function () {
   return {
     reset: reset, invalidate: invalidate, preload: preload, PRELOAD_TABLES: PRELOAD_TABLES, spreadsheet: spreadsheet, sheetOf: sheetOf, readTable: readTable, goodRows: goodRows,
     findById: findById, allIds: allIds, nextIds: nextIds, readOptions: readOptions, getSettings: getSettings, append: append,
-    updateRow: updateRow, setCells: setCells, withLock: withLock, audit: audit, headerIndex: headerIndex,
+    updateRow: updateRow, deleteRow: deleteRow, setCells: setCells, withLock: withLock, audit: audit, headerIndex: headerIndex,
     applyTextFormats: applyTextFormats, sheetUrl: sheetUrl, encodeCell: encodeCell, parseCell: parseCell,
   };
 })();

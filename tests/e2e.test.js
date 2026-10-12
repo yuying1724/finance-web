@@ -1800,3 +1800,28 @@ test('信用卡對帳：從信用卡總覽打開合併帳單的對帳，填銀�
     assert.equal(await page.locator('[data-testid=recon-bank]').inputValue(), '10000');
   });
 });
+
+test('定期頁：停用的範本有「刪除」，確認後從列表消失；啟用中的沒有刪除按鈕', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const boot = be.call('bootstrap').data;
+    const bank = boot.accounts.find((x) => x.type === '銀行').id;
+    const rent = boot.categories.find((c) => c.name === '房租房貸').id;
+    const mk = (name) => be.call('upsertRecurring', { recurring: { name, freq: '每年', days: [26], holiday: '不調整', startDate: '2027-07-26', type: '支出', srcAccount: bank, srcSymbol: 'TWD', srcQty: 55500, categoryId: rent, mode: '提醒確認' } }).data.recurring;
+    const old = mk('房租-7月'); mk('房租');
+    assert.ok(be.call('setRecurringActive', { id: old.id, active: false }).ok);
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await a.tab('recurring');
+    await page.click('[data-testid=rec-group][data-group=inactive]'); // 「已停用」預設收合
+    const row = page.locator('[data-testid=recurring-item][data-name="房租-7月"]');
+    await row.waitFor();
+    assert.equal(await page.locator('[data-testid=recurring-item][data-name="房租"] [data-testid=recurring-delete]').count(), 0);
+    await row.locator('[data-testid=recurring-delete]').click();
+    await page.click('.sheet-foot .btn-danger');
+    await page.waitForFunction(() => !document.querySelector('[data-testid=recurring-item][data-name="房租-7月"]'));
+    await page.waitForFunction(() => /已刪除/.test(document.body.innerText));
+    assert.ok(!be.call('bootstrap').data.recurring.find((r) => r.id === old.id));
+    assert.ok(be.call('bootstrap').data.recurring.find((r) => r.name === '房租'));
+  });
+});

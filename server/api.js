@@ -2117,6 +2117,25 @@ var FinApi = (function () {
     },
   };
 
+  /** 刪除定期範本：只能刪「已停用」而且從來沒有產生過交易（含待確認、作廢）的範本，避免交易找不到來源 */
+  H.deleteRecurring = {
+    fn: function (p, env) {
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var row = FinRepo.findById('recurring', str(p.id));
+        if (!row) throw FinFail('NOT_FOUND', '找不到定期範本');
+        if (row._bad) throw FinFail('DATA_BAD', '這筆定期範本的資料有問題，請直接在試算表修正');
+        checkExpected(row, p.expectedUpdatedAt);
+        if (row.active) throw FinFail('BAD_STATE', '請先停用這個範本，再刪除');
+        var used = c.txRows.filter(function (t) { return t.recurringId === row.id; }).length;
+        if (used) throw FinFail('BAD_STATE', '這個範本已經產生過 ' + used + ' 筆交易，刪掉會讓那些交易找不到來源，只能停用');
+        FinRepo.deleteRow('recurring', row._row);
+        FinRepo.audit('刪除', 'recurring', row.id, row.name, env.device);
+        return { id: row.id, deleted: true };
+      });
+    },
+  };
+
   /** 手動立即執行一次排程（正常由每日觸發器自動執行；這裡提供給畫面上的「立即檢查」按鈕與測試使用） */
   H.runRecurringScheduler = {
     fn: function (p, env) { return FinRecurringJob.runDaily(env.now); },

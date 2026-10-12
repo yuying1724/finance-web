@@ -500,7 +500,21 @@ function templateRow(t) {
     h('button', { class: 'btn btn-sm ' + (t.active ? 'btn-danger' : ''), onclick: () => {
       // 樂觀更新：先在本機切換，背景送出，失敗自動還原
       patchRow('setRecurringActive', { id: t.id, active: !t.active }, { list: 'recurring', idField: 'id', id: t.id, patch: { active: !t.active }, toast: t.active ? '已停用' : '已啟用' });
-    } }, t.active ? '停用' : '啟用'));
+    } }, t.active ? '停用' : '啟用'),
+    t.active ? null : h('button', { class: 'btn btn-sm btn-danger', 'data-testid': 'recurring-delete', style: { marginLeft: '6px' }, onclick: () => deleteTemplate(t) }, '刪除'));
+}
+
+/** 刪除停用中的範本（後端會擋已經產生過交易的範本） */
+async function deleteTemplate(t) {
+  const ok = await confirmDialog({ title: '刪除定期範本', message: `確定要刪除「${t.name}」嗎？刪除後無法復原。（產生過交易的範本不能刪，只能停用）`, confirmText: '刪除', danger: true });
+  if (!ok) return;
+  const list = state.data.recurring;
+  const i = list.findIndex((x) => x.id === t.id);
+  await write('deleteRecurring', { id: t.id, expectedUpdatedAt: t.updatedAt }, {
+    toast: '已刪除',
+    optimistic: () => { if (i < 0) return null; const [row] = list.splice(i, 1); return () => list.splice(i, 0, row); },
+    failPrefix: '沒有刪除：',
+  });
 }
 
 // ==================== 新增／編輯範本 ====================
