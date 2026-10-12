@@ -158,7 +158,7 @@ test('價格：GOOGLEFINANCE 抓不到時，改用櫃買中心 OpenAPI 的收盤
 
   // 1. 尚未授權 external_request：UrlFetchApp 丟例外 → 靜默退回沿用舊值，其他標的照常更新
   b.ctx.FinJobs.refreshPrices();
-  assert.equal(b.state.urlFetch.calls.length, 2, '當日行情、OpenAPI 各只呼叫一次');
+  assert.equal(b.state.urlFetch.calls.length, 4, '證交所、櫃買中心的當日行情與 OpenAPI 各只呼叫一次');
   let d = b.boot();
   assert.equal(d.prices['4126'].status, '沿用舊值');
   assert.equal(d.prices['4126'].price, 75.1);
@@ -169,6 +169,7 @@ test('價格：GOOGLEFINANCE 抓不到時，改用櫃買中心 OpenAPI 的收盤
   const daily = (rows, date = today) => ({ body: { tables: [{ date: 'x', data: rows }], date: date.replace(/-/g, ''), stat: 'ok' } });
   let dailyRows = [];
   b.state.urlFetch.handler = (url) => {
+    if (/twse\.com\.tw/.test(url)) return { body: /openapi/.test(url) ? [] : { stat: 'OK', date: today.replace(/-/g, ''), fields: ['證券代號', '證券名稱', '收盤價'], data: [] } };
     assert.match(url, /tpex\.org\.tw/);
     if (/afterTrading\/otc/.test(url)) { assert.ok(url.includes(encodeURIComponent(today.replace(/-/g, '/'))), url); return daily(dailyRows); }
     return { body: [{ SecuritiesCompanyCode: '4126', Close: '78.30' }, { SecuritiesCompanyCode: '6763', Close: '60' }] };
@@ -189,10 +190,11 @@ test('價格：GOOGLEFINANCE 抓不到時，改用櫃買中心 OpenAPI 的收盤
   d = b.boot();
   assert.equal(d.prices['4126'].price, 77.5);
   assert.equal(d.prices['9999'].status, '沿用舊值');
-  assert.equal(b.state.urlFetch.calls.length, 2, '9999 當日沒成交，才再查 OpenAPI 一次');
+  const tpexCalls = b.state.urlFetch.calls.filter((c) => /tpex/.test(c.url)).length;
+  assert.equal(tpexCalls, 2, '9999 當日沒成交，才再查櫃買 OpenAPI 一次');
 
   // 4. 當日行情回的是別天的資料（日期不符）→ 不採用
-  b.state.urlFetch.handler = (url) => (/afterTrading\/otc/.test(url) ? daily([['4126', '太醫', '99.00']], '2000-01-01') : { body: [] });
+  b.state.urlFetch.handler = (url) => (/afterTrading\/otc/.test(url) ? daily([['4126', '太醫', '99.00']], '2000-01-01') : /twse\.com\.tw\/rwd/.test(url) ? { body: { date: '20000101', data: [] } } : { body: [] });
   b.ctx.FinJobs.refreshPrices();
   assert.equal(b.boot().prices['4126'].price, 77.5);
 });
@@ -236,4 +238,45 @@ test('價格：價格來源選 BitoPro 的加密貨幣用 BitoPro 公開報價�
   assert.equal(d.prices.BTC.price, 2608273);
   assert.equal(d.prices.BTC.status, '沿用舊值');
   assert.ok(b.call('upsertInstrument', { instrument: { symbol: 'X1', name: '錯誤來源', type: '加密', quote: 'TWD', decimals: 8, priceSource: '亂填' } }).error, '價格來源要在清單內');
+});
+
+test('價格：上市股票／ETF（例如 0050）GOOGLEFINANCE 回 #N/A 時改用證交所收盤價；網站回 CSV 也看得懂，日期不符不採用；外幣不查', () => {
+  const b = fresh();
+  const sh = b.ss.sheet('價格');
+  const header = sh.dump()[0];
+  const col = (name) => header.indexOf(name) + 1;
+  const inst = (o) => { const r = b.call('upsertInstrument', { instrument: o }); assert.ok(r.ok, JSON.stringify(r)); };
+  inst({ symbol: '0050', name: '元大台灣50', type: 'ETF', quote: 'TWD', decimals: 2, priceSource: 'GOOGLEFINANCE', quoteCode: 'TPE:0050' });
+  const rows = sh.dump();
+  const rowOf = (sym) => rows.findIndex((r) => r[col('標的代號') - 1] === sym) + 1;
+  sh.poke(rowOf('0050'), col('現價'), '#N/A'); sh.poke(rowOf('0050'), col('上次有效價'), 114.95);
+  sh.poke(rowOf('JPY'), col('現價'), '#N/A'); sh.poke(rowOf('JPY'), col('上次有效價'), 0.21);
+  const today = b.ctx.FinDates.today(b.ctx.FinClock.now());
+  const ymd = today.replace(/-/g, '');
+  const roc = String(Number(ymd.slice(0, 4)) - 1911) + ymd.slice(4);
+  // 1. 網站回 CSV（當天）：採用 114.80
+  b.state.urlFetch.handler = (url) => {
+    if (/twse\.com\.tw\/rwd/.test(url)) { assert.ok(url.includes(ymd), url); return { body: `日期,證券代號,證券名稱,成交股數,成交金額,開盤價,最高價,最低價,收盤價,漲跌價差,成交筆數\n"${roc}","0050","元大台灣50","106,348,658","1","114.20","114.95","113.40","114.80","-0.1500","187608"\n` }; }
+    return { body: [] };
+  };
+  b.state.urlFetch.calls.length = 0;
+  b.ctx.FinJobs.refreshPrices();
+  let d = b.boot();
+  assert.equal(d.prices['0050'].status, '正常');
+  assert.equal(d.prices['0050'].price, 114.8);
+  assert.equal(d.prices.JPY.status, '沿用舊值', '外幣抓不到不會去查證交所');
+  assert.equal(b.state.urlFetch.calls.length, 1, '證交所當天就有，不再查其他來源');
+  // 2. 網站回 JSON 但是別天的資料 → 不採用；改用 OpenAPI（最近一個交易日）
+  b.state.urlFetch.handler = (url) => {
+    if (/twse\.com\.tw\/rwd/.test(url)) return { body: { stat: 'OK', date: '20000101', fields: ['證券代號', '證券名稱', '收盤價'], data: [['0050', '元大台灣50', '99.00']] } };
+    if (/openapi\.twse/.test(url)) return { body: [{ Date: '1151008', Code: '0050', Name: '元大台灣50', ClosingPrice: '113.50' }] };
+    return { body: [] };
+  };
+  b.ctx.FinJobs.refreshPrices();
+  d = b.boot();
+  assert.equal(d.prices['0050'].price, 113.5);
+  // 3. JSON 當天的資料 → 採用
+  b.state.urlFetch.handler = (url) => (/twse\.com\.tw\/rwd/.test(url) ? { body: { stat: 'OK', date: ymd, fields: ['證券代號', '證券名稱', '成交股數', '成交金額', '開盤價', '最高價', '最低價', '收盤價'], data: [['0050', '元大台灣50', '1', '1', '1', '1', '1', '115.05']] } } : { body: [] });
+  b.ctx.FinJobs.refreshPrices();
+  assert.equal(b.boot().prices['0050'].price, 115.05);
 });

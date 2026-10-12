@@ -147,7 +147,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.51',
+    APP_VERSION: '0.9.52',
   };
   return api;
 })();
@@ -5617,6 +5617,82 @@ var FinJobs = (function () {
     return map;
   }
 
+  // 上市股票／ETF（例如 0050）GOOGLEFINANCE 偶爾也會整檔回 #N/A，改用證交所的收盤行情當備援，做法比照櫃買中心：
+  //  1. 證交所網站「每日收盤行情（全部）」指定今天日期：收盤後就有當天收盤價；開盤前／假日回的是別天，日期不符就不用
+  //  2. 證交所 OpenAPI：最近一個交易日的收盤價（更新得比較晚）
+  // 網站有時回 JSON、有時回 CSV（第一欄是民國日期，例如 1151012），兩種都看得懂。
+  var TWSE_DAILY_URL = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json&date=';
+  var TWSE_OPEN_URL = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL';
+  function rocToYmd_(v) {
+    var s = String(v || '').replace(/[^0-9]/g, '');
+    if (s.length === 7) return String(Number(s.slice(0, 3)) + 1911) + s.slice(3);
+    return s; // 已經是西元 yyyyMMdd
+  }
+  function csvCells_(line) {
+    var out = [], cur = '', q = false;
+    for (var i = 0; i < line.length; i++) {
+      var ch = line.charAt(i);
+      if (q) { if (ch === '"') { if (line.charAt(i + 1) === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === ',') { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out;
+  }
+  /** 證交所網站指定日期（yyyy-MM-dd）的上市收盤行情：{ 代號: 收盤價 }；回的是別天的資料就整份不用 */
+  function fetchTwseDailyMap_(date) {
+    var map = {}, want = String(date).replace(/-/g, '');
+    try {
+      var res = UrlFetchApp.fetch(TWSE_DAILY_URL + want, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) return map;
+      var text = String(res.getContentText() || '').replace(/^\uFEFF/, '').trim();
+      if (text.charAt(0) === '{') {
+        var body = JSON.parse(text) || {};
+        if (body.date && rocToYmd_(body.date) !== want) return map;
+        var fields = body.fields || [];
+        var ci = fields.indexOf('證券代號'), pi = fields.indexOf('收盤價');
+        if (ci < 0) ci = 0;
+        if (pi < 0) pi = 7;
+        (body.data || []).forEach(function (row) {
+          if (!Array.isArray(row)) return;
+          var code = String(row[ci] || '').trim(), close = toClose_(row[pi]);
+          if (code && close) map[code] = close;
+        });
+      } else {
+        var lines = text.split(/\r?\n/);
+        var head = csvCells_(lines[0] || '');
+        var di = head.indexOf('日期'), ci2 = head.indexOf('證券代號'), pi2 = head.indexOf('收盤價');
+        if (ci2 < 0 || pi2 < 0) return map;
+        for (var i = 1; i < lines.length; i++) {
+          if (!lines[i]) continue;
+          var c = csvCells_(lines[i]);
+          if (di >= 0 && rocToYmd_(c[di]) !== want) continue;
+          var code2 = String(c[ci2] || '').trim(), close2 = toClose_(c[pi2]);
+          if (code2 && close2) map[code2] = close2;
+        }
+      }
+    } catch (e) {
+      try { Logger.log('證交所當日收盤行情抓取失敗：' + (e && e.message ? e.message : e)); } catch (x) { /* ignore */ }
+    }
+    return map;
+  }
+  /** 證交所 OpenAPI：最近一個交易日的上市收盤價 { 代號: 收盤價 } */
+  function fetchTwseCloseMap_() {
+    var map = {};
+    try {
+      var res = UrlFetchApp.fetch(TWSE_OPEN_URL, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) return map;
+      (JSON.parse(res.getContentText()) || []).forEach(function (it) {
+        var code = String(it.Code || '').trim(), close = toClose_(it.ClosingPrice);
+        if (code && close) map[code] = close;
+      });
+    } catch (e) {
+      try { Logger.log('證交所收盤價抓取失敗（沿用舊值）：' + (e && e.message ? e.message : e)); } catch (x) { /* ignore */ }
+    }
+    return map;
+  }
+
   // 加密貨幣可以改用 BitoPro（幣託）公開報價：跟 BitoPro app 顯示的市值／損益一致。免費、不用金鑰、不用登入。
   // 標的的「價格來源」選 BitoPro，「行情代碼」填交易對（例如 btc_twd；沒填就用「代號_計價幣別」）。
   var BITOPRO_URL = 'https://api.bitopro.com/v3/tickers';
@@ -5648,12 +5724,17 @@ var FinJobs = (function () {
     var now = FinDates.timestamp(nowMs);
     var today = FinDates.today(nowMs);
     var changed = 0;
-    var dailyMap = null, openMap = null, bitoMap = null; // 第一次需要時才抓，整個執行每個來源只抓一次
+    var dailyMap = null, openMap = null, bitoMap = null, twseDaily = null, twseOpen = null; // 第一次需要時才抓，整個執行每個來源只抓一次
     var instBySymbol = {};
     FinRepo.readTable('instruments').rows.forEach(function (i) { if (!i._bad) instBySymbol[String(i.symbol)] = i; });
-    function tpexClose(symbol) {
+    /** 台股（上市＋上櫃）收盤價備援：先找當天收盤（證交所→櫃買），沒有再找最近一個交易日（證交所→櫃買） */
+    function twClose(symbol) {
+      if (twseDaily === null) twseDaily = fetchTwseDailyMap_(today);
+      if (twseDaily[symbol] > 0) return twseDaily[symbol];
       if (dailyMap === null) dailyMap = fetchTpexDailyMap_(today);
       if (dailyMap[symbol] > 0) return dailyMap[symbol];
+      if (twseOpen === null) twseOpen = fetchTwseCloseMap_();
+      if (twseOpen[symbol] > 0) return twseOpen[symbol];
       if (openMap === null) openMap = fetchTpexCloseMap_();
       return openMap[symbol] > 0 ? openMap[symbol] : 0;
     }
@@ -5674,7 +5755,9 @@ var FinJobs = (function () {
         changed++;
         return;
       }
-      var close = tpexClose(String(r.symbol));
+      // 只有台幣計價的台股／ETF 才查證交所＋櫃買中心；其他（外幣、美股、基金…）不查
+      var isTw = !inst || (inst.quote === 'TWD' && (inst.type === '台股' || inst.type === 'ETF'));
+      var close = isTw ? twClose(String(r.symbol)) : 0;
       if (close > 0) {
         FinRepo.setCells('prices', r._row, { lastValid: close, updatedAt: now, status: '正常' });
         changed++;
@@ -5686,7 +5769,7 @@ var FinJobs = (function () {
     });
     return changed;
   }
-  return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_, fetchBitoProMap_: fetchBitoProMap_ };
+  return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_, fetchTwseDailyMap_: fetchTwseDailyMap_, fetchTwseCloseMap_: fetchTwseCloseMap_, fetchBitoProMap_: fetchBitoProMap_ };
 })();
 
 // ==================== server/maintenance.js ====================
