@@ -11,7 +11,7 @@ import { refreshInBackground } from '../data.js';
 
 const S = { seq: 0 };
 
-function qty(n, symbol) { return shares(n, { symbol }); }
+function qty(n, symbol) { return shares(n, { symbol, mask: true }); } // 股數也跟著「隱藏金額」遮住（跟帳戶頁一致）
 // 損益、成本、市值都跟著「隱藏金額」一起遮住；現價是公開資訊，不遮
 function plMoney(n, symbol) { return money(n, symbol, { sign: true }); }
 function plClass(n) { return amountClass(n > 0 ? 'pos' : n < 0 ? 'neg' : 'mute'); }
