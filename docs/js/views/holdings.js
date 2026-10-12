@@ -12,7 +12,8 @@ import { refreshInBackground } from '../data.js';
 const S = { seq: 0 };
 
 function qty(n, symbol) { return shares(n, { symbol }); }
-function plMoney(n, symbol) { return money(n, symbol, { sign: true, noMask: true }); }
+// 損益、成本、市值都跟著「隱藏金額」一起遮住；現價是公開資訊，不遮
+function plMoney(n, symbol) { return money(n, symbol, { sign: true }); }
 function plClass(n) { return amountClass(n > 0 ? 'pos' : n < 0 ? 'neg' : 'mute'); }
 // 主要損益：扣掉預估賣出手續費＋證交稅（跟券商 app 一致）；舊版後端沒有 netPl 時退回帳面損益
 const netOf = (p) => (p.netPl === undefined || p.netPl === null ? p.totalBase : p.netPl);
@@ -40,10 +41,10 @@ function positionDetail(p) {
   const acct = accountById(p.accountId);
   const quoteSym = p.quote || (inst && inst.quote) || state.data.base;
   const rows = [['帳戶', acct ? acct.name : p.accountId], [inst && inst.type === '加密' ? '持有數量' : '持有股數', qty(p.qty, p.symbol)],
-    ['平均成本', money(p.costNative, quoteSym, { noMask: true }) + (p.estimated ? '（部分估算）' : '')]];
+    ['平均成本', money(p.costNative, quoteSym) + (p.estimated ? '（部分估算）' : '')]];
   if (!p.missing) {
     rows.push(['現價', money(p.priceNative, quoteSym, { noMask: true })]);
-    rows.push(['市值', `${money(p.mvNative, quoteSym, { noMask: true })}　≈ ${money(p.mvBase, state.data.base, { noMask: true })}`]);
+    rows.push(['市值', `${money(p.mvNative, quoteSym)}　≈ ${money(p.mvBase, state.data.base)}`]);
     // 台幣計價的標的「股價損益」就等於帳面損益，不重複列
     if (quoteSym !== state.data.base) {
       rows.push(['損益（股價）', plMoney(p.pricePl, state.data.base)]);
@@ -51,7 +52,7 @@ function positionDetail(p) {
     }
     if (p.sellCost > 0) {
       rows.push(['帳面損益（未扣費用）', plMoney(p.totalBase, state.data.base)]);
-      rows.push(['預估賣出費用', `${money(-p.sellCost, state.data.base, { sign: true, noMask: true })}（手續費 ${pct(p.sellFeeRate)} ${money(p.sellFee, state.data.base, { noMask: true })}＋證交稅 ${pct(p.sellTaxRate)} ${money(p.sellTax, state.data.base, { noMask: true })}）`]);
+      rows.push(['預估賣出費用', `${money(-p.sellCost, state.data.base, { sign: true })}（手續費 ${pct(p.sellFeeRate)} ${money(p.sellFee, state.data.base)}＋證交稅 ${pct(p.sellTaxRate)} ${money(p.sellTax, state.data.base)}）`]);
       rows.push(['損益（扣除賣出費用）', plMoney(netOf(p), state.data.base)]);
     } else {
       rows.push(['總損益', plMoney(p.totalBase, state.data.base)]);
@@ -82,7 +83,7 @@ function dividendRow(dv) {
   const acct = accountById(dv.accountId);
   return h('li', null, h('div', { class: 'item' },
     h('div', { class: 'grow' }, h('div', { class: 't' }, nameOf(dv.relatedSymbol || dv.symbol)), h('div', { class: 's' }, `${dv.date} · 股息 · ${acct ? acct.name : dv.accountId}`)),
-    h('div', { class: amountClass('pos') }, '+' + money(dv.net, dv.symbol, { noMask: true }))));
+    h('div', { class: amountClass('pos') }, '+' + money(dv.net, dv.symbol))));
 }
 
 // ---------- 持倉資料快取（開頁先畫上次的結果，背景再更新；避免每次重畫都重新等後端） ----------
