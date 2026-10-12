@@ -67,10 +67,13 @@ function openDetail(p) {
   openSheet({ title: `${p.symbol}　${inst ? inst.name : ''}`, body: positionDetail(p) });
 }
 
+/** 「代號　名稱」（跟持倉列表一樣） */
+function nameOf(sym) { const inst = instrumentBySymbol(sym); return inst && inst.name && inst.name !== sym ? `${sym}　${inst.name}` : sym; }
+
 function realizedRow(r) {
   const acct = accountById(r.accountId);
   return h('li', null, h('div', { class: 'item' },
-    h('div', { class: 'grow' }, h('div', { class: 't' }, `${r.date}　${r.symbol}　賣出 ${qty(r.qty, r.symbol)}`), h('div', { class: 's' }, acct ? acct.name : r.accountId)),
+    h('div', { class: 'grow' }, h('div', { class: 't' }, nameOf(r.symbol)), h('div', { class: 's' }, `${r.date} · 賣出 ${qty(r.qty, r.symbol)} · ${acct ? acct.name : r.accountId}`)),
     h('div', { class: plClass(r.realizedBase === null ? r.realizedNative : r.realizedBase) },
       r.realizedBase === null ? plMoney(r.realizedNative, r.quote) + '（估算）' : plMoney(r.realizedBase, state.data.base))));
 }
@@ -78,7 +81,7 @@ function realizedRow(r) {
 function dividendRow(dv) {
   const acct = accountById(dv.accountId);
   return h('li', null, h('div', { class: 'item' },
-    h('div', { class: 'grow' }, h('div', { class: 't' }, `${dv.date}　${dv.relatedSymbol || dv.symbol}　股息`), h('div', { class: 's' }, acct ? acct.name : dv.accountId)),
+    h('div', { class: 'grow' }, h('div', { class: 't' }, nameOf(dv.relatedSymbol || dv.symbol)), h('div', { class: 's' }, `${dv.date} · 股息 · ${acct ? acct.name : dv.accountId}`)),
     h('div', { class: amountClass('pos') }, '+' + money(dv.net, dv.symbol, { noMask: true }))));
 }
 
