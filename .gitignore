@@ -11,3 +11,5 @@ push.bat
 
 # Claude 桌面版把傳到對話裡的檔案（截圖等）存在這裡，不進版控
 Claude outputs/
+pull.bat
+dist/Code_deploy.txt
