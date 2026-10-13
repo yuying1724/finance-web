@@ -137,3 +137,24 @@ test('價格歷史：更新價格時記下當天價格（同一天覆蓋）；�
   // 1,112.00 這種有千分位的也看得懂
   assert.ok(hist().some((r) => r[1] === '0050' && Number(r[2]) === 1112));
 });
+
+test('投資報表：後來才補登／開帳的部位、股數調整增減，以當天市值轉入／轉出，不算投入、也不把補登前的漲跌算進來', () => {
+  const b = loadBackend().setup();
+  const ok = (r) => { assert.ok(r.ok, JSON.stringify(r)); return r.data; };
+  const bank = ok(b.call('upsertAccount', { account: { name: '銀行', type: '銀行', defaultSymbol: 'TWD' } })).account.id;
+  const tw = ok(b.call('upsertAccount', { account: { name: '證券', type: '證券', defaultSymbol: 'TWD' } })).account.id;
+  ok(b.call('upsertInstrument', { instrument: { symbol: '0050', name: '元大台灣50', type: 'ETF', quote: 'TWD', decimals: 0, priceSource: '手動', isNew: true } }));
+  const add = (tx) => ok(b.call('addTransaction', { tx }));
+  add({ type: '買入', date: '2026-01-05', settleDate: '2026-01-05', srcAccount: bank, srcSymbol: 'TWD', srcQty: 10000, dstAccount: tw, dstSymbol: '0050', dstQty: 100, amount: 10000 });
+  add({ type: '買入', date: '2026-02-10', settleDate: '2026-02-10', srcAccount: bank, srcSymbol: 'TWD', srcQty: 2000, dstAccount: tw, dstSymbol: '0050', dstQty: 50, amount: 2000, note: '舊部位補登（另一個帳戶的老持股）' });
+  add({ type: '股數調整', date: '2026-03-02', srcAccount: tw, srcSymbol: '0050', srcQty: 30, note: '已賣出，款項記在餘額調整' });
+  b.ctx.FinJobs.recordCloses('', [{ date: '2026-01-05', symbol: '0050', close: 100 }, { date: '2026-02-10', symbol: '0050', close: 110 }, { date: '2026-03-02', symbol: '0050', close: 120 }]);
+  const sh = b.ss.sheet('價格');
+  const header = sh.dump()[0];
+  const row = sh.dump().findIndex((r) => r[header.indexOf('標的代號')] === '0050') + 1;
+  sh.poke(row, header.indexOf('上次有效價') + 1, 130);
+  const s = ok(b.call('investReport', {})).summary;
+  // 100 股 100→130 賺 3,000；補登的 50 股從 110 起算：留下 20 股到 130 賺 400、轉出 30 股在 120 賺 300
+  assert.deepEqual([s.startValue, s.endValue, s.buys, s.netInvest, s.transfers, s.total], [10000, 15600, 0, 0, 1900, 3700]);
+  assert.deepEqual([s.realized, s.unrealizedChange], [1200, 2500]); // 轉出部分：市值 3,600 − 成本 2,400
+});

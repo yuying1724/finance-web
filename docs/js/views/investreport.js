@@ -76,6 +76,8 @@ export function renderInvestReportBody(root) {
       h('div', null, h('span', { class: 'muted' }, `期初市值（${shortDate(sum.startDate)} 收盤）`), h('b', { 'data-testid': 'ir-start' }, money(sum.startValue))),
       h('div', null, h('span', { class: 'muted' }, '淨投入'), h('b', { 'data-testid': 'ir-net' }, signed(sum.netInvest))),
       h('div', { class: 'ir-sub muted small' }, `買入 ${money(sum.buys)}　賣出入帳 ${money(sum.sells)}`),
+      sum.transfers ? h('div', null, h('span', { class: 'muted' }, '補登／調整的持股'), h('b', { 'data-testid': 'ir-transfers' }, signed(sum.transfers))) : null,
+      sum.transfers ? h('div', { class: 'ir-sub muted small' }, '後來才補登、開帳或用「股數調整」增減的持股，以當天市值計，不算投入的錢') : null,
       h('div', null, h('span', { class: 'muted' }, '期末市值'), h('b', { 'data-testid': 'ir-end' }, money(sum.endValue))));
     const notes = [];
     const want = rangeOf(S.mode);
@@ -100,7 +102,7 @@ export function renderInvestReportBody(root) {
       h('div', { class: 'ir-parts' }, parts),
       flows,
       notes.length ? h('div', { class: 'notice', style: { marginTop: '10px' } }, notes.map((n) => h('div', null, n))) : null,
-      h('p', { class: 'muted small', style: { margin: '10px 2px 0' } }, '投資損益＝未實現損益變化＋已實現損益＋股息，跟「期末市值－期初市值－淨投入＋股息」相同。未實現是帳面數字（還沒扣賣出手續費與證交稅）。報酬率有考慮期間中投入的時間（定期定額也準）。'));
+      h('p', { class: 'muted small', style: { margin: '10px 2px 0' } }, '投資損益＝未實現損益變化＋已實現損益＋股息，也等於「期末市值－期初市值－淨投入（－補登的持股）＋股息」。未實現是帳面數字（還沒扣賣出手續費與證交稅）。報酬率有考慮期間中投入的時間（定期定額也準）。'));
   }
 
   function drawMonths(r) {
@@ -184,7 +186,7 @@ export function renderInvestReportBody(root) {
     const row = (x) => h('li', null, h('div', { class: 'item', 'data-testid': 'ir-sym', 'data-symbol': x.symbol },
       h('div', { class: 'grow' },
         h('div', { class: 't' }, `${x.name}`, h('span', { class: 'muted small' }, `　${x.symbol}${x.held ? '' : '・已出清'}`)),
-        h('div', { class: 's' }, `未實現 ${signed(x.unrealizedChange)}・已實現 ${signed(x.realized)}・股息 ${money(x.dividends)}` + (x.netInvest ? `・淨投入 ${signed(x.netInvest)}` : ''))),
+        h('div', { class: 's' }, `未實現 ${signed(x.unrealizedChange)}・已實現 ${signed(x.realized)}・股息 ${money(x.dividends)}` + (x.netInvest ? `・淨投入 ${signed(x.netInvest)}` : '') + (x.transfers ? `・補登／調整 ${signed(x.transfers)}` : ''))),
       h('div', { class: 'right' },
         h('div', { class: cls(x.total), 'data-testid': 'ir-sym-total' }, signed(x.total)),
         h('div', { class: 'small ' + cls(x.returnPct || 0) }, pct(x.returnPct)))));
