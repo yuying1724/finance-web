@@ -1,9 +1,9 @@
 import { h, mount, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { state } from '../store.js';
-import * as api from '../api.js';
 import { money } from '../fmt.js';
-import { openSheet, errorText } from '../ui.js';
+import { openSheet, errorText, loading } from '../ui.js';
+import { cachedRead } from '../readcache.js';
 import { openTxForm } from './txform.js';
 import { RECONCILE_TYPES, RECONCILE_STALE_DAYS, reconcileAge, reconcileText, openReconcile } from './accounts.js';
 
@@ -101,13 +101,17 @@ let view = 'account';
 
 export function openCashflow() {
   let days = 30; // 每次打開都從 30 天開始（首頁提醒也是看 30 天）
-  const body = h('div', null, h('div', { class: 'empty' }, '載入中…'));
+  const body = h('div', null, loading());
   const sheet = openSheet({ title: '未來扣款日曆', body });
-  let data = null;
+  let data = null, seq = 0;
   const load = () => {
-    clear(body); mount(body, h('div', { class: 'empty' }, '載入中…'));
-    api.call('getCashflow', { days }).then((r) => { data = r; draw(); })
-      .catch((e) => { clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e))); });
+    const my = ++seq, want = days;
+    // 本機快取先畫，背景再更新（記了新交易或超過 5 分鐘才會重抓）
+    const r = cachedRead('getCashflow', { days: want }, {
+      onData: (d) => { if (my !== seq || !body.isConnected) return; data = d; draw(); },
+      onError: (e, meta) => { if (my !== seq || meta.hadData) return; clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e))); },
+    });
+    if (r.data === null) { clear(body); mount(body, loading()); }
   };
   const draw = () => {
     clear(body);

@@ -2,7 +2,8 @@ import { h, mount, clear } from '../dom.js';
 import { state, accountById } from '../store.js';
 import * as api from '../api.js';
 import { money } from '../fmt.js';
-import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
+import { openSheet, toast, errorText, withBusy, confirmDialog, loading } from '../ui.js';
+import { cachedRead } from '../readcache.js';
 import { mergeRow, refreshInBackground } from '../data.js';
 import { installmentListBlock } from './installments.js';
 import { nearCloseNotice } from './cards.js';
@@ -136,9 +137,11 @@ export function openLoanSettingsForm({ account, loan, onDone } = {}) {
 
 // ---------- 信用卡帳單 ----------
 export function openCardStatement(account) {
-  const body = h('div', null, h('div', { class: 'empty' }, '載入中…'));
+  const body = h('div', null, loading());
   const sheet = openSheet({ title: `${account.name}　帳單`, body });
-  api.call('getCardStatement', { accountId: account.id }).then((s) => {
+  // 本機快取先畫（上次看過的帳單），背景再更新
+  cachedRead('getCardStatement', { accountId: account.id }, { onData: (st) => { if (body.isConnected) render(st); }, onError: (e, meta) => { if (!meta.hadData) fail(e); } });
+  function render(s) {
     clear(body);
     // 額度群組：同群組的卡片視為銀行合併成一張帳單（同結帳日／繳款日、一個總金額），
     // 所以本期消費／目前總欠款／上期帳單待繳／可用額度都是「整組加總」，不是只看這張卡自己的交易。
@@ -166,9 +169,12 @@ export function openCardStatement(account) {
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
         h('button', { class: 'btn btn-sm', 'data-testid': 'statement-recon', onclick: () => { sheet.close(); setTimeout(() => openCardRecon(account.id), 0); } }, '對帳'),
         h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account, card: s.cardSettings }), 0); } }, '設定信用卡')));
-  }).catch((e) => { clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e)),
-    h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
-      h('button', { class: 'btn btn-sm btn-primary', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account }), 0); } }, '設定信用卡'))); });
+  }
+  function fail(e) {
+    clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e)),
+      h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
+        h('button', { class: 'btn btn-sm btn-primary', onclick: () => { sheet.close(); setTimeout(() => openCardSettingsForm({ account }), 0); } }, '設定信用卡')));
+  }
 }
 
 // ---------- 貸款排程與還款 ----------
@@ -181,12 +187,15 @@ function scheduleRow(r, currentPeriod) {
 }
 
 export function openLoanDetail(account) {
-  const body = h('div', null, h('div', { class: 'empty' }, '載入中…'));
+  const body = h('div', null, loading());
   const sheet = openSheet({ title: `${account.name}　還款明細`, body });
   load();
-  function load() {
-    clear(body); mount(body, h('div', { class: 'empty' }, '載入中…'));
-    api.call('getLoanSchedule', { accountId: account.id }).then((r) => {
+  function load(force) {
+    // 本機快取先畫，背景再更新；剛記完還款要強制重抓
+    const c = cachedRead('getLoanSchedule', { accountId: account.id }, { force, onData: (r) => { if (body.isConnected) render(r); }, onError: (e, meta) => { if (!meta.hadData) fail(e); } });
+    if (c.data === null || force) { clear(body); mount(body, loading()); }
+  }
+  function render(r) {
       clear(body);
       const sym = r.symbol;
       r.schedule.forEach((row) => { row.symbol = sym; });
@@ -207,9 +216,11 @@ export function openLoanDetail(account) {
           h('button', { class: 'btn btn-sm', onclick: () => { sheet.close(); setTimeout(() => openLoanSettingsForm({ account, loan: r.loanSettings }), 0); } }, '設定貸款')),
         h('div', { class: 'day-head' }, h('span', null, '攤還表')),
         h('ul', { class: 'list' }, r.schedule.map((row) => scheduleRow(row, sum.settled ? null : sum.currentPeriod))));
-    }).catch((e) => { clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e)),
+  }
+  function fail(e) {
+    clear(body); mount(body, h('div', { class: 'notice bad' }, errorText(e)),
       h('div', { class: 'row-flex wrap', style: { marginTop: '16px' } },
-        h('button', { class: 'btn btn-sm btn-primary', onclick: () => { sheet.close(); setTimeout(() => openLoanSettingsForm({ account }), 0); } }, '設定貸款'))); });
+        h('button', { class: 'btn btn-sm btn-primary', onclick: () => { sheet.close(); setTimeout(() => openLoanSettingsForm({ account }), 0); } }, '設定貸款')));
   }
   async function payCurrent(e, r, sum) {
     const fromAccount = r.loanSettings.payAccountId || (cashAccounts(account.id)[0] && cashAccounts(account.id)[0].id);
@@ -221,7 +232,7 @@ export function openLoanDetail(account) {
         await api.call('addLoanPayment', { accountId: account.id, fromAccount, requestId: api.newRequestId() });
         refreshInBackground();
         toast('已記錄還款');
-        load();
+        load(true);
       } catch (err) { toast(errorText(err), { kind: 'bad' }); }
     });
   }

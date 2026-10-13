@@ -3,7 +3,7 @@ import { icon } from '../icons.js';
 import { state } from '../store.js';
 import * as api from '../api.js';
 import { categoryInfo } from '../fmt.js';
-import { openSheet, toast, errorText, confirmDialog, withBusy } from '../ui.js';
+import { openSheet, toast, errorText, confirmDialog, withBusy, loading } from '../ui.js';
 import { refresh } from '../data.js';
 
 /**
@@ -18,7 +18,7 @@ export function openMerchants() {
   const search = h('input', { type: 'search', placeholder: '搜尋商家', 'aria-label': '搜尋商家', oninput: (e) => { q = e.target.value.trim(); paint(); } });
   const paint = () => {
     if (error) { mount(listBox, h('div', { class: 'notice bad' }, '讀取失敗：' + errorText(error))); return; }
-    if (!items) { mount(listBox, h('div', { class: 'muted', style: { padding: '12px 0' } }, '載入中…')); return; }
+    if (!items) { mount(listBox, loading()); return; }
     const shown = items.filter((x) => !q || x.name.toLowerCase().includes(q.toLowerCase()));
     if (!shown.length) { mount(listBox, h('div', { class: 'muted', style: { padding: '12px 0' } }, items.length ? '找不到符合的商家' : '還沒有任何交易填過商家')); return; }
     mount(listBox, h('ul', { class: 'list' }, shown.map((x) => h('li', null, h('button', { class: 'item', 'data-testid': 'merchant-item', 'data-name': x.name, onclick: () => openMerchant(x, items, reload) },

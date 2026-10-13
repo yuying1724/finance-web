@@ -1,9 +1,9 @@
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
 import { state, accountById } from '../store.js';
-import * as api from '../api.js';
 import { money, catIconStyle } from '../fmt.js';
-import { errorText } from '../ui.js';
+import { errorText, loading } from '../ui.js';
+import { cachedRead } from '../readcache.js';
 import { renderYear } from './yearview.js';
 
 /**
@@ -173,7 +173,7 @@ function donut(groups, slots, total, ui, base, onPick) {
 
 // 圖表的狀態放在模組裡：資料重新整理、切換分頁回來時，保留看到哪個月、展開哪個分類
 const UI = { range: 6, ym: '', filter: '', open: '', kid: '', mode: 'month' }; // mode：month（6／12 個月）或 year（年度總覽）
-let CACHE = { stamp: null, data: null, error: null };
+let CACHE = { data: null, error: null };
 
 /** 首頁「支出圖表」按鈕：到「交易 › 圖表」 */
 export function openSpending() { location.hash = '#/tx?view=chart'; }
@@ -187,7 +187,7 @@ export function mountSpending(container, opts = {}) {
   if (opts.ym) UI.ym = opts.ym;
   const ui = Object.assign(UI, { tip: h('div', { class: 'muted small sp-tip', 'aria-live': 'polite' }), defaultTip: '',
     dtip: h('div', { class: 'small sp-dtip', 'aria-live': 'polite' }) });
-  const body = h('div', { 'data-testid': 'spending' }, h('div', { class: 'muted' }, '載入中…'));
+  const body = h('div', { 'data-testid': 'spending' }, loading());
   mount(container, body);
   const setYm = (ym) => { ui.ym = ym; if (opts.onMonth) opts.onMonth(ym); draw(); };
 
@@ -291,13 +291,9 @@ export function mountSpending(container, opts = {}) {
       h('div', { class: 'muted small', style: { marginTop: '8px' } }, `點長條或月份換月份；點分類展開細項，再點細項可以看這個月算進去的每一筆（分期會標第幾期），上面的圖會改成只看這個分類。「交易明細」只列購買日在這個月的交易，所以之前買的分期不會出現在明細裡。支出＝支出交易扣掉退款，轉帳、投資買賣、繳卡費都不算；分期付款依每期金額算在出帳的月份。從 ${ui.data.startYm.slice(0, 4)}/${monthNum(ui.data.startYm)} 月（開始記帳）起算。`));
   }
 
-  // 資料：跟著 App 的資料版本（state.loadedAt）重抓；有舊資料先畫，背景更新完再畫一次
-  const stamp = String(state.loadedAt || '');
-  if (CACHE.data) draw();
-  if (CACHE.stamp !== stamp) {
-    CACHE.stamp = stamp;
-    api.call('getMonthlyExpenses', { months: 12 })
-      .then((r) => { if (CACHE.stamp !== stamp) return; CACHE.data = r; CACHE.error = null; if (body.isConnected) draw(); })
-      .catch((e) => { if (CACHE.stamp !== stamp) return; CACHE.error = e; CACHE.stamp = null; if (body.isConnected) draw(); });
-  }
+  // 資料：本機快取先畫（跨次開啟也有），資料版本變了或超過 5 分鐘才背景重抓
+  cachedRead('getMonthlyExpenses', { months: 12 }, {
+    onData: (r) => { CACHE.data = r; CACHE.error = null; if (body.isConnected) draw(); },
+    onError: (e) => { if (!CACHE.data) { CACHE.error = e; if (body.isConnected) draw(); } },
+  });
 }

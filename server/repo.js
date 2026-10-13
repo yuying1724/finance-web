@@ -99,8 +99,9 @@ var FinRepo = (function () {
   // 需要在 Apps Script 專案的「服務」加入 Google Sheets API（識別碼 Sheets；appsscript.json 的 enabledAdvancedServices）。
   // 沒加、或 API 呼叫失敗（例如分頁改名），都自動退回原本逐張讀取，功能一樣只是慢。
   // 之後新增「每次請求都會讀」的分頁要記得加進 PRELOAD_TABLES；不加也能用，只是那幾張會逐張讀。
+  // 價格歷史也一起預載：首頁（投資收益）、交易頁（月份統計）、投資報表都要用，省一趟讀取
   var PRELOAD_TABLES = ['settings', 'accounts', 'categories', 'instruments', 'transactions', 'prices', 'brokerSettings',
-    'holidays', 'cardSettings', 'loanSettings', 'recurring', 'installments'];
+    'holidays', 'cardSettings', 'loanSettings', 'recurring', 'installments', 'priceHistory'];
 
   function padRows(rows) {
     // getValues() 回的是整齊的矩形（空格為 ''），API 會省略列尾的空格與最後的空白列，這裡補齊

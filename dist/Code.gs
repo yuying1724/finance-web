@@ -147,7 +147,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.57',
+    APP_VERSION: '0.9.58',
   };
   return api;
 })();
@@ -2146,8 +2146,9 @@ var FinRepo = (function () {
   // 需要在 Apps Script 專案的「服務」加入 Google Sheets API（識別碼 Sheets；appsscript.json 的 enabledAdvancedServices）。
   // 沒加、或 API 呼叫失敗（例如分頁改名），都自動退回原本逐張讀取，功能一樣只是慢。
   // 之後新增「每次請求都會讀」的分頁要記得加進 PRELOAD_TABLES；不加也能用，只是那幾張會逐張讀。
+  // 價格歷史也一起預載：首頁（投資收益）、交易頁（月份統計）、投資報表都要用，省一趟讀取
   var PRELOAD_TABLES = ['settings', 'accounts', 'categories', 'instruments', 'transactions', 'prices', 'brokerSettings',
-    'holidays', 'cardSettings', 'loanSettings', 'recurring', 'installments'];
+    'holidays', 'cardSettings', 'loanSettings', 'recurring', 'installments', 'priceHistory'];
 
   function padRows(rows) {
     // getValues() 回的是整齊的矩形（空格為 ''），API 會省略列尾的空格與最後的空白列，這裡補齊
@@ -6022,6 +6023,27 @@ var FinJobs = (function () {
     }
     return map;
   }
+  /** BitoPro 日 K 線：{日期: 收盤價}（from～to，含頭尾；時間戳是 UTC 零點，換成台灣日期） */
+  var BITOPRO_HISTORY_URL = 'https://api.bitopro.com/v3/trading-history/';
+  function fetchBitoProHistory_(pair, from, to) {
+    var map = {};
+    try {
+      var f = FinDates.parse(from), t = FinDates.parse(to);
+      var fromSec = Math.floor(Date.UTC(f.y, f.m - 1, f.d - 1) / 1000), toSec = Math.floor(Date.UTC(t.y, t.m - 1, t.d + 1) / 1000);
+      var res = UrlFetchApp.fetch(BITOPRO_HISTORY_URL + encodeURIComponent(pair) + '?resolution=1d&from=' + fromSec + '&to=' + toSec, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) return map;
+      var body = JSON.parse(res.getContentText()) || {};
+      (body.data || []).forEach(function (k) {
+        var close = toClose_(k.close), ts = Number(k.timestamp);
+        if (!close || !(ts > 0)) return;
+        var d = FinDates.today(ts); // 日 K 的時間戳是 UTC 當天 0 點＝台灣早上 8 點，算同一天
+        if (d >= from && d <= to) map[d] = close;
+      });
+    } catch (e) {
+      try { Logger.log('BitoPro 歷史價格失敗：' + (e && e.message ? e.message : e)); } catch (x) { /* ignore */ }
+    }
+    return map;
+  }
   function bitoPair_(inst) {
     return (String(inst.quoteCode || '').trim() || (inst.symbol + '_' + (inst.quote || 'TWD'))).toLowerCase();
   }
@@ -6207,6 +6229,11 @@ var FinJobs = (function () {
         });
         if (!any) failed.push(sym);
         report.push({ symbol: sym, days: got });
+      } else if (inst.priceSource === 'BitoPro') {
+        // 加密貨幣：BitoPro 的日 K 線（台灣時間每天一根，收盤價＝當天最後成交價）
+        var bm = fetchBitoProHistory_(bitoPair_(inst), from, to);
+        if (!Object.keys(bm).length) failed.push(sym);
+        report.push({ symbol: sym, days: take(sym, bm) });
       } else if (inst.quoteCode && inst.priceSource === 'GOOGLEFINANCE') {
         gf.push(inst);
       }

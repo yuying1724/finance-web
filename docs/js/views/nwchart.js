@@ -1,12 +1,12 @@
 import { h } from '../dom.js';
 import { state, prefs, notify } from '../store.js';
-import * as api from '../api.js';
+import { cachedRead } from '../readcache.js';
 import { money } from '../fmt.js';
 
 /**
  * 首頁「淨資產走勢」卡：每日快照（後端每天早上與傍晚記一筆）＋今天的即時數字。
  * 單一數列的折線＋淡色面積，滑過／點按顯示當天金額（十字線＋提示），範圍可切 3 個月／1 年／全部。
- * 資料只在記憶體快取：首頁資料重新整理後（state.loadedAt 變了）才重新抓，避免每次重畫都打後端。
+ * 資料走共用的唯讀快取（readcache.js）：開頁先畫上次的，首頁資料重新整理後（state.loadedAt 變了）或超過 5 分鐘才背景重抓。
  */
 const RANGES = [['3m', '3 個月', 92], ['1y', '1 年', 366], ['all', '全部', 0]];
 let cache = { rows: null, stamp: null, inflight: false, error: null };
@@ -17,14 +17,15 @@ function stampNow() { return state.loadedAt ? state.loadedAt.getTime() : 0; }
 function ensureData() {
   const stamp = stampNow();
   if (cache.inflight || (cache.rows && cache.stamp === stamp)) return;
-  cache.inflight = true;
-  api.call('getNetWorthHistory').then((r) => {
-    cache = { rows: (r && r.rows) || [], stamp, inflight: false, error: null };
-    notify();
-  }).catch((e) => {
-    cache = { rows: cache.rows, stamp, inflight: false, error: e };
-    notify();
+  // 本機快取先用（跨次開啟也有），資料版本變了或超過 5 分鐘才背景重抓
+  const r = cachedRead('getNetWorthHistory', {}, {
+    onData: (d, meta) => {
+      cache = { rows: (d && d.rows) || [], stamp: meta.stale ? null : stamp, inflight: meta.stale, error: null };
+      if (!meta.fromCache) notify(); // 背景抓回新資料才重畫（同步拿到的快取在這次 render 就會用到）
+    },
+    onError: (e) => { cache = { rows: cache.rows, stamp, inflight: false, error: e }; notify(); },
   });
+  if (r.stale) cache.inflight = true;
 }
 
 function addDays(d, n) { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }

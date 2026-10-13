@@ -137,6 +137,24 @@ test('價格歷史：更新價格時記下當天價格（同一天覆蓋）；�
   assert.equal(hist().length, n);
   // 1,112.00 這種有千分位的也看得懂
   assert.ok(hist().some((r) => r[1] === '0050' && Number(r[2]) === 1112));
+
+  // 加密貨幣（BitoPro）：用日 K 線補；時間戳是 UTC 零點（台灣早上 8 點），算同一天
+  ok(b.call('upsertInstrument', { instrument: { symbol: 'BTC', name: '比特幣', type: '加密', quote: 'TWD', decimals: 8, priceSource: 'BitoPro', quoteCode: 'btc_twd', isNew: true } }));
+  const crypto = ok(b.call('upsertAccount', { account: { name: '交易所', type: '證券', defaultSymbol: 'TWD' } })).account.id;
+  ok(b.call('addTransaction', { tx: { type: '買入', date: '2026-03-02', settleDate: '2026-03-02', srcAccount: bank, srcSymbol: 'TWD', srcQty: 26000, dstAccount: crypto, dstSymbol: 'BTC', dstQty: 0.01, amount: 26000 } }));
+  b.state.urlFetch.handler = (url) => {
+    urls.push(url);
+    if (/trading-history\/btc_twd/.test(url)) return { body: { data: [{ timestamp: Date.UTC(2026, 2, 2), close: '2600000' }, { timestamp: Date.UTC(2026, 2, 3), close: '2650000.5' }] } };
+    if (/STOCK_DAY\?/.test(url)) return { body: { stat: '很抱歉，沒有符合條件的資料!' } };
+    if (/tradingStock/.test(url)) return { body: { tables: [{ data: [] }] } };
+    return { body: {} };
+  };
+  b.advance(120000);
+  const res3 = ok(b.call('backfillPriceHistory', {}));
+  assert.equal(res3.symbols.find((x) => x.symbol === 'BTC').days, 2);
+  assert.ok(!res3.failed.includes('BTC'));
+  assert.ok(urls.some((u) => /trading-history\/btc_twd\?resolution=1d&from=\d+&to=\d+/.test(u)));
+  assert.ok(hist().some((r) => r[1] === 'BTC' && Number(r[2]) === 2650000.5));
 });
 
 test('投資報表：後來才補登／開帳的部位、股數調整增減，以當天市值轉入／轉出，不算投入、也不把補登前的漲跌算進來', () => {

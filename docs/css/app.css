@@ -363,3 +363,10 @@ a.item { color: inherit; text-decoration: none; }
 .ir-table th:first-child, .ir-table td:first-child { text-align: left; }
 .ir-table { overflow-x: auto; }
 .ir-syms .item .s { white-space: normal; }
+/* 載入中（統一樣式） */
+.loading { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent-strong); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+/* 背景更新中的區塊（先畫舊資料）：稍微變淡，更新完恢復 */
+.is-stale { opacity: .85; transition: opacity .2s; }

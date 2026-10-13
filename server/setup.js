@@ -265,6 +265,27 @@ var FinJobs = (function () {
     }
     return map;
   }
+  /** BitoPro 日 K 線：{日期: 收盤價}（from～to，含頭尾；時間戳是 UTC 零點，換成台灣日期） */
+  var BITOPRO_HISTORY_URL = 'https://api.bitopro.com/v3/trading-history/';
+  function fetchBitoProHistory_(pair, from, to) {
+    var map = {};
+    try {
+      var f = FinDates.parse(from), t = FinDates.parse(to);
+      var fromSec = Math.floor(Date.UTC(f.y, f.m - 1, f.d - 1) / 1000), toSec = Math.floor(Date.UTC(t.y, t.m - 1, t.d + 1) / 1000);
+      var res = UrlFetchApp.fetch(BITOPRO_HISTORY_URL + encodeURIComponent(pair) + '?resolution=1d&from=' + fromSec + '&to=' + toSec, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) return map;
+      var body = JSON.parse(res.getContentText()) || {};
+      (body.data || []).forEach(function (k) {
+        var close = toClose_(k.close), ts = Number(k.timestamp);
+        if (!close || !(ts > 0)) return;
+        var d = FinDates.today(ts); // 日 K 的時間戳是 UTC 當天 0 點＝台灣早上 8 點，算同一天
+        if (d >= from && d <= to) map[d] = close;
+      });
+    } catch (e) {
+      try { Logger.log('BitoPro 歷史價格失敗：' + (e && e.message ? e.message : e)); } catch (x) { /* ignore */ }
+    }
+    return map;
+  }
   function bitoPair_(inst) {
     return (String(inst.quoteCode || '').trim() || (inst.symbol + '_' + (inst.quote || 'TWD'))).toLowerCase();
   }
@@ -450,6 +471,11 @@ var FinJobs = (function () {
         });
         if (!any) failed.push(sym);
         report.push({ symbol: sym, days: got });
+      } else if (inst.priceSource === 'BitoPro') {
+        // 加密貨幣：BitoPro 的日 K 線（台灣時間每天一根，收盤價＝當天最後成交價）
+        var bm = fetchBitoProHistory_(bitoPair_(inst), from, to);
+        if (!Object.keys(bm).length) failed.push(sym);
+        report.push({ symbol: sym, days: take(sym, bm) });
       } else if (inst.quoteCode && inst.priceSource === 'GOOGLEFINANCE') {
         gf.push(inst);
       }

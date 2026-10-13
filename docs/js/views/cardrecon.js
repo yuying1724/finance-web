@@ -1,7 +1,7 @@
 import { h, mount, clear } from '../dom.js';
 import * as api from '../api.js';
 import { money } from '../fmt.js';
-import { openSheet, toast, errorText } from '../ui.js';
+import { openSheet, toast, errorText, loading } from '../ui.js';
 import { refreshInBackground } from '../data.js';
 
 /**
@@ -15,7 +15,7 @@ const addDays = (d, n) => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t
 const r2 = (x) => Math.round(x * 100) / 100;
 
 export function openCardRecon(accountId, closeDate) {
-  const body = h('div', null, h('div', { class: 'empty' }, '載入中…'));
+  const body = h('div', null, loading());
   const sheet = openSheet({ title: '信用卡對帳', body });
   let r = null;
   let busy = Promise.resolve();

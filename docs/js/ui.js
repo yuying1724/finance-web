@@ -110,4 +110,7 @@ export async function withBusy(button, fn) {
   try { return await fn(); } finally { button.disabled = false; mount(button, ...original); }
 }
 
+/** 統一的「載入中」：小轉圈＋文字（各頁、各表單都用這個，不要各自寫一個） */
+export function loading(text = '載入中…') { return h('div', { class: 'empty loading', 'aria-busy': 'true', role: 'status' }, h('span', { class: 'spin', 'aria-hidden': 'true' }), h('span', null, text)); }
+
 export function errorText(e) { return e && e.message ? e.message : '發生未知錯誤'; }

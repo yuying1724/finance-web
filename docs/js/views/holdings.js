@@ -6,7 +6,7 @@ import { money as rawMoney, amountClass, shares } from '../fmt.js';
 
 // 持股的成本、市值、損益都是換算或估算出來的數字，台幣一律顯示到整數元（跟券商 app 一致）
 const money = (n, symbol, opts = {}) => rawMoney(n, symbol, { ...opts, whole: true });
-import { openSheet, errorText, toast } from '../ui.js';
+import { openSheet, errorText, toast, loading } from '../ui.js';
 import { refreshInBackground } from '../data.js';
 
 const S = { seq: 0 };
@@ -165,7 +165,7 @@ export function renderHoldingsBody(root) {
   const my = ++S.seq;
   loadHoldingsCache();
   if (C.res) drawHoldings(listBox, C.res);
-  else mount(listBox, h('div', { class: 'empty' }, '載入中…'));
+  else mount(listBox, loading());
   if (!isStale()) return;
   if (C.res) status.textContent = '更新中…';
   fetchHoldings().then((res) => {

@@ -882,7 +882,7 @@ test('投資報表：投資頁「報表」看期間損益（未實現變化＋�
     await page.evaluate(() => { location.hash = '#/invest/report'; });
     await page.waitForSelector('[data-testid=ir-total]');
     await page.click('[data-testid=ir-modes] [data-mode=all]');
-    await page.waitForFunction(() => document.querySelector('[data-testid=ir-total]').textContent === '+NT$2,300');
+    await page.waitForFunction(() => (document.querySelector('[data-testid=ir-total]') || {}).textContent === '+NT$2,300');
     assert.equal(await page.locator('[data-testid=ir-unrealizedChange]').innerText(), '+NT$2,000');
     assert.equal(await page.locator('[data-testid=ir-dividends]').innerText(), '+NT$300');
     assert.equal(await page.locator('[data-testid=ir-start]').innerText(), 'NT$12,000');
@@ -890,6 +890,9 @@ test('投資報表：投資頁「報表」看期間損益（未實現變化＋�
     assert.equal(await page.locator('[data-testid=ir-pct]').innerText(), '報酬率 +19.17%');
     assert.ok(await page.locator('[data-testid=ir-chart] .ir-seg').count() >= 1);
     assert.equal(await page.locator('[data-testid=ir-sym][data-symbol="0050"] [data-testid=ir-sym-total]').innerText(), '+NT$2,300');
+    // 唯讀查詢的結果會存在本機（fin.rc），下次開頁先畫上次的
+    const rc = await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('fin.rc') || '{"entries":{}}').entries));
+    assert.ok(rc.some((k) => k.startsWith('investReport|')), JSON.stringify(rc));
     // 點這個月的長條 → 期間切到本月
     await page.locator(`[data-testid=ir-chart] .sp-hit[data-ym="${today.slice(0, 7)}"]`).click();
     await page.waitForSelector('[data-testid=ir-modes] [data-mode=month].on');

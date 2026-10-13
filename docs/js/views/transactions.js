@@ -3,7 +3,7 @@ import { icon } from '../icons.js';
 import { state, accountById, instrumentBySymbol } from '../store.js';
 import * as api from '../api.js';
 import { money, dateLabel, monthLabel, categoryInfo, amountClass, catIconStyle, shares } from '../fmt.js';
-import { openSheet, confirmDialog, toast, errorText } from '../ui.js';
+import { openSheet, confirmDialog, toast, errorText, loading } from '../ui.js';
 import { openTxForm } from './txform.js';
 import { write, applyTxLocal } from '../data.js';
 import { installmentOf, installmentText, openSetInstallment, togglePayoff } from './installments.js';
@@ -318,7 +318,7 @@ export function renderTransactions(root, route) {
     const key = S.ym + '|' + JSON.stringify(S.filters);
     // 同一組條件剛查過：先畫上次的結果（畫面不會閃），背景再重查
     if (S.cache && S.cache.key === key) render(S.cache.list, S.cache.sum);
-    else mount(listBox, h('div', { class: 'empty' }, '載入中…'));
+    else mount(listBox, loading());
     try {
       // 有關鍵字時搜尋全部期間（不限當月），像其他記帳軟體的全域搜尋；沒有關鍵字才照月份列
       const allTime = !!S.filters.q.trim();

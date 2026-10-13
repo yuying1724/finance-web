@@ -1,9 +1,9 @@
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
 import { state, accountById } from '../store.js';
-import * as api from '../api.js';
 import { money, catIconStyle } from '../fmt.js';
-import { errorText } from '../ui.js';
+import { errorText, loading } from '../ui.js';
+import { cachedRead } from '../readcache.js';
 
 /**
  * 年度總覽（交易 › 圖表 › 年度）：
@@ -94,7 +94,6 @@ function itemRow(x) {
 }
 
 const YUI = { year: 0, open: '', showIncome: false };
-const YCACHE = new Map(); // `${stamp}|${year}` → data
 
 /**
  * 畫進 body。opts.header：最上面那排（6 個月／12 個月／年度切換）；opts.onPickMonth(ym)：點長條回月圖表
@@ -102,17 +101,14 @@ const YCACHE = new Map(); // `${stamp}|${year}` → data
 export function renderYear(body, opts = {}) {
   const thisYear = Number(state.data.today.slice(0, 4));
   if (!YUI.year) YUI.year = thisYear;
-  const stamp = String(state.loadedAt || '');
-  const key = `${stamp}|${YUI.year}`;
-  const data = YCACHE.get(key);
-  if (!data) {
-    mount(body, opts.header || null, h('div', { class: 'muted', style: { padding: '12px 0' } }, '載入中…'));
-    const want = YUI.year;
-    api.call('getYearSummary', { year: want })
-      .then((r) => { YCACHE.set(`${stamp}|${want}`, r); if (body.isConnected && YUI.year === want) renderYear(body, opts); })
-      .catch((e) => { if (body.isConnected) mount(body, opts.header || null, h('div', { class: 'notice bad' }, errorText(e))); });
-    return;
-  }
+  const want = YUI.year;
+  // 本機快取先畫；資料版本變了或超過 5 分鐘才背景重抓，抓回來再畫一次
+  const r = cachedRead('getYearSummary', { year: want }, {
+    onData: (d, meta) => { if (meta.fromCache) return; if (body.isConnected && YUI.year === want) renderYear(body, opts); },
+    onError: (e, meta) => { if (!meta.hadData && body.isConnected) mount(body, opts.header || null, h('div', { class: 'notice bad' }, errorText(e))); },
+  });
+  const data = r.data;
+  if (!data) { mount(body, opts.header || null, loading()); return; }
   const startYear = Number((data.startYm || data.today).slice(0, 4));
   const cut = data.cutoffMonth;
   const isThis = data.year === thisYear;

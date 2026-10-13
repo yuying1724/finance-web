@@ -2,7 +2,8 @@ import { h, mount, clear } from '../dom.js';
 import { state, prefs } from '../store.js';
 import * as api from '../api.js';
 import { money as rawMoney, amountClass, MASK } from '../fmt.js';
-import { errorText, toast } from '../ui.js';
+import { errorText, toast, loading } from '../ui.js';
+import { cachedRead, invalidateRead } from '../readcache.js';
 
 /**
  * 投資頁「報表」：某段期間的投資損益（未實現變化＋已實現＋股息）、報酬率、期初／淨投入／期末，
@@ -19,7 +20,7 @@ const PARTS = [['unrealizedChange', '未實現損益變化', 'var(--sp-c1)'], ['
 const MODES = [['month', '本月'], ['year', '今年'], ['12m', '近 12 個月'], ['all', '全部'], ['custom', '自訂']];
 const LS = 'fin.ir.mode';
 
-const S = { mode: null, from: '', to: '', seq: 0, cache: {} };
+const S = { mode: null, from: '', to: '', seq: 0 };
 function loadMode() {
   if (S.mode) return;
   try { const v = JSON.parse(localStorage.getItem(LS) || 'null'); if (v && MODES.some(([k]) => k === v.mode)) Object.assign(S, { mode: v.mode, from: v.from || '', to: v.to || '' }); } catch (e) { /* 忽略 */ }
@@ -88,7 +89,7 @@ export function renderInvestReportBody(root) {
         try {
           const res = await api.call('backfillPriceHistory', {}, { timeoutMs: 300000 });
           toast(`已補抓 ${res.added} 筆歷史收盤價` + (res.failed.length ? `；查不到：${res.failed.join('、')}` : ''));
-          S.cache = {}; load();
+          invalidateRead('investReport'); load();
         } catch (e) { toast(errorText(e), { kind: 'bad' }); btn.disabled = false; btn.textContent = '補抓歷史收盤價'; }
       } }, '補抓歷史收盤價');
       notes.push(h('div', null, `${r.missing.join('、')} 缺少過去的收盤價，暫時用目前價格估算（數字可能不準）。`, h('div', { style: { marginTop: '6px' } }, btn)));
@@ -204,21 +205,18 @@ export function renderInvestReportBody(root) {
     drawPeriod(r); drawMonths(r); drawSymbols(r);
   }
 
-  async function load() {
+  function load() {
     const my = ++S.seq;
     const rg = rangeOf(S.mode);
-    const key = rg.from + '|' + rg.to + '|' + (state.loadedAt || '');
-    if (S.cache[key]) draw(S.cache[key]);
-    else if (!periodBox.firstChild || periodBox.querySelector('.empty')) mount(periodBox, h('div', { class: 'empty' }, '載入中…'));
-    try {
-      const r = await api.call('investReport', rg, { timeoutMs: 90000 });
-      if (my !== S.seq) return;
-      S.cache = { [key]: r };
-      draw(r);
-    } catch (e) {
-      if (my !== S.seq) return;
-      mount(periodBox, h('div', { class: 'notice bad' }, errorText(e)));
-    }
+    // 先畫上次的結果（本機快取），背景再更新；資料沒變就不打後端
+    const r = cachedRead('investReport', rg, {
+      callOpts: { timeoutMs: 90000 },
+      onData: (data, meta) => { if (my !== S.seq) return; draw(data); setStale(meta.stale); },
+      onError: (e, meta) => { if (my !== S.seq) return; if (meta.hadData) toast(errorText(e), { kind: 'bad' }); else mount(periodBox, h('div', { class: 'notice bad' }, errorText(e))); },
+    });
+    // 沒有快取：第一次開頁顯示載入中；切換期間時先留著上一個期間的畫面（變淡），抓回來再換
+    if (r.data === null) { if (periodBox.querySelector('[data-testid=ir-total]')) setStale(true); else mount(periodBox, loading()); }
   }
+  function setStale(on) { periodBox.classList.toggle('is-stale', !!on); }
   load();
 }
