@@ -1,8 +1,8 @@
 import { h, mount, clear } from '../dom.js';
 import { icon } from '../icons.js';
-import { state, accountById } from '../store.js';
+import { state, accountById, instrumentBySymbol } from '../store.js';
 import * as api from '../api.js';
-import { money, dateLabel, monthLabel, categoryInfo, amountClass, catIconStyle } from '../fmt.js';
+import { money, dateLabel, monthLabel, categoryInfo, amountClass, catIconStyle, shares } from '../fmt.js';
 import { openSheet, confirmDialog, toast, errorText } from '../ui.js';
 import { openTxForm } from './txform.js';
 import { write, applyTxLocal } from '../data.js';
@@ -40,10 +40,29 @@ export function describe(t) {
       return { icon: 'sliders', title: '餘額調整', sub: an(up ? dst : src, up ? t.dstAccount : t.srcAccount) + note,
         text: (up ? '+' : '-') + money(up ? t.dstQty : t.srcQty, up ? t.dstSymbol : t.srcSymbol), kind: 'mute' };
     }
+    // 投資：標題帶標的名稱與股數，金額是實際進出的錢（股數跟著「隱藏金額」遮住）
+    case '買入':
+      return { icon: 'arrowDownCircle', title: `買入 ${symName(t.dstSymbol)}`, sub: `${shares(t.dstQty, { symbol: t.dstSymbol, mask: true })} · ${an(src, t.srcAccount)} → ${an(dst, t.dstAccount)}` + note,
+        text: '-' + money(t.srcQty, t.srcSymbol), kind: '' };
+    case '賣出':
+      return { icon: 'arrowUpCircle', title: `賣出 ${symName(t.srcSymbol)}`, sub: `${shares(t.srcQty, { symbol: t.srcSymbol, mask: true })} · ${an(src, t.srcAccount)} → ${an(dst, t.dstAccount)}` + note,
+        text: '+' + money(t.dstQty, t.dstSymbol), kind: 'mute' };
+    case '股息': {
+      const stock = t.dstSymbol && instrumentBySymbol(t.dstSymbol) && instrumentBySymbol(t.dstSymbol).type !== '法幣';
+      return { icon: 'coin', title: `股息 · ${symName(t.relatedSymbol || t.dstSymbol)}`, sub: an(dst, t.dstAccount) + note,
+        text: stock ? '+' + shares(t.dstQty, { symbol: t.dstSymbol, mask: true }) : '+' + money(t.dstQty, t.dstSymbol), kind: 'pos' };
+    }
+    case '股數調整': {
+      const up = !!t.dstAccount;
+      return { icon: 'sliders', title: `股數調整 ${symName(up ? t.dstSymbol : t.srcSymbol)}`, sub: an(up ? dst : src, up ? t.dstAccount : t.srcAccount) + note,
+        text: (up ? '+' : '-') + shares(up ? t.dstQty : t.srcQty, { symbol: up ? t.dstSymbol : t.srcSymbol, mask: true }), kind: 'mute' };
+    }
     default:
       return { icon: 'dots', title: t.type, sub: note.slice(3), text: '', kind: 'mute' };
   }
 }
+
+function symName(sym) { const i = sym && instrumentBySymbol(sym); return i && i.name && i.name !== sym ? `${i.name}（${sym}）` : sym || ''; }
 
 function rateText(t) {
   // 匯率 = 以台幣（或較大單位）表示的價格；只在其中一邊是 TWD 時顯示「1 外幣 = x TWD」
@@ -235,13 +254,15 @@ export function renderTransactions(root, route) {
   }
 
   const summaryBox = h('div', { class: 'stats', style: { marginTop: '8px' } });
+  const investBox = h('a', { class: 'iv-line', href: '#/invest/report', 'data-testid': 'tx-invest', style: { display: 'none' } });
   const listBox = h('div', null);
   const monthLabelEl = h('div', { class: 'm' }, monthLabel(S.ym));
 
   const shiftMonth = (n) => { S.ym = FinDates.addMonths(S.ym, n); monthLabelEl.textContent = monthLabel(S.ym); load(); };
 
   const typeSel = h('select', { 'aria-label': '類型', onchange: (e) => { S.filters.type = e.target.value; load(); } },
-    h('option', { value: '' }, '全部類型'), d.enabledTxTypes.map((t) => h('option', { value: t, selected: S.filters.type === t }, t)));
+    h('option', { value: '' }, '全部類型'), h('option', { value: '投資', selected: S.filters.type === '投資' }, '投資'),
+    d.enabledTxTypes.map((t) => h('option', { value: t, selected: S.filters.type === t }, t)));
   const acctSel = h('select', { 'aria-label': '帳戶', onchange: (e) => { S.filters.accountId = e.target.value; load(); } },
     h('option', { value: '' }, '全部帳戶'), d.accounts.map((a) => h('option', { value: a.id, selected: S.filters.accountId === a.id }, a.name + (a.active ? '' : '（停用）'))));
   const catOptions = [];
@@ -261,13 +282,23 @@ export function renderTransactions(root, route) {
       h('div', { class: 'month-nav' },
         h('button', { class: 'icon-btn', 'aria-label': '上個月', onclick: () => shiftMonth(-1) }, icon('left')), monthLabelEl,
         h('button', { class: 'icon-btn', 'aria-label': '下個月', onclick: () => shiftMonth(1) }, icon('right'))),
-      summaryBox,
+      summaryBox, investBox,
       h('div', { class: 'filters' }, typeSel, acctSel, catSel, search, voidToggle)),
     h('div', { class: 'card', style: { marginTop: '12px' } }, listBox));
 
   function render(list, sum) {
       const m = (k, v, kind) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (kind === 'pos' ? 'amt-pos' : '') }, v));
       mount(summaryBox, m('收入', money(sum.income, sum.base), 'pos'), m('支出', money(sum.expense, sum.base)), m('結餘', money(sum.net, sum.base, { sign: true }), sum.net > 0 ? 'pos' : ''));
+      // 投資另一行：不算進上面的收入／結餘；點了到投資報表
+      investBox.style.display = sum.invest ? '' : 'none';
+      if (sum.invest) {
+        const iv = sum.invest, w = (n) => money(n, sum.base, { sign: n !== 0, whole: true });
+        const c = (n) => (n > 0 ? 'amt-pos' : n < 0 ? 'amt-neg' : '');
+        mount(investBox,
+          h('div', { class: 'iv-row' }, h('span', { class: 'iv-k' }, '投資損益'), h('b', { class: 'iv-total ' + c(iv.total), 'data-testid': 'tx-invest-total' }, w(iv.total))),
+          h('div', { class: 'iv-sub muted small' }, `未實現 ${w(iv.unrealizedChange)}　已實現 ${w(iv.realized)}　股息 ${money(iv.dividends, sum.base, { whole: true })}`),
+          h('div', { class: 'iv-sub muted small', 'data-testid': 'tx-invest-flow' }, `買入 ${money(iv.buys, sum.base, { whole: true })}　賣出入帳 ${money(iv.sells, sum.base, { whole: true })}`));
+      }
       clear(listBox);
       if (S.filters.q.trim()) listBox.appendChild(h('div', { class: 'muted small', style: { padding: '8px 2px 2px' }, 'data-testid': 'search-scope' }, `搜尋「${S.filters.q.trim()}」：全部期間共 ${list.total} 筆`));
       if (!list.items.length) {

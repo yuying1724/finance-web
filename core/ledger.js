@@ -69,7 +69,8 @@ var FinLedger = (function () {
       if (!f.status && !f.includeVoid && t.status !== '有效' && t.status !== '待確認') return false;
       if (f.from && t.date < f.from) return false;
       if (f.to && t.date > f.to) return false;
-      if (f.type && t.type !== f.type) return false;
+      if (f.type === '投資') { if (['買入', '賣出', '股息', '股數調整'].indexOf(t.type) < 0) return false; } // 「投資」＝買入／賣出／股息／股數調整
+      else if (f.type && t.type !== f.type) return false;
       if (f.tag && (',' + (t.tags || '') + ',').indexOf(',' + f.tag + ',') < 0) return false;
       if (f.merchant && t.merchant !== f.merchant) return false;
       if (f.accountId && t.srcAccount !== f.accountId && t.dstAccount !== f.accountId) return false;

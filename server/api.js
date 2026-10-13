@@ -893,7 +893,58 @@ var FinApi = (function () {
       var ym = str(p.ym);
       if (!/^\d{4}-\d{2}$/.test(ym)) throw FinFail('BAD_REQUEST', '月份格式應為 yyyy-MM');
       var c = loadContext(env.now);
-      return FinReport.monthSummary(c.txRows, { instruments: c.instruments, prices: c.prices, base: c.base, categories: c.categories }, ym);
+      var out = FinReport.monthSummary(c.txRows, { instruments: c.instruments, prices: c.prices, base: c.base, categories: c.categories }, ym);
+      // 投資（交易頁月份統計第二行）：這個月的買入、賣出、股息、已實現、未實現變化；未來的月份不算
+      var r = FinDates.monthRange(ym);
+      if (r.from <= c.today) {
+        var rep = investReportOf(c, r.from, r.to, true);
+        if (!rep.empty && rep.summary.to >= r.from) out.invest = rep.summary;
+      }
+      return out;
+    },
+  };
+
+  /** 全部價格歷史（投資報表一定要讀；同一次請求只讀一次） */
+  function allPriceHistory(c) {
+    if (c.__phAll) return c.__phAll;
+    var map = {};
+    FinRepo.goodRows('priceHistory').forEach(function (r) { if (r.date && r.symbol && r.close > 0) map[r.date + '|' + r.symbol] = r.close; });
+    c.__phAll = map; c.__priceHistory = map;
+    return map;
+  }
+  function investReportOf(c, from, to, noMonths) {
+    return FinInvestReport.build(c.txRows, c.instruments, { base: c.base, today: c.today, prices: c.prices, priceHistory: allPriceHistory(c), from: from, to: to, noMonths: !!noMonths });
+  }
+
+  /** 投資報表（投資頁「報表」分頁）：p.from / p.to（yyyy-MM-dd，選填；沒給就是從第一筆投資紀錄到今天） */
+  H.investReport = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var from = FinDates.isValid(str(p.from)) ? str(p.from) : '', to = FinDates.isValid(str(p.to)) ? str(p.to) : '';
+      return investReportOf(c, from, to, false);
+    },
+  };
+
+  /** 補抓歷史收盤價（報表缺歷史價格時按）：從第一筆投資紀錄前 10 天到昨天，持有過的標的與它們的計價幣別 */
+  H.backfillPriceHistory = {
+    fn: function (p, env) {
+      var last = Number(cacheGet('backfillPrices:last') || 0);
+      if (last && env.now - last < 60000) throw FinFail('BUSY', '剛剛才補抓過，請 1 分鐘後再試');
+      cachePut('backfillPrices:last', String(env.now), 300);
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var syms = {}, first = '';
+        c.txRows.forEach(function (t) {
+          if (t.status !== '有效' || FinInvestReport.INVEST_TYPES.indexOf(t.type) < 0) return;
+          if (!first || t.date < first) first = t.date;
+          [t.dstSymbol, t.srcSymbol, t.relatedSymbol].forEach(function (s) { if (s && s !== c.base && c.instruments[s]) syms[s] = true; });
+        });
+        Object.keys(syms).forEach(function (s) { var q = c.instruments[s].quote; if (q && q !== c.base && c.instruments[q]) syms[q] = true; });
+        if (!first) return { added: 0, symbols: [], failed: [] };
+        var res = FinJobs.backfillHistory({ from: FinDates.addDays(first, -10), to: FinDates.addDays(c.today, -1), symbols: Object.keys(syms).sort(), instruments: c.instruments, base: c.base });
+        FinRepo.audit('補抓歷史價格', 'priceHistory', '', '新增 ' + res.added + ' 筆' + (res.failed.length ? '；查不到：' + res.failed.join('、') : ''), env.device);
+        return res;
+      });
     },
   };
 

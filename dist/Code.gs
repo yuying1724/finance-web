@@ -147,7 +147,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.53',
+    APP_VERSION: '0.9.54',
   };
   return api;
 })();
@@ -894,7 +894,8 @@ var FinLedger = (function () {
       if (!f.status && !f.includeVoid && t.status !== '有效' && t.status !== '待確認') return false;
       if (f.from && t.date < f.from) return false;
       if (f.to && t.date > f.to) return false;
-      if (f.type && t.type !== f.type) return false;
+      if (f.type === '投資') { if (['買入', '賣出', '股息', '股數調整'].indexOf(t.type) < 0) return false; } // 「投資」＝買入／賣出／股息／股數調整
+      else if (f.type && t.type !== f.type) return false;
       if (f.tag && (',' + (t.tags || '') + ',').indexOf(',' + f.tag + ',') < 0) return false;
       if (f.merchant && t.merchant !== f.merchant) return false;
       if (f.accountId && t.srcAccount !== f.accountId && t.dstAccount !== f.accountId) return false;
@@ -1719,6 +1720,189 @@ var FinReport = (function () {
   }
 
   return { monthSummary: monthSummary };
+})();
+
+// ==================== core/investreport.js ====================
+/**
+ * 投資報表（投資頁「報表」分頁、首頁投資收益、交易頁月份統計共用）。
+ *
+ * 某段期間的投資損益 = 未實現損益的變化 + 已實現損益 + 股息
+ *   ＝ 期末市值 − 期初市值 − 淨投入（買入 − 賣出入帳）＋ 股息（兩種算法結果相同）。
+ * 期初＝期間開始「前一天收盤」的持倉市值；期末＝期間最後一天收盤（今天用目前價格）。
+ * 歷史價格從「價格歷史」取「該日或之前最近一筆收盤價」；找不到就用目前價格並標記為估算。
+ *
+ * 投資紀錄的第一天（通常是舊部位一次補登的那天）視為「期初」：那天記的買入不算投入，
+ * 期間最早只能從那天收盤開始算（之前的歷史還原不了）。
+ *
+ * 報酬率用「修正 Dietz 法」：損益 ÷（期初市值 + 期間每筆投入 × 留在期間內的天數比例），
+ * 定期定額這種期間中一直投入的情況才不會被低估或高估。
+ */
+var FinInvestReport = (function () {
+
+  var INVEST_TYPES = ['買入', '賣出', '股息', '股數調整'];
+
+  function dayNum(str) { var p = FinDates.parse(str); return Date.UTC(p.y, p.m - 1, p.d) / 86400000; }
+
+  /** 價格歷史 {'日期|代號': 收盤價} → 每個代號依日期排序，查「該日或之前最近一筆」 */
+  function historyIndex(priceHistory) {
+    var by = {};
+    Object.keys(priceHistory || {}).forEach(function (k) {
+      var i = k.indexOf('|'), d = k.slice(0, i), sym = k.slice(i + 1), v = Number(priceHistory[k]);
+      if (!(v > 0) || !FinDates.isValid(d)) return;
+      (by[sym] || (by[sym] = [])).push([d, v]);
+    });
+    Object.keys(by).forEach(function (s) { by[s].sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; }); });
+    return function closeOn(sym, date) {
+      var list = by[sym];
+      if (!list) return null;
+      var lo = 0, hi = list.length - 1, ans = null;
+      while (lo <= hi) { var mid = (lo + hi) >> 1; if (list[mid][0] <= date) { ans = list[mid][1]; lo = mid + 1; } else hi = mid - 1; }
+      return ans;
+    };
+  }
+
+  /**
+   * txs：全部交易列；instruments：{代號: 標的}；
+   * ctx：{ base, today, prices（目前價格 {代號: 價格}）, priceHistory（{'日期|代號': 收盤}）, from, to, names（選填 {代號: 名稱}） }
+   */
+  function build(txs, instruments, ctx) {
+    var base = ctx.base || 'TWD';
+    var dec = instruments[base] ? instruments[base].decimals : 0;
+    var today = ctx.today;
+    var prices = ctx.prices || {};
+    var ph = ctx.priceHistory || {};
+    var closeOn = historyIndex(ph);
+    var valid = txs.filter(function (t) { return t.status === '有效' && INVEST_TYPES.indexOf(t.type) >= 0 && FinDates.isValid(t.date) && t.date <= today; });
+    if (!valid.length) return { base: base, empty: true };
+    var dataStart = valid.reduce(function (m, t) { return t.date < m ? t.date : m; }, valid[0].date);
+
+    var missing = {}, estimated = false;
+    var holdCache = {};
+    function holdingsAt(date) {
+      if (!holdCache[date]) holdCache[date] = FinHoldings.computeHoldings(txs, instruments, { base: base, asOf: date, prices: prices, priceHistory: ph });
+      return holdCache[date];
+    }
+    /** 某天收盤的價格表（今天用目前價格）；沒有歷史價時退回目前價格並記為估算 */
+    var priceCache = {};
+    function priceOf(sym, date) {
+      if (sym === base) return 1;
+      if (date >= today) return Number(prices[sym]) > 0 ? Number(prices[sym]) : null;
+      var k = sym + '|' + date;
+      if (k in priceCache) return priceCache[k];
+      var v = closeOn(sym, date);
+      if (v === null && Number(prices[sym]) > 0) { v = Number(prices[sym]); estimated = true; missing[sym] = true; }
+      priceCache[k] = v;
+      return v;
+    }
+    function unitBase(sym, date, depth) {
+      if (sym === base) return 1;
+      depth = depth || 0;
+      if (depth > 4) return null;
+      var inst = instruments[sym]; if (!inst) return null;
+      var p = priceOf(sym, date); if (!(p > 0)) return null;
+      var q = inst.quote || base; if (q === sym) return null;
+      var u = unitBase(q, date, depth + 1);
+      return u === null ? null : p * u;
+    }
+    /** 某天收盤：依標的彙總 {代號: {qty, mv, cost}}；查不到價格的用成本當市值（不算損益） */
+    var valCache = {};
+    function valueAt(date) {
+      if (valCache[date]) return valCache[date];
+      var out = {};
+      holdingsAt(date).positions.forEach(function (p) {
+        var o = out[p.symbol] || (out[p.symbol] = { qty: 0, mv: 0, cost: 0 });
+        var u = unitBase(p.symbol, date, 0);
+        if (u === null) { missing[p.symbol] = true; u = p.qty ? p.costBase / p.qty : 0; }
+        o.qty += p.qty; o.mv += p.qty * u; o.cost += p.costBase;
+      });
+      valCache[date] = out;
+      return out;
+    }
+    function cashBase(sym, qty, date) {
+      if (!qty) return 0;
+      var u = unitBase(sym, date, 0);
+      if (u === null) { missing[sym] = true; return 0; }
+      return qty * u;
+    }
+
+    /** 一段期間 [a, b]（含頭尾）；起點是 a 前一天收盤，若 a 是第一天就從那天收盤開始 */
+    function period(a, b, perSymbol) {
+      var v0 = a <= dataStart ? dataStart : FinDates.addDays(a, -1);
+      var days = Math.max(0, dayNum(b) - dayNum(v0));
+      var s0 = valueAt(v0), s1 = valueAt(b);
+      var syms = {};
+      function S(sym) { return syms[sym] || (syms[sym] = { symbol: sym, startValue: 0, endValue: 0, startCost: 0, endCost: 0, buys: 0, sells: 0, realized: 0, dividends: 0, weighted: 0, endQty: 0 }); }
+      Object.keys(s0).forEach(function (k) { var x = S(k); x.startValue = s0[k].mv; x.startCost = s0[k].cost; });
+      Object.keys(s1).forEach(function (k) { var x = S(k); x.endValue = s1[k].mv; x.endCost = s1[k].cost; x.endQty = s1[k].qty; });
+      var w = function (d) { return days > 0 ? (dayNum(b) - dayNum(d)) / days : 0; };
+      valid.forEach(function (t) {
+        if (t.date <= v0 || t.date > b) return;
+        if (t.type === '買入') { var x = S(t.dstSymbol), amt = cashBase(t.srcSymbol, t.srcQty, t.date); x.buys += amt; x.weighted += amt * w(t.date); }
+        else if (t.type === '賣出') { var y = S(t.srcSymbol), got = cashBase(t.dstSymbol, t.dstQty, t.date); y.sells += got; y.weighted -= got * w(t.date); }
+      });
+      var hb = holdingsAt(b);
+      hb.realized.forEach(function (r) { if (r.date > v0 && r.date <= b && r.realizedBase !== null) S(r.symbol).realized += r.realizedBase; });
+      hb.dividends.forEach(function (d) {
+        if (d.date <= v0 || d.date > b) return;
+        S(d.relatedSymbol || d.symbol).dividends += cashBase(d.symbol, d.net, d.date);
+      });
+      var tot = { startValue: 0, endValue: 0, buys: 0, sells: 0, realized: 0, dividends: 0, unrealizedChange: 0, weighted: 0 };
+      var list = Object.keys(syms).map(function (k) {
+        var x = syms[k];
+        x.unrealizedChange = (x.endValue - x.endCost) - (x.startValue - x.startCost);
+        x.total = x.unrealizedChange + x.realized + x.dividends;
+        var denom = x.startValue + x.weighted;
+        x.returnPct = denom > 0 ? x.total / denom : null;
+        ['startValue', 'endValue', 'buys', 'sells', 'realized', 'dividends', 'unrealizedChange', 'weighted'].forEach(function (f) { tot[f] += x[f]; });
+        return x;
+      });
+      var R = function (v) { return FinMoney.round(v, dec); };
+      var total = tot.unrealizedChange + tot.realized + tot.dividends;
+      var denomAll = tot.startValue + tot.weighted;
+      var summary = {
+        from: a, to: b, startDate: v0,
+        startValue: R(tot.startValue), endValue: R(tot.endValue), buys: R(tot.buys), sells: R(tot.sells), netInvest: R(tot.buys - tot.sells),
+        realized: R(tot.realized), dividends: R(tot.dividends), unrealizedChange: R(tot.unrealizedChange), total: R(total),
+        returnPct: denomAll > 0 ? Math.round(total / denomAll * 10000) / 10000 : null,
+      };
+      if (!perSymbol) return summary;
+      summary.bySymbol = list.filter(function (x) {
+        return Math.abs(x.startValue) > 0.5 || Math.abs(x.endValue) > 0.5 || x.buys || x.sells || x.dividends || x.realized;
+      }).map(function (x) {
+        return {
+          symbol: x.symbol, name: (instruments[x.symbol] || {}).name || x.symbol, held: x.endQty > 0,
+          startValue: R(x.startValue), endValue: R(x.endValue), buys: R(x.buys), sells: R(x.sells), netInvest: R(x.buys - x.sells),
+          realized: R(x.realized), dividends: R(x.dividends), unrealizedChange: R(x.unrealizedChange), total: R(x.total),
+          returnPct: x.returnPct === null ? null : Math.round(x.returnPct * 10000) / 10000,
+        };
+      }).sort(function (p, q) { return q.total - p.total; });
+      return summary;
+    }
+
+    var from = FinDates.isValid(ctx.from) ? ctx.from : dataStart;
+    var to = FinDates.isValid(ctx.to) && ctx.to < today ? ctx.to : today;
+    if (from < dataStart) from = dataStart;
+    if (from > to) from = to;
+    var main = period(from, to, true);
+    var bySymbol = main.bySymbol; delete main.bySymbol;
+    if (ctx.noMonths) return { base: base, today: today, dataStart: dataStart, summary: main, bySymbol: bySymbol, estimated: estimated, missing: Object.keys(missing).sort() };
+
+    // 每月一覽：從第一個月到今天（跟上面選的期間無關，點長條可以切到那個月）
+    var months = [];
+    for (var ym = FinDates.ymOf(dataStart); ym <= FinDates.ymOf(today); ym = FinDates.addMonths(ym, 1)) {
+      var r = FinDates.monthRange(ym);
+      var a = r.from < dataStart ? dataStart : r.from, b = r.to > today ? today : r.to;
+      var m = period(a, b, false);
+      m.ym = ym;
+      months.push(m);
+    }
+    return {
+      base: base, today: today, dataStart: dataStart, summary: main, bySymbol: bySymbol, months: months,
+      estimated: estimated, missing: Object.keys(missing).sort(),
+    };
+  }
+
+  return { build: build, INVEST_TYPES: INVEST_TYPES };
 })();
 
 // ==================== core/seed.js ====================
@@ -3391,7 +3575,58 @@ var FinApi = (function () {
       var ym = str(p.ym);
       if (!/^\d{4}-\d{2}$/.test(ym)) throw FinFail('BAD_REQUEST', '月份格式應為 yyyy-MM');
       var c = loadContext(env.now);
-      return FinReport.monthSummary(c.txRows, { instruments: c.instruments, prices: c.prices, base: c.base, categories: c.categories }, ym);
+      var out = FinReport.monthSummary(c.txRows, { instruments: c.instruments, prices: c.prices, base: c.base, categories: c.categories }, ym);
+      // 投資（交易頁月份統計第二行）：這個月的買入、賣出、股息、已實現、未實現變化；未來的月份不算
+      var r = FinDates.monthRange(ym);
+      if (r.from <= c.today) {
+        var rep = investReportOf(c, r.from, r.to, true);
+        if (!rep.empty && rep.summary.to >= r.from) out.invest = rep.summary;
+      }
+      return out;
+    },
+  };
+
+  /** 全部價格歷史（投資報表一定要讀；同一次請求只讀一次） */
+  function allPriceHistory(c) {
+    if (c.__phAll) return c.__phAll;
+    var map = {};
+    FinRepo.goodRows('priceHistory').forEach(function (r) { if (r.date && r.symbol && r.close > 0) map[r.date + '|' + r.symbol] = r.close; });
+    c.__phAll = map; c.__priceHistory = map;
+    return map;
+  }
+  function investReportOf(c, from, to, noMonths) {
+    return FinInvestReport.build(c.txRows, c.instruments, { base: c.base, today: c.today, prices: c.prices, priceHistory: allPriceHistory(c), from: from, to: to, noMonths: !!noMonths });
+  }
+
+  /** 投資報表（投資頁「報表」分頁）：p.from / p.to（yyyy-MM-dd，選填；沒給就是從第一筆投資紀錄到今天） */
+  H.investReport = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var from = FinDates.isValid(str(p.from)) ? str(p.from) : '', to = FinDates.isValid(str(p.to)) ? str(p.to) : '';
+      return investReportOf(c, from, to, false);
+    },
+  };
+
+  /** 補抓歷史收盤價（報表缺歷史價格時按）：從第一筆投資紀錄前 10 天到昨天，持有過的標的與它們的計價幣別 */
+  H.backfillPriceHistory = {
+    fn: function (p, env) {
+      var last = Number(cacheGet('backfillPrices:last') || 0);
+      if (last && env.now - last < 60000) throw FinFail('BUSY', '剛剛才補抓過，請 1 分鐘後再試');
+      cachePut('backfillPrices:last', String(env.now), 300);
+      return FinRepo.withLock(function () {
+        var c = loadContext(env.now);
+        var syms = {}, first = '';
+        c.txRows.forEach(function (t) {
+          if (t.status !== '有效' || FinInvestReport.INVEST_TYPES.indexOf(t.type) < 0) return;
+          if (!first || t.date < first) first = t.date;
+          [t.dstSymbol, t.srcSymbol, t.relatedSymbol].forEach(function (s) { if (s && s !== c.base && c.instruments[s]) syms[s] = true; });
+        });
+        Object.keys(syms).forEach(function (s) { var q = c.instruments[s].quote; if (q && q !== c.base && c.instruments[q]) syms[q] = true; });
+        if (!first) return { added: 0, symbols: [], failed: [] };
+        var res = FinJobs.backfillHistory({ from: FinDates.addDays(first, -10), to: FinDates.addDays(c.today, -1), symbols: Object.keys(syms).sort(), instruments: c.instruments, base: c.base });
+        FinRepo.audit('補抓歷史價格', 'priceHistory', '', '新增 ' + res.added + ' 筆' + (res.failed.length ? '；查不到：' + res.failed.join('、') : ''), env.device);
+        return res;
+      });
     },
   };
 
@@ -5770,7 +6005,7 @@ var FinJobs = (function () {
     var nowMs = FinClock.now();
     var now = FinDates.timestamp(nowMs);
     var today = FinDates.today(nowMs);
-    var changed = 0;
+    var changed = 0, closes = []; // closes：這次拿到的有效價格，最後記進「價格歷史」（投資報表用）
     var dailyMap = null, openMap = null, bitoMap = null, twseDaily = null, twseOpen = null; // 第一次需要時才抓，整個執行每個來源只抓一次
     var instBySymbol = {};
     FinRepo.readTable('instruments').rows.forEach(function (i) { if (!i._bad) instBySymbol[String(i.symbol)] = i; });
@@ -5793,12 +6028,14 @@ var FinJobs = (function () {
         var bp = bitoMap[bitoPair_(inst)];
         if (bp > 0) {
           FinRepo.setCells('prices', r._row, { lastValid: bp, updatedAt: now, status: '正常' });
+          closes.push({ symbol: String(r.symbol), close: bp });
           changed++;
           return;
         }
       }
       if (r.price > 0) {
         FinRepo.setCells('prices', r._row, { lastValid: r.price, updatedAt: now, status: '正常' });
+        closes.push({ symbol: String(r.symbol), close: r.price });
         changed++;
         return;
       }
@@ -5807,6 +6044,7 @@ var FinJobs = (function () {
       var close = isTw ? twClose(String(r.symbol)) : 0;
       if (close > 0) {
         FinRepo.setCells('prices', r._row, { lastValid: close, updatedAt: now, status: '正常' });
+        closes.push({ symbol: String(r.symbol), close: close });
         changed++;
       } else if (r.lastValid > 0) {
         FinRepo.setCells('prices', r._row, { status: '沿用舊值' });
@@ -5814,9 +6052,149 @@ var FinJobs = (function () {
         FinRepo.setCells('prices', r._row, { status: '缺價格' });
       }
     });
+    try { recordCloses(today, closes); } catch (e) { try { Logger.log('記錄價格歷史失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
     return changed;
   }
-  return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_, fetchTwseDailyMap_: fetchTwseDailyMap_, fetchTwseCloseMap_: fetchTwseCloseMap_, fetchBitoProMap_: fetchBitoProMap_ };
+
+  // ---------- 價格歷史（投資報表算「某天收盤的市值」用） ----------
+  // 每次更新價格時記下當天的價格（同一天記過就覆蓋：早上 7 點記的是前一天收盤，傍晚 6 點會換成當天收盤）。
+  // 第一次用報表時另外補抓過去的收盤價：台股從證交所／櫃買中心的個股月成交資訊，其他（美股、匯率）用 GOOGLEFINANCE 歷史資料。
+  var TWSE_MONTH_URL = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=';
+  var TPEX_MONTH_URL = 'https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?response=json&code=';
+  function ymdDash_(v) { var s = rocToYmd_(v); return s.length === 8 ? s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8) : ''; }
+  function num_(v) { var n = Number(String(v === null || v === undefined ? '' : v).replace(/,/g, '')); return isFinite(n) ? n : 0; }
+
+  /** 記下（或更新）某天的價格：list [{symbol, close}]；date 預設是同一天 */
+  function recordCloses(date, list) {
+    var rows = (list || []).filter(function (x) { return x && x.symbol && x.close > 0; });
+    if (!rows.length) return 0;
+    var existing = {};
+    FinRepo.goodRows('priceHistory').forEach(function (r) { existing[r.date + '|' + r.symbol] = r; });
+    var add = [], seen = {};
+    rows.forEach(function (x) {
+      var d = x.date || date, k = d + '|' + x.symbol, e = existing[k];
+      if (seen[k]) return;
+      seen[k] = true;
+      if (e) { if (Number(e.close) !== Number(x.close)) FinRepo.setCells('priceHistory', e._row, { close: Number(x.close) }); }
+      else add.push({ date: d, symbol: x.symbol, close: Number(x.close) });
+    });
+    if (add.length) FinRepo.append('priceHistory', add);
+    return add.length;
+  }
+
+  /** 台股某檔某個月每天的收盤價 {日期: 收盤}：先查證交所（上市），沒有再查櫃買中心（上櫃） */
+  function fetchTwMonth_(code, ym) {
+    var out = {};
+    try {
+      var res = UrlFetchApp.fetch(TWSE_MONTH_URL + ym.replace('-', '') + '01&stockNo=' + encodeURIComponent(code), { muteHttpExceptions: true });
+      if (res.getResponseCode() === 200) {
+        var j = JSON.parse(res.getContentText());
+        (j && j.stat === 'OK' && j.data || []).forEach(function (r) { var d = ymdDash_(r[0]), v = num_(r[6]); if (d && v > 0) out[d] = v; });
+      }
+    } catch (e) { /* 換櫃買中心 */ }
+    if (Object.keys(out).length) return out;
+    try {
+      var res2 = UrlFetchApp.fetch(TPEX_MONTH_URL + encodeURIComponent(code) + '&date=' + ym.replace('-', '/') + '/01', { muteHttpExceptions: true });
+      if (res2.getResponseCode() === 200) {
+        var j2 = JSON.parse(res2.getContentText());
+        var t = j2 && j2.tables && j2.tables[0];
+        (t && t.data || []).forEach(function (r) { var d = ymdDash_(r[0]), v = num_(r[6]); if (d && v > 0) out[d] = v; });
+      }
+    } catch (e) { /* 查不到就算了 */ }
+    return out;
+  }
+
+  /** GOOGLEFINANCE 歷史收盤（美股、匯率等）：在暫存分頁放公式、等算完讀回來，最後刪掉分頁。回傳 {代號: {日期: 收盤}} */
+  function googleHistory_(insts, from, to) {
+    var out = {};
+    if (!insts.length) return out;
+    var ss = FinRepo.spreadsheet(), name = '_價格歷史暫存', sh = null;
+    try {
+      sh = ss.getSheetByName(name) || ss.insertSheet(name);
+      sh.clear();
+      var f = FinDates.parse(from), t = FinDates.parse(to);
+      insts.forEach(function (inst, i) {
+        var attr = /^CURRENCY:/i.test(inst.quoteCode) ? 'price' : 'close';
+        sh.getRange(1, i * 2 + 1).setFormula('=GOOGLEFINANCE("' + inst.quoteCode + '","' + attr + '",DATE(' + f.y + ',' + f.m + ',' + f.d + '),DATE(' + t.y + ',' + t.m + ',' + t.d + ')+1,"DAILY")');
+      });
+      var vals = [];
+      for (var tries = 0; tries < 12; tries++) {
+        SpreadsheetApp.flush();
+        vals = sh.getDataRange().getValues();
+        var loading = insts.some(function (inst, i) { return /loading/i.test(String((vals[0] || [])[i * 2])); });
+        if (!loading) break;
+        Utilities.sleep(1500);
+      }
+      insts.forEach(function (inst, i) {
+        var m = {};
+        for (var r = 1; r < vals.length; r++) {
+          var dv = vals[r][i * 2], cv = Number(vals[r][i * 2 + 1]);
+          if (Object.prototype.toString.call(dv) !== '[object Date]' || !(cv > 0)) continue;
+          m[FinDates.today(dv.getTime())] = cv;
+        }
+        out[inst.symbol] = m;
+      });
+    } catch (e) {
+      try { Logger.log('GOOGLEFINANCE 歷史價格失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ }
+    } finally {
+      try { if (sh) ss.deleteSheet(sh); } catch (e) { /* ignore */ }
+    }
+    return out;
+  }
+
+  /**
+   * 補抓歷史收盤價到「價格歷史」：opts {from, to, symbols, instruments, base}。已經有的日期不重抓、不覆蓋。
+   * 回傳 {added, symbols: [{symbol, days}], failed: [代號]}
+   */
+  function backfillHistory(opts) {
+    var from = opts.from, to = opts.to, base = opts.base || 'TWD', insts = opts.instruments || {};
+    var have = {};
+    FinRepo.goodRows('priceHistory').forEach(function (r) { have[r.date + '|' + r.symbol] = true; });
+    var months = [];
+    for (var ym = FinDates.ymOf(from); ym <= FinDates.ymOf(to); ym = FinDates.addMonths(ym, 1)) months.push(ym);
+    var rows = [], report = [], failed = [], gf = [];
+    function take(sym, map) {
+      var n = 0;
+      Object.keys(map).forEach(function (d) {
+        if (d < from || d > to || have[d + '|' + sym]) return;
+        have[d + '|' + sym] = true;
+        rows.push({ date: d, symbol: sym, close: map[d] }); n++;
+      });
+      return n;
+    }
+    (opts.symbols || []).forEach(function (sym) {
+      var inst = insts[sym];
+      if (!inst || sym === base) return;
+      var isTw = (inst.quote || base) === 'TWD' && (inst.type === '台股' || inst.type === 'ETF');
+      if (isTw) {
+        var got = 0, any = false;
+        months.forEach(function (ym) {
+          // 這個月的平日都有了就不用再抓
+          var r = FinDates.monthRange(ym), a = r.from < from ? from : r.from, b = r.to > to ? to : r.to, need = false;
+          for (var d = a; d <= b; d = FinDates.addDays(d, 1)) { var wd = FinDates.weekday(d); if (wd !== 0 && wd !== 6 && !have[d + '|' + sym]) { need = true; break; } }
+          if (!need) { any = true; return; }
+          var m = fetchTwMonth_(sym, ym);
+          if (Object.keys(m).length) any = true;
+          got += take(sym, m);
+        });
+        if (!any) failed.push(sym);
+        report.push({ symbol: sym, days: got });
+      } else if (inst.quoteCode && inst.priceSource === 'GOOGLEFINANCE') {
+        gf.push(inst);
+      }
+    });
+    var g = googleHistory_(gf, from, to);
+    gf.forEach(function (inst) {
+      var m = g[inst.symbol] || {};
+      if (!Object.keys(m).length) failed.push(inst.symbol);
+      report.push({ symbol: inst.symbol, days: take(inst.symbol, m) });
+    });
+    rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.symbol < b.symbol ? -1 : 1); });
+    if (rows.length) FinRepo.append('priceHistory', rows);
+    return { added: rows.length, symbols: report, failed: failed };
+  }
+
+  return { refreshPrices: refreshPrices, recordCloses: recordCloses, backfillHistory: backfillHistory, fetchTwMonth_: fetchTwMonth_, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_, fetchTwseDailyMap_: fetchTwseDailyMap_, fetchTwseCloseMap_: fetchTwseCloseMap_, fetchBitoProMap_: fetchBitoProMap_ };
 })();
 
 // ==================== server/maintenance.js ====================

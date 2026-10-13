@@ -860,6 +860,50 @@ test('首頁投資收益：本月股息＋已實現損益另列一行（不算�
   });
 });
 
+test('投資報表：投資頁「報表」看期間損益（未實現變化＋已實現＋股息）、每月長條、依標的；交易頁月份統計多一行投資、可篩選「投資」', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const d0 = be.ctx.FinDates.addDays(today, -40);
+    const bank = be.call('upsertAccount', { account: { name: '報表銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const tw = be.call('upsertAccount', { account: { name: '報表證券', type: '證券', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('upsertInstrument', { instrument: { symbol: '0050', name: '元大台灣50', type: 'ETF', quote: 'TWD', decimals: 0, priceSource: '手動', isNew: true } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '調整', date: d0, dstAccount: bank, dstSymbol: 'TWD', dstQty: 50000 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '買入', date: d0, settleDate: d0, srcAccount: bank, srcSymbol: 'TWD', srcQty: 10000, dstAccount: tw, dstSymbol: '0050', dstQty: 100, amount: 10000 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '股息', date: today, dstAccount: bank, dstSymbol: 'TWD', dstQty: 300, relatedSymbol: '0050' } }).ok);
+    be.ctx.FinJobs.recordCloses('', [{ date: d0, symbol: '0050', close: 120 }]);
+    const sh = be.ss.sheet('價格');
+    const header = sh.dump()[0];
+    const row = sh.dump().findIndex((r) => r[header.indexOf('標的代號')] === '0050') + 1;
+    sh.poke(row, header.indexOf('上次有效價') + 1, 140);
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.evaluate(() => { location.hash = '#/invest/report'; });
+    await page.waitForSelector('[data-testid=ir-total]');
+    await page.click('[data-testid=ir-modes] [data-mode=all]');
+    await page.waitForFunction(() => document.querySelector('[data-testid=ir-total]').textContent === '+NT$2,300');
+    assert.equal(await page.locator('[data-testid=ir-unrealizedChange]').innerText(), '+NT$2,000');
+    assert.equal(await page.locator('[data-testid=ir-dividends]').innerText(), '+NT$300');
+    assert.equal(await page.locator('[data-testid=ir-start]').innerText(), 'NT$12,000');
+    assert.equal(await page.locator('[data-testid=ir-end]').innerText(), 'NT$14,000');
+    assert.equal(await page.locator('[data-testid=ir-pct]').innerText(), '報酬率 +19.17%');
+    assert.ok(await page.locator('[data-testid=ir-chart] .ir-seg').count() >= 1);
+    assert.equal(await page.locator('[data-testid=ir-sym][data-symbol="0050"] [data-testid=ir-sym-total]').innerText(), '+NT$2,300');
+    // 點這個月的長條 → 期間切到本月
+    await page.locator(`[data-testid=ir-chart] .sp-hit[data-ym="${today.slice(0, 7)}"]`).click();
+    await page.waitForSelector('[data-testid=ir-modes] [data-mode=month].on');
+    // 交易頁：月份統計第二行是投資；篩選「投資」只剩投資類交易
+    await page.evaluate(() => { location.hash = '#/tx'; });
+    await page.waitForSelector('[data-testid=tx-invest-total]');
+    assert.match(await page.locator('[data-testid=tx-invest]').innerText(), /股息 NT\$300/);
+    await page.selectOption('select[aria-label=類型]', '投資');
+    await page.waitForFunction(() => !/載入中/.test(document.body.innerText) && document.querySelectorAll('.list li').length > 0);
+    const text = await page.locator('main').innerText();
+    assert.ok(!/報表銀行.*調整|餘額調整/.test(text), '調整不在投資篩選裡');
+  });
+});
+
 test('定期「每N天」：表單選每 N 天＋從實際付款日起算，列表顯示「每 30 天（從實際付款日起算）」；到期的待確認可以延後', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page, s } = a;

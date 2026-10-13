@@ -100,7 +100,7 @@ function investLine(iv, base) {
   if (!iv) return null;
   const cls = (n) => (n > 0 ? 'amt-pos' : n < 0 ? 'amt-neg' : '');
   const part = (label, n, testid) => h('span', { class: 'iv-part' }, label + ' ', h('b', { class: cls(n), 'data-testid': testid }, money(n, base, { sign: n !== 0, whole: true })));
-  return h('a', { class: 'iv-line', href: '#/invest', 'data-testid': 'invest-income' },
+  return h('a', { class: 'iv-line', href: '#/invest/report', 'data-testid': 'invest-income' },
     h('div', { class: 'iv-row' },
       h('span', { class: 'iv-k' }, '投資收益'),
       h('b', { class: 'iv-total ' + cls(iv.month.total), 'data-testid': 'invest-month-total' }, money(iv.month.total, base, { sign: iv.month.total !== 0, whole: true }))),

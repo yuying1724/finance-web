@@ -276,7 +276,7 @@ var FinJobs = (function () {
     var nowMs = FinClock.now();
     var now = FinDates.timestamp(nowMs);
     var today = FinDates.today(nowMs);
-    var changed = 0;
+    var changed = 0, closes = []; // closes：這次拿到的有效價格，最後記進「價格歷史」（投資報表用）
     var dailyMap = null, openMap = null, bitoMap = null, twseDaily = null, twseOpen = null; // 第一次需要時才抓，整個執行每個來源只抓一次
     var instBySymbol = {};
     FinRepo.readTable('instruments').rows.forEach(function (i) { if (!i._bad) instBySymbol[String(i.symbol)] = i; });
@@ -299,12 +299,14 @@ var FinJobs = (function () {
         var bp = bitoMap[bitoPair_(inst)];
         if (bp > 0) {
           FinRepo.setCells('prices', r._row, { lastValid: bp, updatedAt: now, status: '正常' });
+          closes.push({ symbol: String(r.symbol), close: bp });
           changed++;
           return;
         }
       }
       if (r.price > 0) {
         FinRepo.setCells('prices', r._row, { lastValid: r.price, updatedAt: now, status: '正常' });
+        closes.push({ symbol: String(r.symbol), close: r.price });
         changed++;
         return;
       }
@@ -313,6 +315,7 @@ var FinJobs = (function () {
       var close = isTw ? twClose(String(r.symbol)) : 0;
       if (close > 0) {
         FinRepo.setCells('prices', r._row, { lastValid: close, updatedAt: now, status: '正常' });
+        closes.push({ symbol: String(r.symbol), close: close });
         changed++;
       } else if (r.lastValid > 0) {
         FinRepo.setCells('prices', r._row, { status: '沿用舊值' });
@@ -320,7 +323,147 @@ var FinJobs = (function () {
         FinRepo.setCells('prices', r._row, { status: '缺價格' });
       }
     });
+    try { recordCloses(today, closes); } catch (e) { try { Logger.log('記錄價格歷史失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ } }
     return changed;
   }
-  return { refreshPrices: refreshPrices, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_, fetchTwseDailyMap_: fetchTwseDailyMap_, fetchTwseCloseMap_: fetchTwseCloseMap_, fetchBitoProMap_: fetchBitoProMap_ };
+
+  // ---------- 價格歷史（投資報表算「某天收盤的市值」用） ----------
+  // 每次更新價格時記下當天的價格（同一天記過就覆蓋：早上 7 點記的是前一天收盤，傍晚 6 點會換成當天收盤）。
+  // 第一次用報表時另外補抓過去的收盤價：台股從證交所／櫃買中心的個股月成交資訊，其他（美股、匯率）用 GOOGLEFINANCE 歷史資料。
+  var TWSE_MONTH_URL = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=';
+  var TPEX_MONTH_URL = 'https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?response=json&code=';
+  function ymdDash_(v) { var s = rocToYmd_(v); return s.length === 8 ? s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8) : ''; }
+  function num_(v) { var n = Number(String(v === null || v === undefined ? '' : v).replace(/,/g, '')); return isFinite(n) ? n : 0; }
+
+  /** 記下（或更新）某天的價格：list [{symbol, close}]；date 預設是同一天 */
+  function recordCloses(date, list) {
+    var rows = (list || []).filter(function (x) { return x && x.symbol && x.close > 0; });
+    if (!rows.length) return 0;
+    var existing = {};
+    FinRepo.goodRows('priceHistory').forEach(function (r) { existing[r.date + '|' + r.symbol] = r; });
+    var add = [], seen = {};
+    rows.forEach(function (x) {
+      var d = x.date || date, k = d + '|' + x.symbol, e = existing[k];
+      if (seen[k]) return;
+      seen[k] = true;
+      if (e) { if (Number(e.close) !== Number(x.close)) FinRepo.setCells('priceHistory', e._row, { close: Number(x.close) }); }
+      else add.push({ date: d, symbol: x.symbol, close: Number(x.close) });
+    });
+    if (add.length) FinRepo.append('priceHistory', add);
+    return add.length;
+  }
+
+  /** 台股某檔某個月每天的收盤價 {日期: 收盤}：先查證交所（上市），沒有再查櫃買中心（上櫃） */
+  function fetchTwMonth_(code, ym) {
+    var out = {};
+    try {
+      var res = UrlFetchApp.fetch(TWSE_MONTH_URL + ym.replace('-', '') + '01&stockNo=' + encodeURIComponent(code), { muteHttpExceptions: true });
+      if (res.getResponseCode() === 200) {
+        var j = JSON.parse(res.getContentText());
+        (j && j.stat === 'OK' && j.data || []).forEach(function (r) { var d = ymdDash_(r[0]), v = num_(r[6]); if (d && v > 0) out[d] = v; });
+      }
+    } catch (e) { /* 換櫃買中心 */ }
+    if (Object.keys(out).length) return out;
+    try {
+      var res2 = UrlFetchApp.fetch(TPEX_MONTH_URL + encodeURIComponent(code) + '&date=' + ym.replace('-', '/') + '/01', { muteHttpExceptions: true });
+      if (res2.getResponseCode() === 200) {
+        var j2 = JSON.parse(res2.getContentText());
+        var t = j2 && j2.tables && j2.tables[0];
+        (t && t.data || []).forEach(function (r) { var d = ymdDash_(r[0]), v = num_(r[6]); if (d && v > 0) out[d] = v; });
+      }
+    } catch (e) { /* 查不到就算了 */ }
+    return out;
+  }
+
+  /** GOOGLEFINANCE 歷史收盤（美股、匯率等）：在暫存分頁放公式、等算完讀回來，最後刪掉分頁。回傳 {代號: {日期: 收盤}} */
+  function googleHistory_(insts, from, to) {
+    var out = {};
+    if (!insts.length) return out;
+    var ss = FinRepo.spreadsheet(), name = '_價格歷史暫存', sh = null;
+    try {
+      sh = ss.getSheetByName(name) || ss.insertSheet(name);
+      sh.clear();
+      var f = FinDates.parse(from), t = FinDates.parse(to);
+      insts.forEach(function (inst, i) {
+        var attr = /^CURRENCY:/i.test(inst.quoteCode) ? 'price' : 'close';
+        sh.getRange(1, i * 2 + 1).setFormula('=GOOGLEFINANCE("' + inst.quoteCode + '","' + attr + '",DATE(' + f.y + ',' + f.m + ',' + f.d + '),DATE(' + t.y + ',' + t.m + ',' + t.d + ')+1,"DAILY")');
+      });
+      var vals = [];
+      for (var tries = 0; tries < 12; tries++) {
+        SpreadsheetApp.flush();
+        vals = sh.getDataRange().getValues();
+        var loading = insts.some(function (inst, i) { return /loading/i.test(String((vals[0] || [])[i * 2])); });
+        if (!loading) break;
+        Utilities.sleep(1500);
+      }
+      insts.forEach(function (inst, i) {
+        var m = {};
+        for (var r = 1; r < vals.length; r++) {
+          var dv = vals[r][i * 2], cv = Number(vals[r][i * 2 + 1]);
+          if (Object.prototype.toString.call(dv) !== '[object Date]' || !(cv > 0)) continue;
+          m[FinDates.today(dv.getTime())] = cv;
+        }
+        out[inst.symbol] = m;
+      });
+    } catch (e) {
+      try { Logger.log('GOOGLEFINANCE 歷史價格失敗：' + (e && e.stack ? e.stack : e)); } catch (x) { /* ignore */ }
+    } finally {
+      try { if (sh) ss.deleteSheet(sh); } catch (e) { /* ignore */ }
+    }
+    return out;
+  }
+
+  /**
+   * 補抓歷史收盤價到「價格歷史」：opts {from, to, symbols, instruments, base}。已經有的日期不重抓、不覆蓋。
+   * 回傳 {added, symbols: [{symbol, days}], failed: [代號]}
+   */
+  function backfillHistory(opts) {
+    var from = opts.from, to = opts.to, base = opts.base || 'TWD', insts = opts.instruments || {};
+    var have = {};
+    FinRepo.goodRows('priceHistory').forEach(function (r) { have[r.date + '|' + r.symbol] = true; });
+    var months = [];
+    for (var ym = FinDates.ymOf(from); ym <= FinDates.ymOf(to); ym = FinDates.addMonths(ym, 1)) months.push(ym);
+    var rows = [], report = [], failed = [], gf = [];
+    function take(sym, map) {
+      var n = 0;
+      Object.keys(map).forEach(function (d) {
+        if (d < from || d > to || have[d + '|' + sym]) return;
+        have[d + '|' + sym] = true;
+        rows.push({ date: d, symbol: sym, close: map[d] }); n++;
+      });
+      return n;
+    }
+    (opts.symbols || []).forEach(function (sym) {
+      var inst = insts[sym];
+      if (!inst || sym === base) return;
+      var isTw = (inst.quote || base) === 'TWD' && (inst.type === '台股' || inst.type === 'ETF');
+      if (isTw) {
+        var got = 0, any = false;
+        months.forEach(function (ym) {
+          // 這個月的平日都有了就不用再抓
+          var r = FinDates.monthRange(ym), a = r.from < from ? from : r.from, b = r.to > to ? to : r.to, need = false;
+          for (var d = a; d <= b; d = FinDates.addDays(d, 1)) { var wd = FinDates.weekday(d); if (wd !== 0 && wd !== 6 && !have[d + '|' + sym]) { need = true; break; } }
+          if (!need) { any = true; return; }
+          var m = fetchTwMonth_(sym, ym);
+          if (Object.keys(m).length) any = true;
+          got += take(sym, m);
+        });
+        if (!any) failed.push(sym);
+        report.push({ symbol: sym, days: got });
+      } else if (inst.quoteCode && inst.priceSource === 'GOOGLEFINANCE') {
+        gf.push(inst);
+      }
+    });
+    var g = googleHistory_(gf, from, to);
+    gf.forEach(function (inst) {
+      var m = g[inst.symbol] || {};
+      if (!Object.keys(m).length) failed.push(inst.symbol);
+      report.push({ symbol: inst.symbol, days: take(inst.symbol, m) });
+    });
+    rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.symbol < b.symbol ? -1 : 1); });
+    if (rows.length) FinRepo.append('priceHistory', rows);
+    return { added: rows.length, symbols: report, failed: failed };
+  }
+
+  return { refreshPrices: refreshPrices, recordCloses: recordCloses, backfillHistory: backfillHistory, fetchTwMonth_: fetchTwMonth_, fetchTpexCloseMap_: fetchTpexCloseMap_, fetchTpexDailyMap_: fetchTpexDailyMap_, fetchTwseDailyMap_: fetchTwseDailyMap_, fetchTwseCloseMap_: fetchTwseCloseMap_, fetchBitoProMap_: fetchBitoProMap_ };
 })();

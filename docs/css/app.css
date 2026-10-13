@@ -341,3 +341,25 @@ a.item { color: inherit; text-decoration: none; }
 .iv-total { font-size: 1.15em; }
 .iv-sub { margin-top: 3px; line-height: 1.5; }
 .iv-part { white-space: nowrap; }
+/* 投資報表 */
+.ir-custom { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.ir-custom input { flex: 1 1 130px; min-width: 0; }
+.ir-hero { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 14px 0 6px; }
+.ir-total { font-size: 26px; font-weight: 700; }
+.ir-pct { font-weight: 600; }
+.ir-parts { display: grid; gap: 6px; padding: 8px 0; border-top: 1px solid var(--line); }
+.ir-part { display: flex; align-items: center; gap: 8px; }
+.ir-sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; margin-right: 4px; }
+.ir-flows { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
+.ir-flows > div:not(.ir-sub) { display: flex; justify-content: space-between; gap: 8px; }
+.ir-sub { text-align: right; margin-top: -2px; }
+.ir-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--sub); }
+.ir-legend > span { display: inline-flex; align-items: center; }
+.ir-seg { opacity: .78; }
+.ir-seg.on { opacity: 1; }
+.ir-table summary { cursor: pointer; padding: 4px 0; }
+.ir-table table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.ir-table th, .ir-table td { padding: 4px 3px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.ir-table th:first-child, .ir-table td:first-child { text-align: left; }
+.ir-table { overflow-x: auto; }
+.ir-syms .item .s { white-space: normal; }
