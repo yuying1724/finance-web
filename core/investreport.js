@@ -137,15 +137,13 @@ var FinInvestReport = (function () {
         else if (t.type === '賣出') { var y = S(t.srcSymbol), got = cashBase(t.dstSymbol, t.dstQty, t.date); y.sells += got; y.weighted -= got * w(t.date); }
         else if (t.type === '股數調整') {
           // 只改股數、沒有錢進出：增加的股數以當天市值「轉入」，減少的以當天市值「轉出」（例如賣出款項另外記在餘額調整）。
-          // 轉出那部分的成本到市值的差額算已實現。（拆股／併股不適用這個假設，目前沒有這種資料）
+          // 期間內的漲跌算在未實現（已實現只算真的有「賣出」紀錄的，跟券商 app 對得起來）。拆股／併股不適用這個假設，目前沒有這種資料。
           if (t.dstAccount && t.dstSymbol && t.dstQty) {
             var ai = S(t.dstSymbol), v = marketValue(t.dstSymbol, t.dstQty, t.date);
             ai.transfers += v; ai.weighted += v * w(t.date);
           } else if (t.srcAccount && t.srcSymbol && t.srcQty) {
             var ao = S(t.srcSymbol), vo = marketValue(t.srcSymbol, t.srcQty, t.date);
             ao.transfers -= vo; ao.weighted -= vo * w(t.date);
-            var before = holdingsAt(FinDates.addDays(t.date, -1)).positions.filter(function (p) { return p.accountId === t.srcAccount && p.symbol === t.srcSymbol; })[0];
-            if (before && before.qty > 0) ao.realized += vo - before.costBase * Math.min(t.srcQty / before.qty, 1);
           }
         }
       });

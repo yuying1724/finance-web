@@ -156,5 +156,5 @@ test('投資報表：後來才補登／開帳的部位、股數調整增減，�
   const s = ok(b.call('investReport', {})).summary;
   // 100 股 100→130 賺 3,000；補登的 50 股從 110 起算：留下 20 股到 130 賺 400、轉出 30 股在 120 賺 300
   assert.deepEqual([s.startValue, s.endValue, s.buys, s.netInvest, s.transfers, s.total], [10000, 15600, 0, 0, 1900, 3700]);
-  assert.deepEqual([s.realized, s.unrealizedChange], [1200, 2500]); // 轉出部分：市值 3,600 − 成本 2,400
+  assert.deepEqual([s.realized, s.unrealizedChange], [0, 3700], '股數調整不算已實現（只有真的「賣出」才算）');
 });
