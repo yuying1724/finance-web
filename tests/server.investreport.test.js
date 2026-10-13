@@ -50,6 +50,7 @@ test('投資報表：整段期間與每月；兩種算法（市值變化 vs 損�
   ]);
   assert.equal(r.bySymbol.length, 1);
   assert.deepEqual([r.bySymbol[0].symbol, r.bySymbol[0].name, r.bySymbol[0].total, r.bySymbol[0].held], ['0050', '元大台灣50', 3000, true]);
+  assert.equal(r.bySymbol[0].returnPct, 0.121, '單一標的：3000 ÷（期初 12,000＋投入 12,800）');
   assert.equal(r.estimated, false);
 
   // 只看本月：期初＝2/28（用 2/27 收盤 125）

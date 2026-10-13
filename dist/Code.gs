@@ -147,7 +147,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.56',
+    APP_VERSION: '0.9.57',
   };
   return api;
 })();
@@ -1842,7 +1842,7 @@ var FinInvestReport = (function () {
       var days = Math.max(0, dayNum(b) - dayNum(v0));
       var s0 = valueAt(v0), s1 = valueAt(b);
       var syms = {};
-      function S(sym) { return syms[sym] || (syms[sym] = { symbol: sym, startValue: 0, endValue: 0, startCost: 0, endCost: 0, buys: 0, sells: 0, transfers: 0, realized: 0, dividends: 0, weighted: 0, endQty: 0 }); }
+      function S(sym) { return syms[sym] || (syms[sym] = { symbol: sym, startValue: 0, endValue: 0, startCost: 0, endCost: 0, buys: 0, sells: 0, transfers: 0, inflow: 0, realized: 0, dividends: 0, weighted: 0, endQty: 0 }); }
       Object.keys(s0).forEach(function (k) { var x = S(k); x.startValue = s0[k].mv; x.startCost = s0[k].cost; });
       Object.keys(s1).forEach(function (k) { var x = S(k); x.endValue = s1[k].mv; x.endCost = s1[k].cost; x.endQty = s1[k].qty; });
       var w = function (d) { return days > 0 ? (dayNum(b) - dayNum(d)) / days : 0; };
@@ -1851,15 +1851,15 @@ var FinInvestReport = (function () {
         if (t.type === '買入' && isOpening(t)) {
           // 舊部位補登／開帳：不是新投入的錢，當天以市值「轉入」，之前累積的漲跌不算在這段期間
           var o = S(t.dstSymbol), mvIn = marketValue(t.dstSymbol, t.dstQty, t.date);
-          o.transfers += mvIn; o.weighted += mvIn * w(t.date);
-        } else if (t.type === '買入') { var x = S(t.dstSymbol), amt = cashBase(t.srcSymbol, t.srcQty, t.date); x.buys += amt; x.weighted += amt * w(t.date); }
+          o.transfers += mvIn; o.inflow += mvIn; o.weighted += mvIn * w(t.date);
+        } else if (t.type === '買入') { var x = S(t.dstSymbol), amt = cashBase(t.srcSymbol, t.srcQty, t.date); x.buys += amt; x.inflow += amt; x.weighted += amt * w(t.date); }
         else if (t.type === '賣出') { var y = S(t.srcSymbol), got = cashBase(t.dstSymbol, t.dstQty, t.date); y.sells += got; y.weighted -= got * w(t.date); }
         else if (t.type === '股數調整') {
           // 只改股數、沒有錢進出：增加的股數以當天市值「轉入」，減少的以當天市值「轉出」（例如賣出款項另外記在餘額調整）。
           // 期間內的漲跌算在未實現（已實現只算真的有「賣出」紀錄的，跟券商 app 對得起來）。拆股／併股不適用這個假設，目前沒有這種資料。
           if (t.dstAccount && t.dstSymbol && t.dstQty) {
             var ai = S(t.dstSymbol), v = marketValue(t.dstSymbol, t.dstQty, t.date);
-            ai.transfers += v; ai.weighted += v * w(t.date);
+            ai.transfers += v; ai.inflow += v; ai.weighted += v * w(t.date);
           } else if (t.srcAccount && t.srcSymbol && t.srcQty) {
             var ao = S(t.srcSymbol), vo = marketValue(t.srcSymbol, t.srcQty, t.date);
             ao.transfers -= vo; ao.weighted -= vo * w(t.date);
@@ -1878,7 +1878,8 @@ var FinInvestReport = (function () {
         // 損益＝期末市值－期初市值－淨投入－補登／調整轉入＋股息；未實現變化＝損益－已實現－股息
         x.total = x.endValue - x.startValue - (x.buys - x.sells) - x.transfers + x.dividends;
         x.unrealizedChange = x.total - x.realized - x.dividends;
-        var denom = x.startValue + x.weighted;
+        // 單一標的的報酬率：損益 ÷（期初市值＋期間投入／轉入）。單一標的常常是期間中才買，用修正 Dietz 會把短期報酬放大，這裡用比較直覺的算法
+        var denom = x.startValue + x.inflow;
         x.returnPct = denom > 0 ? x.total / denom : null;
         ['startValue', 'endValue', 'buys', 'sells', 'transfers', 'realized', 'dividends', 'unrealizedChange', 'weighted'].forEach(function (f) { tot[f] += x[f]; });
         return x;
