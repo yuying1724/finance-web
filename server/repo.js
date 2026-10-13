@@ -92,6 +92,25 @@ var FinRepo = (function () {
     return { idx: idx, missing: missing, width: header.length };
   }
 
+  /**
+   * 舊試算表缺少「後來才加的選填欄位」（schema 標了 autoAdd）時，直接在表頭最右邊補上，不用手動執行「初始化／修復資料表」。
+   * 缺的欄位只要有一個不是 autoAdd 就不動（交給呼叫端照舊報「缺少欄位」）。補上之後舊資料在這些欄位都是空白。
+   */
+  function addAutoColumns(tableKey, h, sheet) {
+    if (!h.missing.length) return h;
+    var def = FinSchema.TABLES[tableKey];
+    var add = def.cols.filter(function (col) { return h.idx[col.key] < 0; });
+    if (add.some(function (col) { return !col.autoAdd; })) return h;
+    sheet = sheet || sheetOf(tableKey);
+    var start = Math.max(h.width, sheet.getLastColumn());
+    var need = start + add.length - sheet.getMaxColumns();
+    if (need > 0) sheet.insertColumnsAfter(sheet.getMaxColumns(), need);
+    sheet.getRange(1, start + 1, 1, add.length).setValues([add.map(function (col) { return col.header; })]);
+    add.forEach(function (col, i) { h.idx[col.key] = start + i; });
+    h.missing = []; h.width = start + add.length;
+    return h;
+  }
+
   // ---------- 一次預載所有常用分頁（Sheets 進階服務 Values.batchGet） ----------
   // 2026-09-24 效能調整：SpreadsheetApp 每張分頁 getSheetByName + getRange().getValues() 都是各自一趟服務呼叫，
   // loadContext 一次要讀 10 幾張分頁，光讀表就好幾秒。改用 Sheets API 的 Values.batchGet 一趟把所有分頁的值拿回來
@@ -155,7 +174,7 @@ var FinRepo = (function () {
       values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
     }
     if (!values.length || !values[0].length) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」沒有表頭，請重新執行初始化');
-    var h = headerIndex(tableKey, values[0]);
+    var h = addAutoColumns(tableKey, headerIndex(tableKey, values[0]));
     if (h.missing.length) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」缺少欄位：' + h.missing.join('、') + '。請執行「初始化／修復資料表」');
     var rows = [], bad = [], seen = {};
     for (var r = 1; r < values.length; r++) {
@@ -288,7 +307,7 @@ var FinRepo = (function () {
     var def = FinSchema.TABLES[tableKey];
     var sheet = sheetOf(tableKey);
     var width = sheet.getLastColumn();
-    var h = headerIndex(tableKey, sheet.getRange(1, 1, 1, width).getValues()[0]);
+    var h = addAutoColumns(tableKey, headerIndex(tableKey, sheet.getRange(1, 1, 1, width).getValues()[0]), sheet);
     if (h.missing.length) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」缺少欄位：' + h.missing.join('、'));
     var start = Math.max(sheet.getLastRow(), 1) + 1;
     ensureCapacity(sheet, tableKey, h.idx, start + objs.length - 1);
@@ -307,7 +326,7 @@ var FinRepo = (function () {
   function updateRow(tableKey, rowNumber, patch) {
     var def = FinSchema.TABLES[tableKey];
     var sheet = sheetOf(tableKey);
-    var h = headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]);
+    var h = addAutoColumns(tableKey, headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]), sheet);
     var keys = Object.keys(patch).filter(function (k) { return h.idx[k] !== undefined && h.idx[k] >= 0; });
     if (!keys.length) return;
     var min = 1e9, max = -1;
@@ -330,7 +349,7 @@ var FinRepo = (function () {
   function setCells(tableKey, rowNumber, patch, opts) {
     var allowFormula = !!(opts && opts.allowFormulas);
     var sheet = sheetOf(tableKey);
-    var h = headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]);
+    var h = addAutoColumns(tableKey, headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]), sheet);
     Object.keys(patch).forEach(function (k) {
       if (h.idx[k] === undefined || h.idx[k] < 0) return;
       sheet.getRange(rowNumber, h.idx[k] + 1).setValue(encodeCell(patch[k], FinSchema.colOf(tableKey, k).type, allowFormula));

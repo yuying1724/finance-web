@@ -26,7 +26,8 @@ var FinSchema = (function () {
   var ENABLED_TX_TYPES = ['收入', '支出', '轉帳', '換匯', '買入', '賣出', '股息', '股數調整', '退款', '調整'];
   var LIABILITY_TYPES = ['信用卡', '貸款', '應付'];
 
-  function c(key, header, type, tolerant) { return { key: key, header: header, type: type || 'text', tolerant: !!tolerant }; }
+  function c(key, header, type, tolerant, autoAdd) { return { key: key, header: header, type: type || 'text', tolerant: !!tolerant, autoAdd: !!autoAdd }; }
+  // autoAdd：後來才加的選填欄位。舊試算表沒有這一欄時，程式第一次讀寫會自動在表頭最右邊補上，不用手動執行「初始化／修復資料表」
 
   var TABLES = {
     settings: { sheet: '設定', idKey: 'key', cols: [c('key', '鍵'), c('value', '值'), c('note', '說明')] },
@@ -49,7 +50,8 @@ var FinSchema = (function () {
       sheet: '貸款設定', idKey: 'accountId',
       cols: [c('accountId', '帳戶ID'), c('principal', '貸款金額', 'num'), c('rate', '年利率', 'num'), c('terms', '期數', 'num'),
         c('startDate', '起貸日', 'date'), c('payDay', '每月還款日', 'num'), c('method', '還款方式'), c('payAccountId', '預設扣款帳戶ID'),
-        c('payment', '每期還款金額', 'num', true), c('openTerm', '開帳前已繳期數', 'num', true), c('openBalance', '開帳時剩餘本金', 'num', true)],
+        c('payment', '每期還款金額', 'num', true), c('openTerm', '開帳前已繳期數', 'num', true), c('openBalance', '開帳時剩餘本金', 'num', true),
+        c('interestBasis', '計息方式', 'text', true, true)],
     },
     brokerSettings: {
       sheet: '證券帳戶設定', idKey: 'accountId',
@@ -147,7 +149,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.61',
+    APP_VERSION: '0.9.62',
   };
   return api;
 })();
@@ -254,6 +256,13 @@ var FinDates = (function () {
     return format(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate());
   }
 
+  /** 兩個日期相差幾天（b − a；同一天是 0） */
+  function daysBetween(a, b) {
+    var pa = parse(a), pb = parse(b);
+    if (!pa || !pb) throw new Error('日期格式錯誤：' + (pa ? b : a));
+    return Math.round((Date.UTC(pb.y, pb.m - 1, pb.d) - Date.UTC(pa.y, pa.m - 1, pa.d)) / 86400000);
+  }
+
   function weekday(str) { // 0=週日
     var p = parse(str);
     return new Date(Date.UTC(p.y, p.m - 1, p.d)).getUTCDay();
@@ -334,7 +343,7 @@ var FinDates = (function () {
   }
 
   var api = {
-    parse: parse, isValid: isValid, format: format, addDays: addDays, weekday: weekday, ymOf: ymOf, monthRange: monthRange,
+    parse: parse, isValid: isValid, format: format, addDays: addDays, daysBetween: daysBetween, weekday: weekday, ymOf: ymOf, monthRange: monthRange,
     addMonths: addMonths, timestamp: timestamp, today: today, fromCell: fromCell, daysInMonth: daysInMonth,
     isSettleDay: isSettleDay, isTradingDay: isTradingDay, addSettleDays: addSettleDays, buildHolidaySet: buildHolidaySet,
   };
@@ -1126,6 +1135,8 @@ var FinHoldings = (function () {
 var FinLoan = (function () {
 
   var METHODS = ['本息平均攤還', '本金平均攤還', '只繳息'];
+  /** 計息方式：按月＝餘額 × 年利率 ÷ 12（每期一樣）；按日＝餘額 × 年利率 × 這期實際天數 ÷ 365（多數銀行信貸，例如樂天，大月利息較多） */
+  var INTEREST_BASIS = ['按月', '按日'];
 
   /** 第 period 期（1 起算）的還款日：起貸日所在月份 + period 個月，日數取「每月還款日」，當月不夠天數時取月底 */
   function paymentDateForPeriod(settings, period) {
@@ -1140,6 +1151,7 @@ var FinLoan = (function () {
    * settings: { principal, rate(年利率，百分比數字，例如 2.5 代表 2.5%), terms(期數), startDate, payDay, method, payment(選填), openTerm／openBalance(選填) }
    * openTerm／openBalance：貸款中途才開始記帳時，「開帳前已繳幾期」與「當時剩下的本金」。有填就只列出之後的各期，
    *   期別跟銀行一樣從 openTerm＋1 起算（例如第 37 期），本金從 openBalance 開始攤還；principal／terms／startDate 仍是原始貸款資料。
+   * interestBasis：'按月'（預設）或 '按日'（上一期還款日到這一期還款日的實際天數 ÷ 365）。
    * payment：銀行固定的每期還款金額（本息平均攤還才用）。有填就照這個金額攤還（利息照餘額算、其餘還本金），
    *   最後一期把剩下的本金一次還清；沒填才用公式從利率算出每期金額。
    * decimals: 該貸款幣別的小數位數（預設 0，例如 TWD）
@@ -1169,10 +1181,15 @@ var FinLoan = (function () {
       levelPrincipalUnits = Math.floor(balanceUnits / n);
     }
 
+    var byDay = settings.interestBasis === '按日';
+    var prevDate = offset ? paymentDateForPeriod(settings, offset) : settings.startDate; // 這一期計息的起日
     var rows = [];
     for (var i = 1; i <= n; i++) {
       var isLast = i === n;
-      var interestUnits = monthlyRate === 0 ? 0 : FinMoney.toUnits(FinMoney.fromUnits(balanceUnits, decimals) * monthlyRate, decimals);
+      var date = paymentDateForPeriod(settings, offset + i);
+      var periodRate = byDay ? rate / 100 * FinDates.daysBetween(prevDate, date) / 365 : monthlyRate;
+      prevDate = date;
+      var interestUnits = periodRate === 0 ? 0 : FinMoney.toUnits(FinMoney.fromUnits(balanceUnits, decimals) * periodRate, decimals);
       var principalUnits;
       if (method === '只繳息') {
         principalUnits = isLast ? balanceUnits : 0;
@@ -1187,7 +1204,7 @@ var FinLoan = (function () {
       balanceUnits -= principalUnits;
       rows.push({
         period: offset + i,
-        date: paymentDateForPeriod(settings, offset + i),
+        date: date,
         payment: FinMoney.fromUnits(paymentUnits, decimals),
         principal: FinMoney.fromUnits(principalUnits, decimals),
         interest: FinMoney.fromUnits(interestUnits, decimals),
@@ -1218,7 +1235,7 @@ var FinLoan = (function () {
     };
   }
 
-  return { METHODS: METHODS, schedule: schedule, findPeriod: findPeriod, summarize: summarize, paymentDateForPeriod: paymentDateForPeriod };
+  return { METHODS: METHODS, INTEREST_BASIS: INTEREST_BASIS, schedule: schedule, findPeriod: findPeriod, summarize: summarize, paymentDateForPeriod: paymentDateForPeriod };
 })();
 
 // ==================== core/creditcard.js ====================
@@ -2139,6 +2156,25 @@ var FinRepo = (function () {
     return { idx: idx, missing: missing, width: header.length };
   }
 
+  /**
+   * 舊試算表缺少「後來才加的選填欄位」（schema 標了 autoAdd）時，直接在表頭最右邊補上，不用手動執行「初始化／修復資料表」。
+   * 缺的欄位只要有一個不是 autoAdd 就不動（交給呼叫端照舊報「缺少欄位」）。補上之後舊資料在這些欄位都是空白。
+   */
+  function addAutoColumns(tableKey, h, sheet) {
+    if (!h.missing.length) return h;
+    var def = FinSchema.TABLES[tableKey];
+    var add = def.cols.filter(function (col) { return h.idx[col.key] < 0; });
+    if (add.some(function (col) { return !col.autoAdd; })) return h;
+    sheet = sheet || sheetOf(tableKey);
+    var start = Math.max(h.width, sheet.getLastColumn());
+    var need = start + add.length - sheet.getMaxColumns();
+    if (need > 0) sheet.insertColumnsAfter(sheet.getMaxColumns(), need);
+    sheet.getRange(1, start + 1, 1, add.length).setValues([add.map(function (col) { return col.header; })]);
+    add.forEach(function (col, i) { h.idx[col.key] = start + i; });
+    h.missing = []; h.width = start + add.length;
+    return h;
+  }
+
   // ---------- 一次預載所有常用分頁（Sheets 進階服務 Values.batchGet） ----------
   // 2026-09-24 效能調整：SpreadsheetApp 每張分頁 getSheetByName + getRange().getValues() 都是各自一趟服務呼叫，
   // loadContext 一次要讀 10 幾張分頁，光讀表就好幾秒。改用 Sheets API 的 Values.batchGet 一趟把所有分頁的值拿回來
@@ -2202,7 +2238,7 @@ var FinRepo = (function () {
       values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
     }
     if (!values.length || !values[0].length) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」沒有表頭，請重新執行初始化');
-    var h = headerIndex(tableKey, values[0]);
+    var h = addAutoColumns(tableKey, headerIndex(tableKey, values[0]));
     if (h.missing.length) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」缺少欄位：' + h.missing.join('、') + '。請執行「初始化／修復資料表」');
     var rows = [], bad = [], seen = {};
     for (var r = 1; r < values.length; r++) {
@@ -2335,7 +2371,7 @@ var FinRepo = (function () {
     var def = FinSchema.TABLES[tableKey];
     var sheet = sheetOf(tableKey);
     var width = sheet.getLastColumn();
-    var h = headerIndex(tableKey, sheet.getRange(1, 1, 1, width).getValues()[0]);
+    var h = addAutoColumns(tableKey, headerIndex(tableKey, sheet.getRange(1, 1, 1, width).getValues()[0]), sheet);
     if (h.missing.length) throw FinFail('SCHEMA', '分頁「' + def.sheet + '」缺少欄位：' + h.missing.join('、'));
     var start = Math.max(sheet.getLastRow(), 1) + 1;
     ensureCapacity(sheet, tableKey, h.idx, start + objs.length - 1);
@@ -2354,7 +2390,7 @@ var FinRepo = (function () {
   function updateRow(tableKey, rowNumber, patch) {
     var def = FinSchema.TABLES[tableKey];
     var sheet = sheetOf(tableKey);
-    var h = headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]);
+    var h = addAutoColumns(tableKey, headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]), sheet);
     var keys = Object.keys(patch).filter(function (k) { return h.idx[k] !== undefined && h.idx[k] >= 0; });
     if (!keys.length) return;
     var min = 1e9, max = -1;
@@ -2377,7 +2413,7 @@ var FinRepo = (function () {
   function setCells(tableKey, rowNumber, patch, opts) {
     var allowFormula = !!(opts && opts.allowFormulas);
     var sheet = sheetOf(tableKey);
-    var h = headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]);
+    var h = addAutoColumns(tableKey, headerIndex(tableKey, sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]), sheet);
     Object.keys(patch).forEach(function (k) {
       if (h.idx[k] === undefined || h.idx[k] < 0) return;
       sheet.getRange(rowNumber, h.idx[k] + 1).setValue(encodeCell(patch[k], FinSchema.colOf(tableKey, k).type, allowFormula));
@@ -4690,8 +4726,10 @@ var FinApi = (function () {
       if (!isFinite(openBalance) || openBalance <= 0 || (isFinite(principal) && openBalance > principal)) errors.push({ field: 'openBalance', message: '開帳時剩餘本金必須大於 0、且不超過貸款金額' });
     }
     var basePrincipal = openBalance !== null && isFinite(openBalance) ? openBalance : principal;
-    if (payment !== null && isFinite(payment) && payment > 0 && isFinite(basePrincipal) && isFinite(rate) && payment <= basePrincipal * rate / 100 / 12) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
-    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment, openTerm: openTerm, openBalance: openBalance };
+    if (payment !== null && isFinite(payment) && payment > 0 && isFinite(basePrincipal) && isFinite(rate) && payment <= basePrincipal * rate / 100 * (str(a.interestBasis) === '按日' ? 31 / 365 : 1 / 12)) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
+    var interestBasis = str(a.interestBasis) || '按月';
+    if (FinLoan.INTEREST_BASIS.indexOf(interestBasis) < 0) errors.push({ field: 'interestBasis', message: '計息方式請選擇：' + FinLoan.INTEREST_BASIS.join('、') });
+    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment, openTerm: openTerm, openBalance: openBalance, interestBasis: interestBasis };
     return { errors: errors, value: value };
   }
 

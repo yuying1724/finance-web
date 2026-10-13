@@ -27,6 +27,13 @@ var FinDates = (function () {
     return format(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate());
   }
 
+  /** 兩個日期相差幾天（b − a；同一天是 0） */
+  function daysBetween(a, b) {
+    var pa = parse(a), pb = parse(b);
+    if (!pa || !pb) throw new Error('日期格式錯誤：' + (pa ? b : a));
+    return Math.round((Date.UTC(pb.y, pb.m - 1, pb.d) - Date.UTC(pa.y, pa.m - 1, pa.d)) / 86400000);
+  }
+
   function weekday(str) { // 0=週日
     var p = parse(str);
     return new Date(Date.UTC(p.y, p.m - 1, p.d)).getUTCDay();
@@ -107,7 +114,7 @@ var FinDates = (function () {
   }
 
   var api = {
-    parse: parse, isValid: isValid, format: format, addDays: addDays, weekday: weekday, ymOf: ymOf, monthRange: monthRange,
+    parse: parse, isValid: isValid, format: format, addDays: addDays, daysBetween: daysBetween, weekday: weekday, ymOf: ymOf, monthRange: monthRange,
     addMonths: addMonths, timestamp: timestamp, today: today, fromCell: fromCell, daysInMonth: daysInMonth,
     isSettleDay: isSettleDay, isTradingDay: isTradingDay, addSettleDays: addSettleDays, buildHolidaySet: buildHolidaySet,
   };

@@ -155,3 +155,25 @@ test('中途開帳：已繳 36 期、剩 588,907 → 期別從第 37 期起算�
   // 沒填開帳資料：跟以前一樣從第 1 期列起
   assert.equal(FinLoan.schedule(Object.assign({}, settings, { openTerm: null, openBalance: null, payment: null }), 0)[0].period, 1);
 });
+
+test('按日計息（實際天數 ÷ 365）：跟樂天信貸的還款明細逐期一致；預設仍是按月', () => {
+  const base = { principal: 1000000, rate: 2.07, terms: 84, startDate: '2023-09-14', payDay: 14, method: '本息平均攤還', payment: 12793 };
+  const s = FinLoan.schedule({ ...base, interestBasis: '按日', openTerm: 32, openBalance: 635766 }, 0);
+  // 銀行 App「還款明細」：6/14～10/14 的本金／利息
+  assert.deepEqual(s.slice(0, 5).map((r) => [r.date, r.principal, r.interest, r.balance]), [
+    ['2026-06-14', 11675, 1118, 624091],
+    ['2026-07-14', 11731, 1062, 612360],
+    ['2026-08-14', 11716, 1077, 600644],
+    ['2026-09-14', 11737, 1056, 588907],
+    ['2026-10-14', 11791, 1002, 577116],
+  ]);
+  assert.equal(s[s.length - 1].balance, 0);
+  assert.equal(s[s.length - 1].period, 84);
+  // 第一期（沒有開帳期數）從起貸日起算天數
+  const fresh = FinLoan.schedule({ principal: 365000, rate: 10, terms: 3, startDate: '2026-01-15', payDay: 15, method: '只繳息', interestBasis: '按日' }, 0);
+  assert.deepEqual(fresh.map((r) => r.interest), [3100, 2800, 3100]); // 31、28、31 天
+  // 沒填（或按月）：跟以前一樣是年利率 ÷ 12
+  const monthly = FinLoan.schedule({ ...base, openTerm: 36, openBalance: 588907 }, 0);
+  assert.equal(monthly[0].interest, Math.round(588907 * 0.0207 / 12));
+  assert.deepEqual(FinLoan.INTEREST_BASIS, ['按月', '按日']);
+});

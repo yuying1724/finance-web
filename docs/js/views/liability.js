@@ -41,6 +41,9 @@ export function openCardSettingsForm({ account, card, onDone } = {}) {
   const { banner, fld, showErr, clearErr } = fieldHelpers();
 
   const numInput = (key, placeholder) => h('input', { type: 'text', inputmode: 'numeric', value: f[key], placeholder, oninput: (e) => { f[key] = e.target.value; } });
+  if (!f.interestBasis) f.interestBasis = '按月';
+  const basisSel = h('select', { 'data-testid': 'loan-basis', onchange: (e) => { f.interestBasis = e.target.value; } },
+    [['按月', '按月（年利率 ÷ 12，每期利息算法一樣）'], ['按日', '按日（實際天數 ÷ 365，大月利息多一點）']].map(([v, t]) => h('option', { value: v, selected: v === f.interestBasis }, t)));
   const payAcctSel = h('select', { onchange: (e) => { f.payAccountId = e.target.value; } },
     [h('option', { value: '' }, '（不指定）')].concat(cashAccounts(account.id).map((a) => h('option', { value: a.id, selected: a.id === f.payAccountId }, a.name))));
   const noteInput = h('input', { type: 'text', maxlength: 200, value: f.note, oninput: (e) => { f.note = e.target.value; } });
@@ -86,7 +89,7 @@ export function openCardSettingsForm({ account, card, onDone } = {}) {
 // ---------- 貸款設定 ----------
 export function openLoanSettingsForm({ account, loan, onDone } = {}) {
   const editing = !!loan;
-  const f = loan ? { ...loan } : { principal: '', rate: '', terms: '', startDate: new Date().toISOString().slice(0, 10), payDay: '15', method: LOAN_METHODS[0], payAccountId: '', payment: '', openTerm: '', openBalance: '' };
+  const f = loan ? { ...loan } : { principal: '', rate: '', terms: '', startDate: new Date().toISOString().slice(0, 10), payDay: '15', method: LOAN_METHODS[0], payAccountId: '', payment: '', openTerm: '', openBalance: '', interestBasis: '按月' };
   Object.keys(f).forEach((k) => { if (f[k] === null || f[k] === undefined) f[k] = ''; else f[k] = String(f[k]); });
   const { banner, fld, showErr, clearErr } = fieldHelpers();
 
@@ -104,7 +107,7 @@ export function openLoanSettingsForm({ account, loan, onDone } = {}) {
     }
     await withBusy(e.currentTarget, async () => {
       try {
-        const r = await api.call('upsertLoanSettings', { loan: { accountId: account.id, principal: f.principal, rate: f.rate, terms: f.terms, startDate: f.startDate, payDay: f.payDay, method: f.method, payAccountId: f.payAccountId, payment: f.payment, openTerm: f.openTerm, openBalance: f.openBalance } });
+        const r = await api.call('upsertLoanSettings', { loan: { accountId: account.id, principal: f.principal, rate: f.rate, terms: f.terms, startDate: f.startDate, payDay: f.payDay, method: f.method, payAccountId: f.payAccountId, payment: f.payment, openTerm: f.openTerm, openBalance: f.openBalance, interestBasis: f.interestBasis } });
         sheet.close();
         mergeRow('loanSettings', 'accountId', r.loan); refreshInBackground();
         if (onDone) await onDone();
@@ -126,6 +129,7 @@ export function openLoanSettingsForm({ account, loan, onDone } = {}) {
       fld('startDate', '起貸日', dateInput),
       fld('payDay', '每月還款日', numInput('payDay', '1～31')),
       fld('method', '還款方式', methodSel),
+      fld('interestBasis', '計息方式', basisSel, '看銀行的還款明細：每期利息會因為那個月 30 或 31 天而不同，就選「按日」（樂天等多數信貸）；每期利息只跟餘額有關就選「按月」'),
       fld('payment', '每期還款金額（選填）', numInput('payment', '例如 12793'), '銀行每月固定扣款的金額。填了就照這個金額攤還，最後一期再補差額；留空就依利率自動計算（只適用本息平均攤還）'),
       fld('payAccountId', '預設扣款帳戶（選填）', payAcctSel),
       fld('openTerm', '開帳前已繳期數（選填）', numInput('openTerm', '例如 36'), '貸款繳到一半才開始記帳時填：已經繳了幾期。期別會跟銀行一樣（例如從第 37 期開始）'),

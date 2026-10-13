@@ -11,6 +11,8 @@ var FinLoan = (function () {
   //#endif
 
   var METHODS = ['本息平均攤還', '本金平均攤還', '只繳息'];
+  /** 計息方式：按月＝餘額 × 年利率 ÷ 12（每期一樣）；按日＝餘額 × 年利率 × 這期實際天數 ÷ 365（多數銀行信貸，例如樂天，大月利息較多） */
+  var INTEREST_BASIS = ['按月', '按日'];
 
   /** 第 period 期（1 起算）的還款日：起貸日所在月份 + period 個月，日數取「每月還款日」，當月不夠天數時取月底 */
   function paymentDateForPeriod(settings, period) {
@@ -25,6 +27,7 @@ var FinLoan = (function () {
    * settings: { principal, rate(年利率，百分比數字，例如 2.5 代表 2.5%), terms(期數), startDate, payDay, method, payment(選填), openTerm／openBalance(選填) }
    * openTerm／openBalance：貸款中途才開始記帳時，「開帳前已繳幾期」與「當時剩下的本金」。有填就只列出之後的各期，
    *   期別跟銀行一樣從 openTerm＋1 起算（例如第 37 期），本金從 openBalance 開始攤還；principal／terms／startDate 仍是原始貸款資料。
+   * interestBasis：'按月'（預設）或 '按日'（上一期還款日到這一期還款日的實際天數 ÷ 365）。
    * payment：銀行固定的每期還款金額（本息平均攤還才用）。有填就照這個金額攤還（利息照餘額算、其餘還本金），
    *   最後一期把剩下的本金一次還清；沒填才用公式從利率算出每期金額。
    * decimals: 該貸款幣別的小數位數（預設 0，例如 TWD）
@@ -54,10 +57,15 @@ var FinLoan = (function () {
       levelPrincipalUnits = Math.floor(balanceUnits / n);
     }
 
+    var byDay = settings.interestBasis === '按日';
+    var prevDate = offset ? paymentDateForPeriod(settings, offset) : settings.startDate; // 這一期計息的起日
     var rows = [];
     for (var i = 1; i <= n; i++) {
       var isLast = i === n;
-      var interestUnits = monthlyRate === 0 ? 0 : FinMoney.toUnits(FinMoney.fromUnits(balanceUnits, decimals) * monthlyRate, decimals);
+      var date = paymentDateForPeriod(settings, offset + i);
+      var periodRate = byDay ? rate / 100 * FinDates.daysBetween(prevDate, date) / 365 : monthlyRate;
+      prevDate = date;
+      var interestUnits = periodRate === 0 ? 0 : FinMoney.toUnits(FinMoney.fromUnits(balanceUnits, decimals) * periodRate, decimals);
       var principalUnits;
       if (method === '只繳息') {
         principalUnits = isLast ? balanceUnits : 0;
@@ -72,7 +80,7 @@ var FinLoan = (function () {
       balanceUnits -= principalUnits;
       rows.push({
         period: offset + i,
-        date: paymentDateForPeriod(settings, offset + i),
+        date: date,
         payment: FinMoney.fromUnits(paymentUnits, decimals),
         principal: FinMoney.fromUnits(principalUnits, decimals),
         interest: FinMoney.fromUnits(interestUnits, decimals),
@@ -103,7 +111,7 @@ var FinLoan = (function () {
     };
   }
 
-  return { METHODS: METHODS, schedule: schedule, findPeriod: findPeriod, summarize: summarize, paymentDateForPeriod: paymentDateForPeriod };
+  return { METHODS: METHODS, INTEREST_BASIS: INTEREST_BASIS, schedule: schedule, findPeriod: findPeriod, summarize: summarize, paymentDateForPeriod: paymentDateForPeriod };
 })();
 //#ifnode
 module.exports = FinLoan;

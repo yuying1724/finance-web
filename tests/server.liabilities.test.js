@@ -159,6 +159,34 @@ test('貸款排程 API：回傳的攤還表與 core/loan.js 算法一致，且�
   assert.equal(r.data.summary.currentPeriod.period, 2);
 });
 
+test('貸款計息方式：舊試算表沒有「計息方式」欄會自動補上；按日計息照實際天數算利息、錯誤的值擋下', () => {
+  const b = fresh();
+  const bank = b.acct('樂天銀行', '銀行');
+  const loanAcct = b.acct('信貸-樂天', '貸款');
+  // 模擬舊版試算表：「貸款設定」分頁還沒有「計息方式」這一欄
+  const sh = b.ss.getSheetByName('貸款設定');
+  const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const col = header.indexOf('計息方式') + 1;
+  assert.ok(col > 0);
+  sh.getRange(1, col).setValue('');
+  assert.ok(!sh.getRange(1, 1, 1, sh.getMaxColumns()).getValues()[0].includes('計息方式'));
+  const base = { accountId: loanAcct, principal: 1000000, rate: 2.07, terms: 84, startDate: '2023-09-14', payDay: 14, method: '本息平均攤還', payAccountId: bank, payment: 12793, openTerm: 36, openBalance: 588907 };
+  // 讀取（bootstrap）不會因為缺欄位而壞掉，而且會自動補上表頭
+  assert.ok(b.boot());
+  assert.ok(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].includes('計息方式'));
+  assert.equal(b.loan({ ...base, interestBasis: '亂填' }).error.code, 'VALIDATION');
+  const ok = b.loan({ ...base, interestBasis: '按日' });
+  assert.ok(ok.ok, JSON.stringify(ok));
+  assert.equal(ok.data.loan.interestBasis, '按日');
+  assert.equal(b.boot().loanSettings.find((x) => x.accountId === loanAcct).interestBasis, '按日');
+  const r = b.schedule(loanAcct, '2026-10-01');
+  assert.deepEqual([r.data.summary.currentPeriod.principal, r.data.summary.currentPeriod.interest, r.data.summary.currentPeriod.balance], [11791, 1002, 577116]);
+  // 不填就是按月（舊資料的空白也當按月）
+  const m = b.loan({ ...base });
+  assert.equal(m.data.loan.interestBasis, '按月');
+  assert.equal(b.schedule(loanAcct, '2026-10-01').data.summary.currentPeriod.interest, Math.round(588907 * 0.0207 / 12));
+});
+
 test('addLoanPayment：一次寫入同群組的「轉帳」（本金）＋「支出」（利息，分類=利息），扣款帳戶餘額與貸款餘額都正確變動', () => {
   const b = fresh();
   const bank = b.acct('銀行', '銀行');

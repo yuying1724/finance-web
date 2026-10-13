@@ -1979,8 +1979,10 @@ var FinApi = (function () {
       if (!isFinite(openBalance) || openBalance <= 0 || (isFinite(principal) && openBalance > principal)) errors.push({ field: 'openBalance', message: '開帳時剩餘本金必須大於 0、且不超過貸款金額' });
     }
     var basePrincipal = openBalance !== null && isFinite(openBalance) ? openBalance : principal;
-    if (payment !== null && isFinite(payment) && payment > 0 && isFinite(basePrincipal) && isFinite(rate) && payment <= basePrincipal * rate / 100 / 12) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
-    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment, openTerm: openTerm, openBalance: openBalance };
+    if (payment !== null && isFinite(payment) && payment > 0 && isFinite(basePrincipal) && isFinite(rate) && payment <= basePrincipal * rate / 100 * (str(a.interestBasis) === '按日' ? 31 / 365 : 1 / 12)) errors.push({ field: 'payment', message: '每期還款金額太低，連利息都不夠付' });
+    var interestBasis = str(a.interestBasis) || '按月';
+    if (FinLoan.INTEREST_BASIS.indexOf(interestBasis) < 0) errors.push({ field: 'interestBasis', message: '計息方式請選擇：' + FinLoan.INTEREST_BASIS.join('、') });
+    var value = { accountId: accountId, principal: principal, rate: rate, terms: terms, startDate: startDate, payDay: payDay, method: method, payAccountId: payAccountId, payment: payment, openTerm: openTerm, openBalance: openBalance, interestBasis: interestBasis };
     return { errors: errors, value: value };
   }
 
