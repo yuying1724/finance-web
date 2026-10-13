@@ -155,6 +155,13 @@ test('價格歷史：更新價格時記下當天價格（同一天覆蓋）；�
   assert.ok(!res3.failed.includes('BTC'));
   assert.ok(urls.some((u) => /trading-history\/btc_twd\?resolution=1d&from=\d+&to=\d+/.test(u)));
   assert.ok(hist().some((r) => r[1] === 'BTC' && Number(r[2]) === 2650000.5));
+  // 再補一次：只抓這檔還缺的那段（第一筆交易前 10 天起），不會從整個期間的開頭抓
+  const before = urls.length;
+  b.advance(120000);
+  ok(b.call('backfillPriceHistory', {}));
+  const bito = urls.slice(before).filter((u) => /trading-history/.test(u));
+  assert.equal(bito.length, 1);
+  assert.ok(bito[0].includes('from=' + Math.floor(Date.UTC(2026, 1, 19) / 1000)), bito[0]); // 從 BTC 第一筆交易（3/2）前 10 天＝2/20 的前一天起，不會從整個報表期間的開頭抓
 });
 
 test('投資報表：後來才補登／開帳的部位、股數調整增減，以當天市值轉入／轉出，不算投入、也不把補登前的漲跌算進來', () => {

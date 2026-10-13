@@ -933,15 +933,19 @@ var FinApi = (function () {
       cachePut('backfillPrices:last', String(env.now), 300);
       return FinRepo.withLock(function () {
         var c = loadContext(env.now);
+        // 每檔從它第一筆交易的前 10 天開始補（計價幣別跟著用它的標的裡最早的那筆）
         var syms = {}, first = '';
+        function mark(sym, date) { if (!sym || sym === c.base || !c.instruments[sym]) return; if (!syms[sym] || date < syms[sym]) syms[sym] = date; }
         c.txRows.forEach(function (t) {
           if (t.status !== '有效' || FinInvestReport.INVEST_TYPES.indexOf(t.type) < 0) return;
           if (!first || t.date < first) first = t.date;
-          [t.dstSymbol, t.srcSymbol, t.relatedSymbol].forEach(function (s) { if (s && s !== c.base && c.instruments[s]) syms[s] = true; });
+          [t.dstSymbol, t.srcSymbol, t.relatedSymbol].forEach(function (s) { mark(s, t.date); });
         });
-        Object.keys(syms).forEach(function (s) { var q = c.instruments[s].quote; if (q && q !== c.base && c.instruments[q]) syms[q] = true; });
+        Object.keys(syms).forEach(function (s) { var q = c.instruments[s].quote; if (q && q !== c.base) mark(q, syms[s]); });
         if (!first) return { added: 0, symbols: [], failed: [] };
-        var res = FinJobs.backfillHistory({ from: FinDates.addDays(first, -10), to: FinDates.addDays(c.today, -1), symbols: Object.keys(syms).sort(), instruments: c.instruments, base: c.base });
+        var firstDate = {};
+        Object.keys(syms).forEach(function (s) { firstDate[s] = FinDates.addDays(syms[s], -10); });
+        var res = FinJobs.backfillHistory({ from: FinDates.addDays(first, -10), to: FinDates.addDays(c.today, -1), symbols: Object.keys(syms).sort(), firstDate: firstDate, instruments: c.instruments, base: c.base });
         FinRepo.audit('補抓歷史價格', 'priceHistory', '', '新增 ' + res.added + ' 筆' + (res.failed.length ? '；查不到：' + res.failed.join('、') : ''), env.device);
         return res;
       });

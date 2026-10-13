@@ -397,17 +397,19 @@ var FinJobs = (function () {
   }
 
   /** GOOGLEFINANCE 歷史收盤（美股、匯率等）：在暫存分頁放公式、等算完讀回來，最後刪掉分頁。回傳 {代號: {日期: 收盤}} */
-  function googleHistory_(insts, from, to) {
+  /** jobs: [{inst, from, to}]（每檔只抓還缺的那段日期） */
+  function googleHistory_(jobs) {
     var out = {};
-    if (!insts.length) return out;
+    if (!jobs.length) return out;
+    var insts = jobs.map(function (j) { return j.inst; });
     var ss = FinRepo.spreadsheet(), name = '_價格歷史暫存', sh = null;
     try {
       sh = ss.getSheetByName(name) || ss.insertSheet(name);
       sh.clear();
-      var f = FinDates.parse(from), t = FinDates.parse(to);
-      insts.forEach(function (inst, i) {
-        var attr = /^CURRENCY:/i.test(inst.quoteCode) ? 'price' : 'close';
-        sh.getRange(1, i * 2 + 1).setFormula('=GOOGLEFINANCE("' + inst.quoteCode + '","' + attr + '",DATE(' + f.y + ',' + f.m + ',' + f.d + '),DATE(' + t.y + ',' + t.m + ',' + t.d + ')+1,"DAILY")');
+      jobs.forEach(function (j, i) {
+        var f = FinDates.parse(j.from), t = FinDates.parse(j.to);
+        var attr = /^CURRENCY:/i.test(j.inst.quoteCode) ? 'price' : 'close';
+        sh.getRange(1, i * 2 + 1).setFormula('=GOOGLEFINANCE("' + j.inst.quoteCode + '","' + attr + '",DATE(' + f.y + ',' + f.m + ',' + f.d + '),DATE(' + t.y + ',' + t.m + ',' + t.d + ')+1,"DAILY")');
       });
       var vals = [];
       for (var tries = 0; tries < 12; tries++) {
@@ -454,15 +456,29 @@ var FinJobs = (function () {
       });
       return n;
     }
+    /** 這檔在 from～to 之間還缺的第一天與最後一天（weekdaysOnly：只看平日）；都有了回傳 null，就不用再抓 */
+    var firstDate = opts.firstDate || {};
+    function missingRange(sym, weekdaysOnly) {
+      var first = '', last = '', start = firstDate[sym] && firstDate[sym] > from ? firstDate[sym] : from;
+      for (var d = start; d <= to; d = FinDates.addDays(d, 1)) {
+        if (weekdaysOnly) { var wd = FinDates.weekday(d); if (wd === 0 || wd === 6) continue; }
+        if (have[d + '|' + sym]) continue;
+        if (!first) first = d;
+        last = d;
+      }
+      return first ? { from: first, to: last } : null;
+    }
     (opts.symbols || []).forEach(function (sym) {
       var inst = insts[sym];
       if (!inst || sym === base) return;
       var isTw = (inst.quote || base) === 'TWD' && (inst.type === '台股' || inst.type === 'ETF');
       if (isTw) {
         var got = 0, any = false;
+        var twStart = firstDate[sym] && firstDate[sym] > from ? firstDate[sym] : from;
         months.forEach(function (ym) {
-          // 這個月的平日都有了就不用再抓
-          var r = FinDates.monthRange(ym), a = r.from < from ? from : r.from, b = r.to > to ? to : r.to, need = false;
+          // 這個月的平日都有了就不用再抓；這檔第一筆交易之前的月份也不用
+          var r = FinDates.monthRange(ym), a = r.from < twStart ? twStart : r.from, b = r.to > to ? to : r.to, need = false;
+          if (a > b) { any = true; return; }
           for (var d = a; d <= b; d = FinDates.addDays(d, 1)) { var wd = FinDates.weekday(d); if (wd !== 0 && wd !== 6 && !have[d + '|' + sym]) { need = true; break; } }
           if (!need) { any = true; return; }
           var m = fetchTwMonth_(sym, ym);
@@ -472,19 +488,22 @@ var FinJobs = (function () {
         if (!any) failed.push(sym);
         report.push({ symbol: sym, days: got });
       } else if (inst.priceSource === 'BitoPro') {
-        // 加密貨幣：BitoPro 的日 K 線（台灣時間每天一根，收盤價＝當天最後成交價）
-        var bm = fetchBitoProHistory_(bitoPair_(inst), from, to);
+        // 加密貨幣：BitoPro 的日 K 線（台灣時間每天一根，收盤價＝當天最後成交價）；只抓還缺的那段
+        var mr = missingRange(sym, false);
+        if (!mr) { report.push({ symbol: sym, days: 0 }); return; }
+        var bm = fetchBitoProHistory_(bitoPair_(inst), mr.from, mr.to);
         if (!Object.keys(bm).length) failed.push(sym);
         report.push({ symbol: sym, days: take(sym, bm) });
       } else if (inst.quoteCode && inst.priceSource === 'GOOGLEFINANCE') {
-        gf.push(inst);
+        var gr = missingRange(sym, true);
+        if (gr) gf.push({ inst: inst, from: gr.from, to: gr.to }); else report.push({ symbol: sym, days: 0 });
       }
     });
-    var g = googleHistory_(gf, from, to);
-    gf.forEach(function (inst) {
-      var m = g[inst.symbol] || {};
-      if (!Object.keys(m).length) failed.push(inst.symbol);
-      report.push({ symbol: inst.symbol, days: take(inst.symbol, m) });
+    var g = googleHistory_(gf);
+    gf.forEach(function (j) {
+      var m = g[j.inst.symbol] || {};
+      if (!Object.keys(m).length) failed.push(j.inst.symbol);
+      report.push({ symbol: j.inst.symbol, days: take(j.inst.symbol, m) });
     });
     rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.symbol < b.symbol ? -1 : 1); });
     if (rows.length) FinRepo.append('priceHistory', rows);
