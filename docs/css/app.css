@@ -370,3 +370,11 @@ a.item { color: inherit; text-decoration: none; }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 /* 背景更新中的區塊（先畫舊資料）：稍微變淡，更新完恢復 */
 .is-stale { opacity: .85; transition: opacity .2s; }
+/* 持倉依帳戶分組 */
+.hg { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.hg:first-of-type { border-top: 0; margin-top: 0; }
+.hg-head { padding: 8px 0; }
+.hg-head h2 { font-size: 14.5px; }
+.hg-sum { text-align: right; line-height: 1.3; }
+.hg .list { margin-left: 22px; }
+.hg .list > li:first-child { border-top: 1px solid var(--line); }

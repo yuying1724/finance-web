@@ -228,6 +228,15 @@ test('投資頁：新增標的、設定券商帳戶，持倉正確顯示', { ski
     const pos = holdings.positions.find((p) => p.symbol === '2330');
     assert.equal(pos.qty, 100);
     assert.equal(pos.costNative, 100000);
+    // 持倉依帳戶分組：標題有帳戶名、檔數、市值小計；可收合並記住
+    const group = page.locator('[data-testid=holding-group]');
+    assert.equal(await group.count(), 1);
+    assert.match(await group.innerText(), /1 檔/);
+    await group.click();
+    await page.waitForFunction(() => document.querySelector('[data-testid=holding-group]').getAttribute('aria-expanded') === 'false');
+    assert.equal(await page.locator('[data-testid=holding-group] + ul').isVisible(), false);
+    await page.reload(); await page.waitForSelector('[data-testid=holding-group]');
+    assert.equal(await page.locator('[data-testid=holding-group]').getAttribute('aria-expanded'), 'false');
   });
 });
 

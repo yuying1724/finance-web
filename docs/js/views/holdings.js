@@ -10,6 +10,9 @@ import { openSheet, errorText, toast, loading } from '../ui.js';
 import { refreshInBackground } from '../data.js';
 
 const S = { seq: 0 };
+const COLLAPSE_KEY = 'fin.holdings.collapsed';
+function loadCollapsed() { try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}') || {}; } catch (e) { return {}; } }
+function saveCollapsed(accountId, closed) { const c = loadCollapsed(); if (closed) c[accountId] = 1; else delete c[accountId]; try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(c)); } catch (e) { /* 忽略 */ } }
 
 function qty(n, symbol) { return shares(n, { symbol, mask: true }); } // 股數也跟著「隱藏金額」遮住（跟帳戶頁一致）
 // 損益、成本、市值都跟著「隱藏金額」一起遮住；現價是公開資訊，不遮
@@ -130,8 +133,33 @@ function drawHoldings(listBox, res) {
       h('div', { class: 'stat' }, h('div', { class: 'k' }, '未實現損益'), h('div', { class: 'v ' + (netTotal >= 0 ? 'amt-pos' : 'amt-neg'), 'data-testid': 'pl-total' }, plMoney(netTotal, state.data.base)),
         hasCost ? h('div', { class: 'muted small' }, '未扣賣出費用 ' + plMoney(totalBase, state.data.base)) : null)));
     if (hasCost) listBox.appendChild(h('p', { class: 'muted small', style: { margin: '4px 2px 0' } }, '台股損益已先扣掉預估賣出手續費 0.1425% 與證交稅（股票 0.3%、ETF 0.1%），跟券商 app 一致；美股（複委託）不扣。'));
-    listBox.appendChild(h('div', { class: 'day-head' }, h('span', null, '持倉')));
-    listBox.appendChild(h('ul', { class: 'list' }, res.positions.map((p) => h('li', null, positionItem(p)))));
+    // 依帳戶分組（元大-證券／元大-複委託／BitoPro／持股信託…），每組標題有市值與損益小計，可收合（記在 localStorage）
+    const groups = new Map();
+    res.positions.forEach((p) => { if (!groups.has(p.accountId)) groups.set(p.accountId, []); groups.get(p.accountId).push(p); });
+    const collapsed = loadCollapsed();
+    for (const [accountId, list] of groups) {
+      const acct = accountById(accountId);
+      const mv = list.reduce((s, p) => s + (p.missing ? 0 : p.mvBase), 0);
+      const pl = list.reduce((s, p) => s + (p.missing ? 0 : netOf(p)), 0);
+      const cost = list.reduce((s, p) => s + (p.missing ? 0 : p.costBase), 0);
+      const missing = list.some((p) => p.missing);
+      const isClosed = !!collapsed[accountId];
+      const content = h('ul', { class: 'list', style: { display: isClosed ? 'none' : '' } }, list.map((p) => h('li', null, positionItem(p))));
+      const chevron = h('span', { class: 'sec-chevron' + (isClosed ? ' closed' : '') }, icon('right'));
+      const head = h('button', { class: 'sec-head hg-head', 'data-testid': 'holding-group', 'data-account': accountId, 'aria-expanded': String(!isClosed), onclick: () => {
+        const open = content.style.display !== 'none';
+        content.style.display = open ? 'none' : '';
+        chevron.classList.toggle('closed', open);
+        head.setAttribute('aria-expanded', String(!open));
+        saveCollapsed(accountId, open);
+      } },
+        chevron,
+        h('h2', null, acct ? acct.name : accountId, h('span', { class: 'muted small', style: { marginLeft: '6px', fontWeight: 400 } }, `${list.length} 檔`)),
+        h('div', { class: 'hg-sum' },
+          h('div', { class: 'amt', 'data-testid': 'hg-mv' }, money(mv, state.data.base)),
+          h('div', { class: 'small ' + plClass(pl), 'data-testid': 'hg-pl' }, plMoney(pl, state.data.base) + (cost > 0 && !prefs.mask ? `（${(pl / cost * 100).toFixed(2)}%）` : '') + (missing ? '・有缺價格' : ''))));
+      listBox.appendChild(h('div', { class: 'hg' }, head, content));
+    }
   }
   if (res.realized.length) {
     listBox.appendChild(h('div', { class: 'day-head', style: { marginTop: '14px' } }, h('span', null, '已實現損益（最近）')));
