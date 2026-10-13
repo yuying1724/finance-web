@@ -842,6 +842,24 @@ test('股息：除息日自動產生待確認，定期頁顯示預估明細；�
   });
 });
 
+test('首頁投資收益：本月股息＋已實現損益另列一行（不算進收入），顯示今年累計；點了到投資頁', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const today = be.ctx.FinDates.today(Date.now());
+    const bank = be.call('upsertAccount', { account: { name: '收益銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('upsertInstrument', { instrument: { symbol: '00713', name: '元大台灣高息低波', type: 'ETF', quote: 'TWD', decimals: 0, priceSource: '手動', isNew: true } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '股息', date: today, dstAccount: bank, dstSymbol: 'TWD', dstQty: 13746, relatedSymbol: '00713' } }).ok);
+    await a.login(); await page.waitForSelector('[data-testid=invest-income]');
+    assert.equal(await page.locator('[data-testid=invest-month-total]').innerText(), '+NT$13,746');
+    assert.equal(await page.locator('[data-testid=invest-month-div]').innerText(), '+NT$13,746');
+    assert.equal(await page.locator('[data-testid=invest-month-real]').innerText(), 'NT$0');
+    assert.match(await page.locator('[data-testid=invest-income]').innerText(), new RegExp(today.slice(0, 4) + ' 年累計 \\+NT\\$13,746'));
+    await page.click('[data-testid=invest-income]');
+    await page.waitForFunction(() => location.hash.startsWith('#/invest'));
+  });
+});
+
 test('定期「每N天」：表單選每 N 天＋從實際付款日起算，列表顯示「每 30 天（從實際付款日起算）」；到期的待確認可以延後', { skip }, async () => {
   await withApp({}, async (a) => {
     const { page, s } = a;

@@ -67,7 +67,8 @@ export function renderHome(root) {
     h('div', { class: 'stats' },
       stat('收入', money(m.income, base, { whole: true }), 'pos'),
       stat('支出', money(m.expense, base, { whole: true })),
-      stat('結餘', money(m.net, base, { sign: true, whole: true }), m.net > 0 ? 'pos' : ''))));
+      stat('結餘', money(m.net, base, { sign: true, whole: true }), m.net > 0 ? 'pos' : '')),
+    investLine(d.invest, base)));
 
   // 帳戶
   const active = d.accounts.filter((a) => a.active || d.netWorth.byAccount[a.id]);
@@ -92,6 +93,22 @@ export function renderHome(root) {
   }
 
   mount(root, ...children);
+}
+
+/** 投資收益（股息＋已實現損益）：跟薪資收入分開列，不影響上面的收入／結餘；點了到投資頁 */
+function investLine(iv, base) {
+  if (!iv) return null;
+  const cls = (n) => (n > 0 ? 'amt-pos' : n < 0 ? 'amt-neg' : '');
+  const part = (label, n, testid) => h('span', { class: 'iv-part' }, label + ' ', h('b', { class: cls(n), 'data-testid': testid }, money(n, base, { sign: n !== 0, whole: true })));
+  return h('a', { class: 'iv-line', href: '#/invest', 'data-testid': 'invest-income' },
+    h('div', { class: 'iv-row' },
+      h('span', { class: 'iv-k' }, '投資收益'),
+      h('b', { class: 'iv-total ' + cls(iv.month.total), 'data-testid': 'invest-month-total' }, money(iv.month.total, base, { sign: iv.month.total !== 0, whole: true }))),
+    h('div', { class: 'iv-sub muted small' },
+      part('股息', iv.month.dividends, 'invest-month-div'), '　', part('已實現損益', iv.month.realized, 'invest-month-real')),
+    h('div', { class: 'iv-sub muted small' },
+      `${iv.year} 年累計 `, h('b', { class: cls(iv.ytd.total), 'data-testid': 'invest-ytd-total' }, money(iv.ytd.total, base, { sign: iv.ytd.total !== 0, whole: true })),
+      `（股息 ${money(iv.ytd.dividends, base, { whole: true })}、已實現 ${money(iv.ytd.realized, base, { sign: iv.ytd.realized !== 0, whole: true })}）`));
 }
 
 function stat(k, v, kind) {

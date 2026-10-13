@@ -334,3 +334,10 @@ a.item { color: inherit; text-decoration: none; }
 .recon-list .check { padding-top: 2px; }
 .recon-list .grow { cursor: pointer; }
 .recon-list .s { white-space: normal; }
+/* 首頁月份卡片：投資收益（股息＋已實現損益） */
+.iv-line { display: block; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--text); text-decoration: none; }
+.iv-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.iv-k { color: var(--sub); }
+.iv-total { font-size: 1.15em; }
+.iv-sub { margin-top: 3px; line-height: 1.5; }
+.iv-part { white-space: nowrap; }

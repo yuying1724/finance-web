@@ -147,7 +147,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.52',
+    APP_VERSION: '0.9.53',
   };
   return api;
 })();
@@ -2626,6 +2626,58 @@ var FinApi = (function () {
     return { balances: list, netWorth: nw, ledgerIssues: bal.issues, pending: pending };
   }
 
+  /** 價格歷史（'日期|代號' → 收盤價）；只在「用外幣現金買賣」或外幣股息時才需要，都用台幣交割就不讀，少讀一張分頁。同一次請求只讀一次 */
+  function priceHistoryMap(c) {
+    if (c.__priceHistory) return c.__priceHistory;
+    var need = c.txRows.some(function (t) {
+      return (t.type === '買入' && t.srcSymbol && t.srcSymbol !== c.base) || (t.type === '賣出' && t.dstSymbol && t.dstSymbol !== c.base) ||
+        (t.type === '股息' && t.dstSymbol && t.dstSymbol !== c.base);
+    });
+    var map = {};
+    if (need) FinRepo.goodRows('priceHistory').forEach(function (r) { map[r.date + '|' + r.symbol] = r.close; });
+    c.__priceHistory = map;
+    return map;
+  }
+  /** 持倉計算（含已實現損益、股息），價格歷史用來估外幣交割的台幣成本；跟投資頁同一套算法 */
+  function holdingsWithHistory(c, asOf) {
+    return FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: asOf || c.today, prices: c.prices, priceHistory: priceHistoryMap(c) });
+  }
+
+  /**
+   * 投資收益（首頁月份卡片）：這個月與今年累計的「股息（實收）」與「已實現損益（賣出扣掉成本、手續費、稅）」，換算基準幣別。
+   * 不算進一般的收入／支出（那邊只看薪資與日常花費）；未實現損益看投資頁。
+   */
+  function investIncome(c, ym) {
+    var h = holdingsWithHistory(c, c.today);
+    var ph = priceHistoryMap(c);
+    var dec = c.instruments[c.base] ? c.instruments[c.base].decimals : 0;
+    var year = ym.slice(0, 4);
+    var m = { dividends: 0, realized: 0 }, y = { dividends: 0, realized: 0 }, estimated = false;
+    function divBase(d) {
+      if (d.symbol === c.base) return d.net || 0;
+      var hp = ph[d.date + '|' + d.symbol];
+      if (hp && hp > 0) return (d.net || 0) * hp;
+      var up = FinValuation.unitPrice(d.symbol, c.instruments, c.prices, c.base, 0);
+      estimated = true;
+      return up === null ? 0 : (d.net || 0) * up;
+    }
+    h.dividends.forEach(function (d) {
+      if (d.date.slice(0, 4) !== year) return;
+      var v = divBase(d);
+      y.dividends += v; if (d.date.slice(0, 7) === ym) m.dividends += v;
+    });
+    h.realized.forEach(function (r) {
+      if (r.date.slice(0, 4) !== year || r.realizedBase === null) return;
+      if (r.estimated) estimated = true;
+      y.realized += r.realizedBase; if (r.date.slice(0, 7) === ym) m.realized += r.realizedBase;
+    });
+    function fin(o) {
+      var d = FinMoney.round(o.dividends, dec), r = FinMoney.round(o.realized, dec);
+      return { dividends: d, realized: r, total: FinMoney.round(d + r, dec) };
+    }
+    return { ym: ym, year: year, month: fin(m), ytd: fin(y), estimated: estimated };
+  }
+
   /**
    * 資產配置：把「正的」餘額依類別與幣別分組（負的是負債，另外依帳戶類型列出）。
    * 類別：台幣現金與存款／台股／海外股票／加密貨幣／外幣現金／應收與代墊／其他（點數等）。
@@ -3179,6 +3231,7 @@ var FinApi = (function () {
         pending: calc.pending,
         netWorth: { base: nw.base, total: nw.total, assets: nw.assets, liabilities: nw.liabilities, byAccount: nw.byAccount, byType: nw.byType, missing: nw.missing },
         allocation: allocation(c, nw),
+        invest: investIncome(c, FinDates.ymOf(c.today)),
         month: month, recent: recent,
         issues: { count: c.bad.length + calc.ledgerIssues.length, items: c.bad.slice(0, 20), ledger: calc.ledgerIssues.slice(0, 20) },
         enabledTxTypes: FinSchema.ENABLED_TX_TYPES,
@@ -4823,13 +4876,7 @@ var FinApi = (function () {
       var c = loadContext(env.now);
       var asOf = FinDates.isValid(str(p.asOf)) ? str(p.asOf) : c.today;
       // 價格歷史只在「用外幣現金買賣」時才需要（估算台幣成本）；都用台幣交割就不讀，少讀一張分頁
-      var needHistory = c.txRows.some(function (t) {
-        return (t.type === '買入' && t.srcSymbol && t.srcSymbol !== c.base) || (t.type === '賣出' && t.dstSymbol && t.dstSymbol !== c.base);
-      });
-      var priceHistoryRows = needHistory ? FinRepo.goodRows('priceHistory') : [];
-      var priceHistory = {};
-      priceHistoryRows.forEach(function (r) { priceHistory[r.date + '|' + r.symbol] = r.close; });
-      var h = FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: asOf, prices: c.prices, priceHistory: priceHistory });
+      var h = holdingsWithHistory(c, asOf);
       var valued = FinHoldings.valuePositions(h.positions, c.instruments, c.prices, c.base);
       // 跟券商 app 一致：台股損益先扣掉預估賣出手續費＋證交稅（netPl）；totalBase 保留「帳面損益（未扣費用）」
       valued.forEach(function (v) {
