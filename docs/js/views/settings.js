@@ -2,8 +2,9 @@ import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
 import { prefs, state, notify, WEB_VERSION } from '../store.js';
 import * as api from '../api.js';
+import * as bio from '../biometric.js';
 import { money } from '../fmt.js';
-import { openSheet, toast, errorText, withBusy } from '../ui.js';
+import { openSheet, toast, errorText, withBusy, confirmDialog } from '../ui.js';
 import { lock } from '../app.js';
 import { openMerchants } from './merchants.js';
 import { openQuickManager } from './quicktx.js';
@@ -32,7 +33,8 @@ export function renderSettings(root) {
       h('div', { class: 'card' }, h('h2', null, '安全'),
         h('div', { class: 'row-flex wrap' },
           h('button', { class: 'btn btn-sm', onclick: openChangePin }, icon('lock'), '變更 PIN'),
-          h('button', { class: 'btn btn-sm', onclick: () => lock('已鎖定') }, icon('logout'), '鎖定並登出')),
+          h('button', { class: 'btn btn-sm', onclick: () => lock('已鎖定', { autoBio: false }) }, icon('logout'), '鎖定並登出')),
+        bioBlock(),
         h('p', { class: 'muted small', style: { marginBottom: 0 } }, `這台裝置：${d.device || '（未命名）'}。要新增或撤銷裝置，請在試算表的「財務系統」選單操作。`)),
       h('div', { class: 'card' }, h('h2', null, '資料'),
         h('div', { class: 'row-flex wrap' },
@@ -49,6 +51,49 @@ export function renderSettings(root) {
           h('dt', null, '版本'), h('dd', { 'data-testid': 'app-versions' }, `網頁 ${WEB_VERSION}／後端 ${d.version}`, WEB_VERSION !== d.version ? h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '版本不一致，請按下方「清除快取並重新載入」') : null),
           h('dt', null, '後端'), h('dd', { class: 'mono' }, prefs.apiUrl.replace(/^https?:\/\//, '').slice(0, 60) + (prefs.apiUrl.length > 68 ? '…' : ''))),
         h('button', { class: 'btn btn-sm', style: { marginTop: '12px' }, onclick: reloadApp }, icon('refresh'), '清除快取並重新載入'))));
+}
+
+// ---------- 指紋／臉部登入（只在這台裝置生效；PIN 用指紋驗證才拿得到的金鑰加密後存在瀏覽器裡） ----------
+let bioAvail = null; // null = 還沒查
+function bioBlock() {
+  if (!bio.isSupported()) return null;
+  if (bioAvail === null) { bioAvail = false; bio.isAvailable().then((ok) => { bioAvail = ok; notify(); }); }
+  const rec = bio.record();
+  if (rec) {
+    return h('div', { class: 'bio-status', 'data-testid': 'bio-status' },
+      icon('fingerprint'), h('span', { class: 'grow small' }, `指紋／臉部登入：已啟用（${rec.at}）`),
+      h('button', { class: 'btn btn-sm', 'data-testid': 'bio-disable', onclick: async () => {
+        if (!(await confirmDialog({ title: '停用指紋／臉部登入', message: '之後在這台裝置登入就要輸入 PIN。要停用嗎？', confirmText: '停用', danger: true }))) return;
+        bio.disable(); toast('已停用指紋／臉部登入'); notify();
+      } }, '停用'));
+  }
+  if (!bioAvail) return h('p', { class: 'muted small', style: { marginTop: '10px', marginBottom: 0 } }, '這台裝置沒有可用的指紋／臉部驗證，無法啟用指紋登入。');
+  return h('div', { class: 'bio-status' },
+    icon('fingerprint'), h('span', { class: 'grow small' }, '指紋／臉部登入：未啟用'),
+    h('button', { class: 'btn btn-sm btn-primary', 'data-testid': 'bio-enable', onclick: openEnableBio }, '啟用'));
+}
+
+function openEnableBio() {
+  const banner = h('div', { class: 'notice bad', role: 'alert', style: { display: 'none', marginBottom: '10px' } });
+  const pinInput = h('input', { type: 'password', autocomplete: 'off', inputmode: 'numeric', 'aria-label': '目前的 PIN' });
+  const go = h('button', { class: 'btn btn-primary', type: 'button', 'data-testid': 'bio-enroll', onclick: async (e) => {
+    banner.style.display = 'none';
+    const pin = pinInput.value;
+    if (!pin) { banner.style.display = ''; mount(banner, '請輸入目前的 PIN'); return; }
+    await withBusy(e.currentTarget, async () => {
+      try {
+        const r = await api.call('login', { token: prefs.token, pin }); // 先確認 PIN 是對的，才拿去加密
+        api.setSession(r.session, r.ttlMinutes);
+      } catch (err) { banner.style.display = ''; mount(banner, err && err.code === 'AUTH_FAILED' ? 'PIN 不正確' : errorText(err)); return; }
+      try { await bio.enroll(pin); }
+      catch (err) { banner.style.display = ''; mount(banner, bio.friendly(err)); return; }
+      sheet.close(); toast('已啟用，下次登入可以用指紋／臉部'); notify();
+    });
+  } }, '驗證並啟用');
+  const sheet = openSheet({ title: '啟用指紋／臉部登入', body: h('div', null, banner,
+    h('p', { class: 'muted small' }, '只在這台裝置生效。按「驗證並啟用」後手機會跳指紋／臉部驗證；PIN 會用驗證通過才拿得到的金鑰加密後存在這台裝置，沒有通過驗證解不開。之後登入時驗指紋就好，PIN 照舊可以用。'),
+    h('label', { class: 'field' }, h('span', { class: 'lbl' }, '目前的 PIN'), pinInput)),
+    footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), go] });
 }
 
 // ---------- 備份（後端每週日清晨自動備份整份試算表到雲端硬碟；這裡顯示上次備份、可以手動備份） ----------
@@ -99,8 +144,14 @@ function openChangePin() {
     banner.style.display = 'none';
     if (f.newPin !== f.again) { banner.style.display = ''; mount(banner, '兩次輸入的新 PIN 不一致'); return; }
     await withBusy(e.currentTarget, async () => {
-      try { await api.call('changePin', { oldPin: f.oldPin, newPin: f.newPin }); sheet.close(); toast('PIN 已變更'); }
-      catch (err) { banner.style.display = ''; mount(banner, errorText(err)); }
+      try { await api.call('changePin', { oldPin: f.oldPin, newPin: f.newPin }); }
+      catch (err) { banner.style.display = ''; mount(banner, errorText(err)); return; }
+      sheet.close();
+      if (!bio.isEnabled()) { toast('PIN 已變更'); return; }
+      // 這台裝置有指紋登入：用新 PIN 重新加密（跳一次指紋）；失敗就停用，請使用者重新啟用
+      try { await bio.reseal(f.newPin); toast('PIN 已變更，指紋登入已更新'); }
+      catch (e2) { toast('PIN 已變更；指紋／臉部登入已停用，請到設定重新啟用'); }
+      notify();
     });
   } }, '變更');
   const sheet = openSheet({ title: '變更 PIN', dismissable: false, body: h('div', null, banner, inp('目前的 PIN', 'oldPin'), inp('新的 PIN（至少 6 碼）', 'newPin'), inp('再輸入一次新的 PIN', 'again')),

@@ -1899,3 +1899,71 @@ test('定期頁：停用的範本有「刪除」，確認後從列表消失；�
     assert.ok(be.call('bootstrap').data.recurring.find((r) => r.name === '房租'));
   });
 });
+
+test('指紋／臉部登入：設定裡啟用（先驗 PIN 再跳指紋）、重開自動用指紋登入、鎖定後按按鈕登入、變更 PIN 後仍可用、停用後回到 PIN', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, ctx, s } = a;
+    // WebAuthn 要有合法網域（127.0.0.1 不行），改走 localhost；用 Chrome 的虛擬驗證器模擬「有指紋、驗證都通過、支援 PRF」的手機
+    await page.goto(s.url.replace('127.0.0.1', 'localhost'));
+    const cdp = await ctx.newCDPSession(page);
+    await cdp.send('WebAuthn.enable', { enableUI: false });
+    await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', ctap2Version: 'ctap2_1', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true, automaticPresenceSimulation: true } });
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    assert.equal(await page.locator('[data-testid=bio-login]').count(), 0);
+    await a.tab('settings');
+    await page.waitForSelector('[data-testid=bio-enable]');
+    await page.click('[data-testid=bio-enable]');
+    await page.fill('.sheet input[aria-label="目前的 PIN"]', '000000');
+    await page.click('[data-testid=bio-enroll]');
+    await page.waitForFunction(() => /PIN 不正確/.test(document.querySelector('.sheet .notice.bad')?.innerText || ''));
+    await page.fill('.sheet input[aria-label="目前的 PIN"]', s.pin);
+    await page.click('[data-testid=bio-enroll]');
+    await page.waitForFunction(() => /已啟用，下次登入可以用指紋/.test(document.body.innerText));
+    await page.waitForFunction(() => /已啟用/.test(document.querySelector('[data-testid=bio-status]')?.innerText || ''));
+    const rec = await page.evaluate(() => localStorage.getItem('fin.bio'));
+    assert.ok(rec && JSON.parse(rec).ct && !rec.includes(s.pin), '加密後的 PIN 存在裝置裡，不能是明文');
+    // session 失效後重開：登入頁有指紋按鈕，而且自動跳驗證、不用輸入 PIN 就進首頁
+    await page.evaluate(() => localStorage.removeItem('fin.session'));
+    await page.reload();
+    await page.waitForSelector('[data-testid=bio-login]');
+    await page.waitForSelector('.tabbar a[data-tab=home]'); // 不用輸入 PIN 就登入了（停在原本的設定頁）
+    await a.tab('home'); await page.waitForSelector('[data-testid=networth]');
+    // 從設定「鎖定並登出」：不自動跳，按按鈕才驗
+    await a.tab('settings');
+    await page.click('text=鎖定並登出');
+    await page.waitForSelector('[data-testid=bio-login]');
+    await page.waitForTimeout(400);
+    assert.equal(await page.locator('.tabbar').count(), 0, '主動登出後不該自動用指紋登入');
+    await page.click('[data-testid=bio-login]');
+    await page.waitForSelector('.tabbar a[data-tab=home]');
+    // 變更 PIN：指紋登入跟著更新（用新 PIN 重新加密），登出再用指紋登入成功
+    await a.tab('settings');
+    await page.click('text=變更 PIN');
+    const inputs = page.locator('.sheet input[type=password]');
+    await inputs.nth(0).fill(s.pin); await inputs.nth(1).fill('975310'); await inputs.nth(2).fill('975310');
+    await page.click('.sheet-foot .btn-primary');
+    await page.waitForFunction(() => /指紋登入已更新/.test(document.body.innerText));
+    await page.evaluate(() => localStorage.removeItem('fin.session'));
+    await page.reload();
+    await page.waitForSelector('.tabbar a[data-tab=home]');
+    // 存起來的密文被動過：顯示錯誤，還是可以輸入 PIN 登入
+    await page.evaluate(() => { const r = JSON.parse(localStorage.getItem('fin.bio')); r.ct = r.ct.slice(0, -3) + (r.ct.endsWith('AAA') ? 'BBB' : 'AAA'); localStorage.setItem('fin.bio', JSON.stringify(r)); });
+    await a.tab('settings');
+    await page.click('text=鎖定並登出');
+    await page.waitForSelector('[data-testid=bio-login]');
+    await page.click('[data-testid=bio-login]');
+    await page.waitForFunction(() => /解不開存起來的 PIN/.test(document.querySelector('.login .notice.bad')?.innerText || ''));
+    await page.fill('input[aria-label="PIN"]', '975310');
+    await page.click('button[type=submit]');
+    await page.waitForSelector('.tabbar a[data-tab=home]');
+    // 停用：登入頁沒有指紋按鈕
+    await a.tab('settings');
+    await page.click('[data-testid=bio-disable]');
+    await page.click('.sheet-foot .btn-danger');
+    await page.waitForFunction(() => !localStorage.getItem('fin.bio'));
+    await page.waitForSelector('[data-testid=bio-enable]');
+    await page.click('text=鎖定並登出');
+    await page.waitForSelector('input[aria-label="PIN"]');
+    assert.equal(await page.locator('[data-testid=bio-login]').count(), 0);
+  });
+});

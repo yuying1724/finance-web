@@ -78,12 +78,12 @@ function showShell() {
   renderView();
 }
 
-export function lock(message) {
+export function lock(message, opts = {}) {
   api.clearSession();
   state.data = null;
   closeAllSheets();
   viewRoot = null;
-  renderLogin(app, { message, onSuccess: start });
+  renderLogin(app, { message, onSuccess: start, autoBio: opts.autoBio !== false });
 }
 
 async function start() {
