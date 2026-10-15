@@ -236,6 +236,10 @@ button.item:active { background: var(--accent-soft); }
 .login .or { text-align: center; color: var(--sub); font-size: 13px; margin: 12px 0 2px; }
 /* 離開 App 太久的輕鎖定：蓋在整個畫面上 */
 .lockscreen { position: fixed; inset: 0; z-index: 90; background: var(--bg); overflow: auto; }
+/* 同步狀態小標示（右上角；手機在標題列下方） */
+.sync-pill { position: fixed; top: calc(8px + env(safe-area-inset-top)); right: 10px; z-index: 30; font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--card); color: var(--sub); border: 1px solid var(--line); box-shadow: var(--shadow-sm); opacity: 0; pointer-events: none; transition: opacity .2s; }
+.sync-pill.show { opacity: 1; }
+.sync-pill.bad { color: var(--on-accent); background: var(--bad); border-color: transparent; }
 .relock-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .relock-row select { max-width: 50%; }
 .bio-status { display: flex; align-items: center; gap: 8px; margin-top: 10px; }

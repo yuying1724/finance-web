@@ -27,9 +27,12 @@ export function clearCache() { try { localStorage.removeItem(CACHE_KEY); } catch
 export async function refresh() {
   state.refreshing = true;
   notify();
+  const seqAtStart = state.writeSeq;
   try {
     const data = await api.call('bootstrap');
     if (!isBootstrapData(data)) throw new api.ApiError('BAD_RESPONSE', '後端回傳的資料不完整，請稍後再按重新整理');
+    // 抓的途中又做了新的修改：這份已經是舊的，丟掉（那次寫入完成後會再抓一次），才不會把剛做的修改蓋回去
+    if (seqAtStart !== state.writeSeq) return;
     state.data = data;
     state.loadedAt = new Date();
     saveCache();
@@ -38,6 +41,11 @@ export async function refresh() {
     notify();
   }
 }
+
+/** 今天的日期（跟後端一樣是 yyyy-MM-dd，用這台裝置的時間） */
+export function todayStr() { return FinDates.today(Date.now()); }
+/** 畫面上的資料是昨天（或更早）抓的：過了午夜，「今日交割」「到期待辦」都要重算 */
+export function dayChanged() { return !!(state.data && state.data.today && state.data.today !== todayStr()); }
 
 // ---------- 樂觀更新（按下儲存立刻關視窗、畫面立刻反應，背景送出；失敗自動還原） ----------
 /**
@@ -52,6 +60,7 @@ export async function write(action, params, opts = {}) {
     notify();
   }
   if (opts.toast) toast(opts.toast, opts.toastOpts || {});
+  state.writeSeq++; state.pendingWrites++; notify();
   try {
     const result = await api.call(action, params);
     if (opts.onResult) { try { opts.onResult(result); } catch (e) { console.error(e); } notify(); }
@@ -66,6 +75,8 @@ export async function write(action, params, opts = {}) {
       { kind: 'bad', ms: retryable ? 10000 : undefined, action: retryable ? { label: '重試', fn: opts.retry } : undefined });
     if (opts.onError) opts.onError(e);
     return null;
+  } finally {
+    state.pendingWrites = Math.max(0, state.pendingWrites - 1); notify();
   }
 }
 

@@ -1,7 +1,7 @@
 import { h, mount } from './dom.js';
 import { icon } from './icons.js';
 import { prefs, state, subscribe, applyTheme } from './store.js';
-import { refresh, loadCache } from './data.js';
+import { refresh, loadCache, dayChanged } from './data.js';
 import * as api from './api.js';
 import { closeAllSheets } from './ui.js';
 import { renderLogin } from './views/login.js';
@@ -29,6 +29,7 @@ const TABS = [
 
 let viewRoot = null;
 let lastActive = Date.now();
+let syncPill = null;
 
 export function parseRoute() {
   const raw = (location.hash || '#/home').replace(/^#\/?/, '');
@@ -67,7 +68,9 @@ function showShell() {
     h('a', { href: '#/' + t.id, 'data-tab': t.id, class: cls }, icon(t.icon), h('span', null, t.label),
       t.badge ? h('span', { class: 'badge nav-badge', 'data-badge-tab': t.id, style: { marginLeft: '4px', display: 'none' } }) : null));
   viewRoot = h('main', { class: 'main', id: 'view' });
+  syncPill = h('div', { class: 'sync-pill', 'data-testid': 'sync-pill', 'aria-live': 'polite' });
   const shell = h('div', { class: 'shell' },
+    syncPill,
     h('aside', { class: 'sidebar' },
       h('div', { class: 'brand' }, icon('coin'), '財務管理'),
       nav(''),
@@ -77,8 +80,37 @@ function showShell() {
     h('nav', { class: 'tabbar', 'aria-label': '主選單' }, nav('')),
     h('button', { class: 'fab', 'aria-label': '記一筆', onclick: () => openTxForm({ onDone: refresh }) }, icon('plus')));
   mount(app, shell);
+  updateSyncPill();
   renderView();
 }
+
+// 同步狀態小標示：有寫入在路上＝「同步中」，背景更新＝「更新中」，沒網路＝「離線」
+function updateSyncPill() {
+  if (!syncPill) return;
+  const text = navigator.onLine === false ? '離線中，修改可能無法儲存' : state.pendingWrites > 0 ? '同步中…' : state.refreshing ? '更新中…' : '';
+  syncPill.textContent = text;
+  syncPill.classList.toggle('show', !!text);
+  syncPill.classList.toggle('bad', navigator.onLine === false);
+}
+window.addEventListener('online', updateSyncPill);
+window.addEventListener('offline', updateSyncPill);
+
+// 背景更新完如果正在畫面上的輸入框打字（搜尋、金額…），先不要整頁重畫（會失焦、鍵盤收起來），離開輸入框再畫
+let renderWaiting = false;
+function onDataChange() {
+  updateSyncPill();
+  const a = document.activeElement;
+  if (viewRoot && a && viewRoot.contains(a) && a.matches('input:not([type=checkbox]):not([type=radio]), textarea, select')) {
+    if (!renderWaiting) {
+      renderWaiting = true;
+      a.addEventListener('blur', () => { renderWaiting = false; setTimeout(renderView, 0); }, { once: true });
+    }
+    return;
+  }
+  renderView();
+}
+/** 過了午夜（或從背景切回來時已經換日）：今日交割、到期待辦都要重算，自動重新整理 */
+function refreshIfDayChanged() { if (viewRoot && !state.refreshing && dayChanged()) refresh().catch(() => {}); }
 
 export function lock(message, opts = {}) {
   api.clearSession();
@@ -141,7 +173,7 @@ async function start() {
 }
 
 api.setAuthLostHandler(() => { if (state.data || viewRoot) lock('登入已過期，請重新輸入 PIN'); });
-subscribe(renderView);
+subscribe(onDataChange);
 window.addEventListener('hashchange', () => { closeAllSheets(); renderView(); window.scrollTo(0, 0); });
 
 // 閒置太久自動鎖定（時間取自後端的「閒置登出分鐘」）
@@ -150,12 +182,15 @@ setInterval(() => {
   const s = prefs.session;
   if (!s || !viewRoot) return;
   if (Date.now() - lastActive > (s.ttl || 60) * 60000) lock('閒置太久，已自動鎖定');
+  else refreshIfDayChanged();
 }, 30000);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { if (viewRoot) markHidden(); return; }
   if (document.visibilityState !== 'visible' || !viewRoot) return;
   if (!api.hasValidSession()) { lock('登入已過期，請重新輸入 PIN'); return; }
   maybeRelock();
+  // 從背景切回來超過 5 分鐘（可能在別台裝置改過資料）或已經換日：自動在背景重新整理一次
+  if (!state.refreshing && (dayChanged() || (state.loadedAt && Date.now() - state.loadedAt > 5 * 60000))) refresh().catch(() => {});
 });
 window.addEventListener('pagehide', () => { if (viewRoot) markHidden(); });
 

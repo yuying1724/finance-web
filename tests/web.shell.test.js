@@ -41,16 +41,16 @@ test('前端沒有直接寫入 innerHTML（避免備註等文字被當成 HTML �
   }
 });
 
-test('版本號一致：網頁 WEB_VERSION、sw.js 快取名稱、後端 APP_VERSION', () => {
+test('版本號一致：網頁 WEB_VERSION 跟後端 APP_VERSION；sw.js 的快取名稱是建置產生的內容雜湊', () => {
   const store = fs.readFileSync(path.join(DOCS, 'js', 'store.js'), 'utf8');
   const web = /WEB_VERSION = '([^']+)'/.exec(store)[1];
-  const swVer = /const VERSION = 'fin-v([^']+)'/.exec(sw)[1];
   const app = require('../core/schema.js').APP_VERSION;
   assert.equal(web, app, 'docs/js/store.js 的 WEB_VERSION 要跟 core/schema.js 的 APP_VERSION 一樣');
-  assert.equal(swVer, app, 'docs/sw.js 的 VERSION 要跟 APP_VERSION 一樣（不然手機不會更新快取）');
+  assert.match(sw, /const VERSION = 'fin-[0-9a-f]{10}'/, 'sw.js 要由 tools/build-web.js 產生（版本號是內容雜湊）');
 });
 
-test('sw.js 向網路要檔案時帶 no-cache（避免 GitHub Pages 的 10 分鐘快取讓手機看到舊版）', () => {
-  assert.match(sw, /cache: 'no-cache'/);
+test('sw.js 快取清單包含 docs/ 底下所有檔案（png 大圖除外），而且安裝時用 cache: reload 略過 HTTP 快取', () => {
+  const all = walk(DOCS).map((f) => path.relative(DOCS, f).split(path.sep).join('/')).filter((f) => f !== 'sw.js' && (!f.endsWith('.png') || f === 'icons/icon-192.png'));
+  for (const f of all) assert.ok(shell.includes(f), '檔案沒有在 sw.js 的快取清單裡（請重新 npm run build）：' + f);
   assert.match(sw, /cache: 'reload'/);
 });

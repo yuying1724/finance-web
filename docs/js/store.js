@@ -1,5 +1,5 @@
-// 網頁（前端）版本：跟 core/schema.js 的 APP_VERSION、sw.js 的快取名稱一起改（tests/web.shell.test.js 會檢查三者一致）
-export const WEB_VERSION = '0.9.68';
+// 網頁（前端）版本：跟 core/schema.js 的 APP_VERSION 一起改（tests/web.shell.test.js 會檢查一致；sw.js 的快取名稱由建置自動產生）
+export const WEB_VERSION = '0.9.69';
 
 // 狀態與偏好設定。localStorage 可能被封鎖（隱私模式），所以每次存取都包 try/catch，失敗就退回記憶體。
 const mem = {};
@@ -28,7 +28,8 @@ export function applyTheme() {
 }
 
 // 全域狀態（首頁資料 = bootstrap 的回應）
-export const state = { data: null, loadedAt: null, refreshing: false, listeners: new Set() };
+// pendingWrites：還在送往後端的寫入筆數（同步中）；writeSeq：每次寫入 +1，背景抓回來的舊資料不會蓋掉之後才做的修改
+export const state = { data: null, loadedAt: null, refreshing: false, pendingWrites: 0, writeSeq: 0, listeners: new Set() };
 export function subscribe(fn) { state.listeners.add(fn); return () => state.listeners.delete(fn); }
 export function notify() { state.listeners.forEach((fn) => fn()); }
 

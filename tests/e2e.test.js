@@ -323,7 +323,27 @@ test('本機快取秒開：重新整理時先顯示上次的資料，不用等�
     await page.waitForSelector('[data-testid=networth]');
     assert.ok(Date.now() - t0 < 2500, '有快取時應該不用等 bootstrap 就顯示畫面');
     assert.match(await page.locator('body').innerText(), /更新中…/);
+    assert.equal(await page.locator('[data-testid=sync-pill]').innerText(), '更新中…', '右上角同步小標示');
     await page.waitForFunction(() => !/更新中…/.test(document.body.innerText), null, { timeout: 8000 });
+    await page.unroute('**/api');
+    assert.ok(!(await page.locator('[data-testid=sync-pill]').evaluate((el) => el.classList.contains('show'))), '沒事時小標示隱藏');
+    // 過了午夜（畫面上的 today 不是今天）：30 秒檢查或切回前景時自動重新整理
+    let boots = 0;
+    await page.route('**/api', async (route) => { const b = JSON.parse(route.request().postData() || '{}'); if (b.action === 'bootstrap') boots++; await route.continue(); });
+    await page.evaluate(async () => { const m = await import('./js/store.js'); m.state.data.today = '2000-01-01'; document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForFunction(async () => { const m = await import('./js/store.js'); return m.state.data.today !== '2000-01-01' && !m.state.refreshing; });
+    assert.equal(boots, 1, '換日後自動抓一次');
+    // 從背景切回來不到 5 分鐘、也沒換日：不重抓
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.waitForTimeout(300);
+    assert.equal(boots, 1);
+    // 正在輸入框打字時背景更新完不重畫（保留焦點）；離開輸入框才重畫
+    await a.tab('tx');
+    await page.waitForSelector('input[aria-label="搜尋"]');
+    await page.fill('input[aria-label="搜尋"]', '午餐');
+    await page.evaluate(async () => { const m = await import('./js/data.js'); await m.refresh(); });
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute('aria-label')), '搜尋', '打字中不被背景更新打斷');
+    assert.equal(await page.locator('input[aria-label="搜尋"]').inputValue(), '午餐');
     await page.unroute('**/api');
   });
 });

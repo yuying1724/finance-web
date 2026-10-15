@@ -13,3 +13,8 @@ push.bat
 Claude outputs/
 pull.bat
 dist/Code_deploy.txt
+
+# Google 授權檔（clasp 部署用），絕對不能進版控
+.clasprc.json
+# 部署時由 dist/Code.gs 與 server/appsscript.json 複製產生（Apps Script 專案的本機鏡像）
+gas/
