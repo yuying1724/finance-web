@@ -60,12 +60,21 @@ function bioBlock() {
   if (bioAvail === null) { bioAvail = false; bio.isAvailable().then((ok) => { bioAvail = ok; notify(); }); }
   const rec = bio.record();
   if (rec) {
-    return h('div', { class: 'bio-status', 'data-testid': 'bio-status' },
-      icon('fingerprint'), h('span', { class: 'grow small' }, `指紋／臉部登入：已啟用（${rec.at}）`),
-      h('button', { class: 'btn btn-sm', 'data-testid': 'bio-disable', onclick: async () => {
-        if (!(await confirmDialog({ title: '停用指紋／臉部登入', message: '之後在這台裝置登入就要輸入 PIN。要停用嗎？', confirmText: '停用', danger: true }))) return;
-        bio.disable(); toast('已停用指紋／臉部登入'); notify();
-      } }, '停用'));
+    const cur = bio.relockMinutes();
+    const sel = h('select', { 'aria-label': '離開 App 多久後要重新驗證', 'data-testid': 'relock-select', onchange: () => {
+      bio.setRelockMinutes(sel.value === 'off' ? null : Number(sel.value));
+      toast(sel.value === 'off' ? '離開 App 不會再要求驗證（閒置太久仍會登出）' : `離開 App ${bio.RELOCK_OPTIONS.find(([v]) => String(v) === sel.value)[1]}後回來會再驗一次指紋`);
+    } }, bio.RELOCK_OPTIONS.map(([v, label]) => h('option', { value: v === null ? 'off' : String(v), selected: v === cur }, v === 0 ? '立即（每次回來都驗）' : label)));
+    return h('div', null,
+      h('div', { class: 'bio-status', 'data-testid': 'bio-status' },
+        icon('fingerprint'), h('span', { class: 'grow small' }, `指紋／臉部登入：已啟用（${rec.at}）`),
+        h('button', { class: 'btn btn-sm', 'data-testid': 'bio-disable', onclick: async () => {
+          if (!(await confirmDialog({ title: '停用指紋／臉部登入', message: '之後在這台裝置登入就要輸入 PIN。要停用嗎？', confirmText: '停用', danger: true }))) return;
+          bio.disable(); toast('已停用指紋／臉部登入'); notify();
+        } }, '停用')),
+      h('div', { class: 'relock-row' },
+        h('span', { class: 'grow small' }, '離開 App 多久後要重新驗證'), sel),
+      h('p', { class: 'muted small', style: { margin: '4px 0 0' } }, '切到別的 App 或關掉螢幕超過這段時間，回來時會先驗指紋（登入狀態還在，驗過就直接繼續）。只在這台裝置生效。'));
   }
   if (!bioAvail) return h('p', { class: 'muted small', style: { marginTop: '10px', marginBottom: 0 } }, '這台裝置沒有可用的指紋／臉部驗證，無法啟用指紋登入。');
   return h('div', { class: 'bio-status' },

@@ -234,6 +234,10 @@ button.item:active { background: var(--accent-soft); }
 .login .bio-btn { padding: 14px 16px; font-size: 16px; }
 .login .bio-btn svg.i { width: 22px; height: 22px; }
 .login .or { text-align: center; color: var(--sub); font-size: 13px; margin: 12px 0 2px; }
+/* 離開 App 太久的輕鎖定：蓋在整個畫面上 */
+.lockscreen { position: fixed; inset: 0; z-index: 90; background: var(--bg); overflow: auto; }
+.relock-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.relock-row select { max-width: 50%; }
 .bio-status { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .bio-status .badge { flex: none; }
 details.adv { margin-top: 12px; font-size: 13.5px; color: var(--sub); }

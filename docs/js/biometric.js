@@ -34,6 +34,23 @@ export function record() {
 export function isEnabled() { return !!record(); }
 export function disable() { try { localStorage.removeItem(LS_KEY); } catch (e) { /* 忽略 */ } }
 
+// ---------- 離開 App 多久後要重新驗證（只在這台裝置生效，存 localStorage fin.relock） ----------
+const LS_RELOCK = 'fin.relock';
+export const RELOCK_DEFAULT = 3;
+/** 設定頁的選項：分鐘數；null＝不用（只靠閒置登出） */
+export const RELOCK_OPTIONS = [[0, '立即'], [1, '1 分鐘'], [3, '3 分鐘'], [5, '5 分鐘'], [null, '不用']];
+/** 這台裝置設定的分鐘數；沒設過：啟用指紋的裝置預設 3 分鐘，其他裝置不用 */
+export function relockMinutes() {
+  let v = null;
+  try { v = localStorage.getItem(LS_RELOCK); } catch (e) { /* 忽略 */ }
+  if (v === 'off') return null;
+  if (v !== null && v !== '' && Number.isFinite(Number(v))) return Number(v);
+  return isEnabled() ? RELOCK_DEFAULT : null;
+}
+export function setRelockMinutes(mins) {
+  try { localStorage.setItem(LS_RELOCK, mins === null || mins === undefined || mins === '' ? 'off' : String(Number(mins))); } catch (e) { /* 忽略 */ }
+}
+
 /** 啟用：建立平台憑證（跳指紋）、拿 PRF 秘密、把 PIN 加密存起來 */
 export async function enroll(pin) {
   if (!isSupported()) throw new Error('這個瀏覽器不支援指紋／臉部登入');

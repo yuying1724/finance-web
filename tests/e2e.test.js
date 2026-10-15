@@ -1933,6 +1933,37 @@ test('指紋／臉部登入：設定裡啟用（先驗 PIN 再跳指紋）、重
     await page.waitForFunction(() => /已啟用/.test(document.querySelector('[data-testid=bio-status]')?.innerText || ''));
     const rec = await page.evaluate(() => localStorage.getItem('fin.bio'));
     assert.ok(rec && JSON.parse(rec).ct && !rec.includes(s.pin), '加密後的 PIN 存在裝置裡，不能是明文');
+    // 離開 App 太久的輕鎖定：啟用指紋後預設 3 分鐘；設定頁可改；離開不到時間回來不鎖
+    assert.equal(await page.locator('[data-testid=relock-select]').inputValue(), '3');
+    await page.evaluate(() => { localStorage.setItem('fin.hiddenAt', String(Date.now() - 2 * 60000)); document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('[data-testid=lockscreen]').count(), 0, '離開 2 分鐘不到 3 分鐘：不鎖');
+    // 離開 4 分鐘回來：蓋上鎖定畫面，指紋自動驗證通過就解開，登入狀態不變（沒有再呼叫 login）
+    await page.evaluate(() => { localStorage.setItem('fin.hiddenAt', String(Date.now() - 4 * 60000)); document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForSelector('[data-testid=lockscreen]');
+    await page.waitForFunction(() => !document.querySelector('[data-testid=lockscreen]'));
+    assert.ok(await page.locator('.tabbar a[data-tab=home]').count() > 0, '解鎖後還在原本的畫面');
+    // 改成「立即」，用「改用 PIN 登入」→ 走正常登入頁
+    await page.selectOption('[data-testid=relock-select]', '0');
+    await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(() => localStorage.getItem('fin.relock')), '0');
+    await page.evaluate(() => { localStorage.setItem('fin.hiddenAt', String(Date.now() - 1000)); document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForSelector('[data-testid=lockscreen]');
+    await page.click('[data-testid=relock-pin]');
+    await page.waitForSelector('input[aria-label="PIN"]');
+    assert.equal(await page.locator('[data-testid=lockscreen]').count(), 0);
+    await page.fill('input[aria-label="PIN"]', s.pin);
+    await page.click('button[type=submit]');
+    await page.waitForSelector('.tabbar a[data-tab=home]');
+    await a.tab('settings');
+    await page.selectOption('[data-testid=relock-select]', 'off');
+    // 重新整理（App 整個關掉再開）也會比對上次離開時間：設「不用」就不鎖
+    await page.evaluate(() => localStorage.setItem('fin.hiddenAt', String(Date.now() - 60 * 60000)));
+    await page.reload();
+    await page.waitForSelector('.tabbar a[data-tab=home]');
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('[data-testid=lockscreen]').count(), 0);
+    await page.selectOption('[data-testid=relock-select]', '3');
     // session 失效後重開：登入頁有指紋按鈕，而且自動跳驗證、不用輸入 PIN 就進首頁
     await page.evaluate(() => localStorage.removeItem('fin.session'));
     await page.reload();

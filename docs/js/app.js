@@ -5,6 +5,8 @@ import { refresh, loadCache } from './data.js';
 import * as api from './api.js';
 import { closeAllSheets } from './ui.js';
 import { renderLogin } from './views/login.js';
+import { renderLockScreen } from './views/lockscreen.js';
+import * as bio from './biometric.js';
 import { renderHome } from './views/home.js';
 import { renderTransactions } from './views/transactions.js';
 import { renderAccounts } from './views/accounts.js';
@@ -83,7 +85,29 @@ export function lock(message, opts = {}) {
   state.data = null;
   closeAllSheets();
   viewRoot = null;
+  removeLockScreen();
   renderLogin(app, { message, onSuccess: start, autoBio: opts.autoBio !== false });
+}
+
+// ---------- 離開 App 太久的輕鎖定（登入狀態還在，只是畫面蓋住；指紋通過就直接解開，改用 PIN 則重新登入） ----------
+const LS_HIDDEN_AT = 'fin.hiddenAt';
+let lockEl = null;
+function removeLockScreen() { if (lockEl) { lockEl.remove(); lockEl = null; } }
+function markHidden() { try { localStorage.setItem(LS_HIDDEN_AT, String(Date.now())); } catch (e) { /* 忽略 */ } }
+/** 回到前景（或重新打開）時：離開超過設定的分鐘數就鎖；沒啟用指紋的裝置改走正常登入 */
+function maybeRelock() {
+  if (!viewRoot || lockEl) return;
+  let hiddenAt = 0;
+  try { hiddenAt = Number(localStorage.getItem(LS_HIDDEN_AT)) || 0; localStorage.removeItem(LS_HIDDEN_AT); } catch (e) { /* 忽略 */ }
+  const mins = bio.relockMinutes();
+  if (!hiddenAt || mins === null || Date.now() - hiddenAt < mins * 60000) return;
+  if (!bio.isEnabled() || !bio.isSupported()) { lock('離開太久，請重新輸入 PIN', { autoBio: false }); return; }
+  closeAllSheets();
+  lockEl = renderLockScreen({
+    onUnlock: () => { removeLockScreen(); lastActive = Date.now(); },
+    onUsePin: () => lock('請輸入 PIN', { autoBio: false }),
+  });
+  document.body.appendChild(lockEl);
 }
 
 async function start() {
@@ -95,6 +119,7 @@ async function start() {
     state.data = cached.data;
     state.loadedAt = cached.loadedAt;
     showShell();
+    maybeRelock(); // 手機把 App 整個關掉再開：比對上次離開的時間
     refresh().catch((e) => {
       if (e.code === 'AUTH_REQUIRED') return; // 已由 authLost 處理
       console.error(e);
@@ -105,6 +130,7 @@ async function start() {
   try {
     await refresh();
     showShell();
+    maybeRelock();
   } catch (e) {
     if (e.code === 'AUTH_REQUIRED') return; // 已由 authLost 處理
     mount(app, h('div', { class: 'login' }, h('div', { class: 'panel card center' },
@@ -126,9 +152,12 @@ setInterval(() => {
   if (Date.now() - lastActive > (s.ttl || 60) * 60000) lock('閒置太久，已自動鎖定');
 }, 30000);
 document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { if (viewRoot) markHidden(); return; }
   if (document.visibilityState !== 'visible' || !viewRoot) return;
-  if (!api.hasValidSession()) lock('登入已過期，請重新輸入 PIN');
+  if (!api.hasValidSession()) { lock('登入已過期，請重新輸入 PIN'); return; }
+  maybeRelock();
 });
+window.addEventListener('pagehide', () => { if (viewRoot) markHidden(); });
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   // 已經有舊版在控制頁面時，新版接手（controllerchange）就自動重新整理一次，手機不用自己清快取；有視窗開著就先不打斷
@@ -142,7 +171,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   });
   navigator.serviceWorker.register('sw.js').then((reg) => {
     // App 從背景切回來時檢查有沒有新版（手機上的 PWA 常常好幾天不會真的重開）
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && reg) reg.update().catch(() => {}); });
   }).catch(() => {});
 }
 window.addEventListener('unhandledrejection', (e) => { console.error(e.reason); });
