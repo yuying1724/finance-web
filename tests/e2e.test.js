@@ -1967,3 +1967,48 @@ test('指紋／臉部登入：設定裡啟用（先驗 PIN 再跳指紋）、重
     assert.equal(await page.locator('[data-testid=bio-login]').count(), 0);
   });
 });
+
+test('交割款項：投資頁「交割」依交割日列出應收付、點開看明細、不足時可轉帳補足；首頁待辦卡片列出 7 天內的交割款', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const F = be.ctx.FinDates;
+    const today = F.today(Date.now());
+    const d2 = F.addDays(today, 2);
+    const bank = be.call('upsertAccount', { account: { name: '交割銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const tw = be.call('upsertAccount', { account: { name: '交割證券', type: '證券', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('upsertInstrument', { instrument: { symbol: '0050', name: '元大台灣50', type: 'ETF', quote: 'TWD', decimals: 0, priceSource: '手動', isNew: true } }).ok);
+    assert.ok(be.call('upsertInstrument', { instrument: { symbol: '4126', name: '太醫', type: '台股', quote: 'TWD', decimals: 0, priceSource: '手動', isNew: true } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '調整', date: F.addDays(today, -5), dstAccount: bank, dstSymbol: 'TWD', dstQty: 10000 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '調整', date: F.addDays(today, -5), dstAccount: tw, dstSymbol: '4126', dstQty: 1000 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '賣出', date: today, settleDate: d2, srcAccount: tw, srcSymbol: '4126', srcQty: 100, dstAccount: bank, dstSymbol: 'TWD', dstQty: 7680, amount: 7710, fee: 7, tax: 23 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '買入', date: today, settleDate: d2, srcAccount: bank, srcSymbol: 'TWD', srcQty: 21830, dstAccount: tw, dstSymbol: '0050', dstQty: 200, amount: 21800, fee: 30 } }).ok);
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    // 首頁待辦卡片：一行交割款合計，點了到投資頁「交割」
+    const soon = page.locator('[data-testid=settle-soon]');
+    await soon.waitFor();
+    assert.match(await soon.innerText(), /交割款（交割銀行）[\s\S]*2 筆買賣・餘額不足[\s\S]*-NT\$14,150/);
+    await soon.click();
+    await page.waitForSelector('[data-testid=st-list]');
+    assert.equal(await page.locator('[data-testid=subtab-settle]').getAttribute('class'), 'on');
+    const acct = page.locator('[data-testid=st-account][data-account="交割銀行"]');
+    assert.equal(await acct.locator('[data-testid=st-pending]').innerText(), '-NT$14,150');
+    assert.equal(await acct.locator('[data-testid=st-after]').innerText(), '-NT$4,150');
+    assert.match(await acct.locator('[data-testid=st-short]').innerText(), /還差 NT\$4,150/);
+    const grp = page.locator(`[data-testid=st-group][data-date="${d2}"]`);
+    assert.equal(await grp.locator('[data-testid=st-net]').innerText(), '-NT$14,150');
+    assert.equal(await page.locator('[data-testid=st-item]').first().isVisible(), false);
+    await grp.click();
+    const items = page.locator('[data-testid=st-item]');
+    await items.first().waitFor();
+    assert.equal(await items.count(), 2);
+    assert.match(await items.nth(0).innerText(), /賣出 太醫[\s\S]*100 股 @ 77\.1[\s\S]*\+NT\$7,680/);
+    assert.match(await items.nth(1).innerText(), /買進 元大台灣50[\s\S]*200 股 @ 109[\s\S]*-NT\$21,830/);
+    // 轉帳補足：轉入帳戶與金額已帶好
+    await acct.locator('[data-testid=st-topup]').click();
+    await page.waitForSelector('.sheet');
+    assert.match(await page.locator('.sheet').innerText(), /交割銀行/);
+    assert.equal(await page.locator('.sheet input[aria-label="金額"]').first().inputValue(), '4150');
+  });
+});

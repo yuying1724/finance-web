@@ -149,7 +149,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.62',
+    APP_VERSION: '0.9.63',
   };
   return api;
 })();
@@ -3233,6 +3233,84 @@ var FinApi = (function () {
    * 找不到扣款帳戶的放在 unassigned。每個帳戶從今天的餘額開始依日期累計，最低點低於 0 就標示「可能不足」。
    * 信用卡／應付／貸款這類負債帳戶不需要「有錢才能扣」（刷卡只是加進下一期帳單），所以不算不足，標 liability 讓畫面改寫成「會刷多少」。
    */
+  /**
+   * 交割款項（跟券商 App 的「交割款項」同一個概念）：買賣成交後，現金那一端在交割日才扣／入。
+   * 依「交割帳戶＋幣別＋交割日」合計，from 之後（含）的都列：交割日 < 今天＝已交割、＝今天＝今日、> 今天＝未交割。
+   * 券商定期定額（定期範本的模式是「券商定期定額」）由券商另外扣款，不算進交割金額（券商的交割款項也不會列），
+   * 只在同一天另外標「定期定額」合計。每個交割帳戶另外算：目前餘額、之後還要交割的淨額、交割完的餘額（只看交割款，
+   * 其他定期扣款請看未來扣款日曆），不夠的話列出最早不夠的那天與差額。
+   */
+  function settlementsOf(c, from, calc) {
+    var tplById = mapBy(c.recurringRows, 'id');
+    var groups = {}, order = [];
+    c.txRows.forEach(function (t) {
+      if (t.status !== '有效' || (t.type !== '買入' && t.type !== '賣出') || !t.settleDate || t.settleDate < from) return;
+      var isBuy = t.type === '買入';
+      var acct = isBuy ? t.srcAccount : t.dstAccount, sym = isBuy ? t.srcSymbol : t.dstSymbol, cash = Number(isBuy ? t.srcQty : t.dstQty);
+      var inst = c.instruments[sym];
+      if (!acct || !inst || inst.type !== '法幣' || !(cash > 0)) return;
+      var stockSym = isBuy ? t.dstSymbol : t.srcSymbol, qty = Number(isBuy ? t.dstQty : t.srcQty);
+      var tpl = t.recurringId ? tplById[t.recurringId] : null;
+      var regular = !!(tpl && tpl.mode === '券商定期定額');
+      var key = acct + '|' + sym + '|' + t.settleDate;
+      if (!groups[key]) {
+        groups[key] = { date: t.settleDate, accountId: acct, accountName: (c.accounts[acct] || {}).name || acct, symbol: sym,
+          status: t.settleDate < c.today ? '已交割' : t.settleDate === c.today ? '今日' : '未交割',
+          pay: 0, receive: 0, net: 0, count: 0, regular: { count: 0, amount: 0 }, items: [] };
+        order.push(key);
+      }
+      var g = groups[key];
+      var si = c.instruments[stockSym];
+      var price = Number(t.amount) > 0 && qty > 0 ? Number(t.amount) / qty : null;
+      g.items.push({ txId: t.id, type: t.type, tradeDate: t.date, symbol: stockSym, name: si ? si.name : stockSym, qty: qty > 0 ? qty : null,
+        price: price, cash: cash, direction: isBuy ? 'out' : 'in', regular: regular, brokerAccountId: isBuy ? t.dstAccount : t.srcAccount, note: t.note || '' });
+      if (regular) { g.regular.count++; g.regular.amount += isBuy ? -cash : cash; return; }
+      g.count++;
+      if (isBuy) g.pay += cash; else g.receive += cash;
+    });
+    var list = order.map(function (k) {
+      var g = groups[k];
+      g.pay = FinMoney.round(g.pay, 2); g.receive = FinMoney.round(g.receive, 2); g.net = FinMoney.round(g.receive - g.pay, 2);
+      g.regular.amount = FinMoney.round(g.regular.amount, 2);
+      g.items.sort(function (a, b) { return a.regular !== b.regular ? (a.regular ? 1 : -1) : a.direction !== b.direction ? (a.direction === 'in' ? -1 : 1) : (a.txId < b.txId ? -1 : 1); });
+      return g;
+    });
+    list.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.accountName < b.accountName ? -1 : 1); });
+    // 各交割帳戶：目前餘額 → 依日期扣掉還沒交割的 → 交割完的餘額、最早不夠的那天
+    var all = calc || computeAll(c);
+    var balOf = {};
+    all.balances.forEach(function (b) { balOf[b.accountId + '|' + b.symbol] = Number(b.qty) || 0; });
+    var accts = {}, aorder = [];
+    list.forEach(function (g) {
+      var k = g.accountId + '|' + g.symbol;
+      if (!accts[k]) { accts[k] = { accountId: g.accountId, name: g.accountName, symbol: g.symbol, balance: FinMoney.round(balOf[k] || 0, 2), pending: 0, after: 0, shortDate: '', shortfall: 0, low: null }; aorder.push(k); }
+      var a = accts[k];
+      if (g.date <= c.today) return; // 今天（含）以前的已經算在餘額裡
+      a.pending = FinMoney.round(a.pending + g.net, 2);
+      var running = FinMoney.round(a.balance + a.pending, 2);
+      g.balanceAfter = running;
+      if (a.low === null || running < a.low) a.low = running;
+      if (running < 0 && !a.shortDate) a.shortDate = g.date;
+    });
+    var accounts = aorder.map(function (k) {
+      var a = accts[k];
+      a.after = FinMoney.round(a.balance + a.pending, 2);
+      a.shortfall = a.low !== null && a.low < 0 ? FinMoney.round(-a.low, 2) : 0;
+      delete a.low;
+      return a;
+    });
+    return { today: c.today, from: from, groups: list, accounts: accounts };
+  }
+
+  /** 首頁用：7 天內（不含今天）還要交割的，依交割帳戶＋日期合計 */
+  function settleSoon(c, calc) {
+    var to = FinDates.addDays(c.today, 7);
+    var s = settlementsOf(c, FinDates.addDays(c.today, 1), calc);
+    return s.groups.filter(function (g) { return g.date <= to && g.count > 0; }).map(function (g) {
+      return { date: g.date, accountId: g.accountId, accountName: g.accountName, symbol: g.symbol, net: g.net, count: g.count, balanceAfter: g.balanceAfter };
+    });
+  }
+
   function cashflow(c, days, cardOv, calc) {
     days = Math.max(7, Math.min(120, Math.floor(Number(days) || 60)));
     cardOv = cardOv || cardOverview(c, c.today);
@@ -3472,7 +3550,7 @@ var FinApi = (function () {
         instruments: Object.keys(c.instruments).map(function (k) { return pub(c.instruments[k]); }),
         brokerSettings: c.brokerRows.map(pub), holidays: c.holidayRows.map(pub),
         cardSettings: c.cardRows.map(pub), loanSettings: c.loanRows.map(pub), cardOverview: cardOv, upcoming: upcoming(c, 30, cardOv),
-        cashAlert: cashAlert(cashflow(c, 30, cardOv, calc)), reconciled: reconciledMap(c), quickTx: quickList(c.settings),
+        cashAlert: cashAlert(cashflow(c, 30, cardOv, calc)), settleSoon: settleSoon(c, calc), reconciled: reconciledMap(c), quickTx: quickList(c.settings),
         installments: installmentList(c),
         recurring: c.recurringRows.map(pub), recurringNext: recurringNext(c), pendingConfirmations: pendingConfirmations(c),
         prices: c.priceInfo,
@@ -4480,6 +4558,15 @@ var FinApi = (function () {
     return { days: cf.days, unassigned: cf.unassigned.length,
       short: cf.accounts.filter(function (a) { return a.shortfall > 0; }).map(function (a) { return { accountId: a.accountId, name: a.name, symbol: a.symbol, shortDate: a.shortDate, shortfall: a.shortfall }; }) };
   }
+
+  /** 交割款項：days＝往回看幾天（0＝只看今天和之後，最多 90） */
+  H.getSettlements = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var days = Math.max(0, Math.min(90, Math.floor(Number(p.days) || 0)));
+      return settlementsOf(c, FinDates.addDays(c.today, -days));
+    },
+  };
 
   H.getCashflow = {
     fn: function (p, env) {

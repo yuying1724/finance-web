@@ -7,6 +7,7 @@ import { openTxForm } from './txform.js';
 import { openCardStatement, openCardSettingsForm } from './liability.js';
 import { installmentListBlock } from './installments.js';
 import { openCashflow, cashAlertRow } from './cashflow.js';
+import { settleSoonRows } from './settlements.js';
 import { openCardRecon } from './cardrecon.js';
 
 /**
@@ -159,6 +160,7 @@ export function todoCard() {
         h('div', { class: 's' }, `最近一筆：${n.name} ${money(n.amount, n.symbol)}，${mmdd(n.dueDate)}`)),
       h('div', { class: 'amt muted' }, icon('right')))));
   }
+  settleSoonRows(d.settleSoon, mmdd).forEach((r) => rows.push(r));
   const upItems = up ? up.items.filter((x) => x.kind !== '信用卡') : [];
   const shown = upItems.slice(0, 6);
   shown.forEach((x) => {
