@@ -905,6 +905,10 @@ test('投資報表：投資頁「報表」看期間損益（未實現變化＋�
     assert.equal(await page.locator('[data-testid=ir-vs-bench]').innerText(), '+NT$2,000');
     assert.equal(await page.locator('[data-testid=ir-bench-price]').innerText(), '+16.67%');
     assert.ok(await page.locator('[data-testid=ir-chart] .ir-seg').count() >= 1);
+    // 長條下面的標籤：每根寫「幾月」，第一根底下另有一行年份
+    const ticks = await page.evaluate(() => Array.from(document.querySelectorAll('[data-testid=ir-chart] text.nw-tick')).map((t) => t.textContent));
+    assert.ok(ticks.includes(`${Number(today.slice(5, 7))}月`), JSON.stringify(ticks));
+    assert.ok(ticks.some((t) => /^\d{4}$/.test(t)), JSON.stringify(ticks));
     assert.equal(await page.locator('[data-testid=ir-sym][data-symbol="0050"] [data-testid=ir-sym-total]').innerText(), '+NT$2,300');
     // 唯讀查詢的結果會存在本機（fin.rc），下次開頁先畫上次的
     const rc = await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('fin.rc') || '{"entries":{}}').entries));

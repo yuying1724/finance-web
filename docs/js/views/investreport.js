@@ -163,7 +163,7 @@ export function renderInvestReportBody(root) {
     const tipOf = (m) => `${Number(m.ym.slice(5))} 月　${signed(m.total)}（未實現 ${signed(m.unrealizedChange)}、已實現 ${signed(m.realized)}、股息 ${money(m.dividends)}）　淨投入 ${signed(m.netInvest)}`;
     const defaultTip = '點長條看那個月的明細';
     tip.textContent = defaultTip;
-    const W = 320, H = 170, PL = 4, PR = 4, PT = 16, PB = 18, gap = 2;
+    const W = 320, H = 178, PL = 4, PR = 4, PT = 16, PB = 26, gap = 2;
     let maxP = 0, minN = 0;
     months.forEach((m) => {
       let p = 0, n = 0;
@@ -191,9 +191,15 @@ export function renderInvestReportBody(root) {
         if (bottom - top < 0.5) return;
         svg.appendChild(seg(x0, bw, top, bottom, j === neg.length - 1 ? 'bottom' : '', color, on));
       });
-      const tick = s('text', { x: x0 + bw / 2, y: H - 5, class: 'nw-tick' + (on ? ' sp-tick-on' : ''), 'text-anchor': 'middle' });
-      tick.textContent = Number(m.ym.slice(5)) === 1 || i === 0 ? `${m.ym.slice(2, 4)}/${Number(m.ym.slice(5))}` : `${Number(m.ym.slice(5))}月`;
+      // 每根都寫「幾月」；第一根和每年 1 月那根底下再加一行年份，跨年看得出來
+      const tick = s('text', { x: x0 + bw / 2, y: H - 14, class: 'nw-tick' + (on ? ' sp-tick-on' : ''), 'text-anchor': 'middle' });
+      tick.textContent = `${Number(m.ym.slice(5))}月`;
       svg.appendChild(tick);
+      if (i === 0 || Number(m.ym.slice(5)) === 1) {
+        const yr = s('text', { x: x0 + bw / 2, y: H - 4, class: 'nw-tick', 'text-anchor': 'middle' });
+        yr.textContent = m.ym.slice(0, 4);
+        svg.appendChild(yr);
+      }
       if (on) {
         let up = 0; pos.forEach(([k]) => { up += m[k]; });
         const lbl = s('text', { x: Math.min(Math.max(x0 + bw / 2, 30), W - 30), y: Math.max(y(up) - 4, 10), class: 'sp-val', 'text-anchor': 'middle' });
