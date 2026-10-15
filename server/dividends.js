@@ -206,7 +206,30 @@ var FinDividends = (function () {
     return { created: created, waiting: waiting, skipped: skipped, errors: fetched.errors };
   }
 
-  return { run: run, fetchAnnouncements: fetchAnnouncements, rocToIso: rocToIso, estimate: estimate, addMonthsToDate: addMonthsToDate, holdersAsOf: holdersAsOf, PROP_KEY: PROP_KEY };
+  /**
+   * 股息行事曆用：記住的公告裡「還沒產生交易」的那些（還沒除息、或已除息但每股金額未公告），
+   * 用目前持股估算 [{symbol, name, exDate, payDate(預估), cash, shares, gross, net, announced}]；沒持股的不列
+   */
+  function upcoming(c) {
+    var seen = loadSeen();
+    var out = [];
+    Object.keys(seen).sort().forEach(function (key) {
+      var a = seen[key];
+      if (a.done) return;
+      if (FinDates.addDays(a.exDate, KEEP_DAYS) < c.today) return;
+      if (a.exDate <= c.today && a.cash > 0) return; // 到期的下一次排程就會產生待確認，不在這裡重複估
+      var holders = holdersAsOf(c, a.symbol, a.exDate <= c.today ? FinDates.addDays(a.exDate, -1) : c.today);
+      if (!holders.length) return;
+      var shares = 0; holders.forEach(function (hh) { shares += hh.qty; });
+      var inst = c.instruments[a.symbol];
+      var e = a.cash > 0 ? estimate(c, shares, a.cash) : { gross: null, net: null, fee: 0, tax: 0 };
+      out.push({ symbol: a.symbol, name: (inst && inst.name) || a.name || a.symbol, exDate: a.exDate, payDate: addMonthsToDate(a.exDate, 1), cash: a.cash > 0 ? a.cash : null,
+        shares: shares, gross: e.gross, net: e.net, announced: a.cash > 0 });
+    });
+    return out;
+  }
+
+  return { run: run, upcoming: upcoming, fetchAnnouncements: fetchAnnouncements, rocToIso: rocToIso, estimate: estimate, addMonthsToDate: addMonthsToDate, holdersAsOf: holdersAsOf, PROP_KEY: PROP_KEY };
 })();
 //#ifnode
 module.exports = FinDividends;

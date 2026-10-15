@@ -149,6 +149,103 @@ var FinApi = (function () {
    * 投資收益（首頁月份卡片）：這個月與今年累計的「股息（實收）」與「已實現損益（賣出扣掉成本、手續費、稅）」，換算基準幣別。
    * 不算進一般的收入／支出（那邊只看薪資與日常花費）；未實現損益看投資頁。
    */
+  /**
+   * 股息專區（投資頁「股息」）：某一年收到的股息（實收，換算基準幣別）——合計、每月、依標的（含目前持股的成本殖利率與市值殖利率），
+   * 加上「股息行事曆」：還沒入帳的待確認股息、已記住但還沒到除息日的公告（用目前持股估）、股息定期範本的下一次。
+   * 殖利率＝那一年實收股息 ÷ 現在的持有成本（或市值）；資料從開始記帳那天起，當年度不滿一年時畫面會註明。
+   */
+  function dividendReport(c, year) {
+    var h = holdingsWithHistory(c, c.today);
+    var ph = priceHistoryMap(c);
+    var dec = c.instruments[c.base] ? c.instruments[c.base].decimals : 0;
+    var estimated = false;
+    function toBase(d, field) {
+      var v = Number(d[field]) || 0;
+      if (!v || d.symbol === c.base) return v;
+      var hp = ph[d.date + '|' + d.symbol];
+      if (hp && hp > 0) return v * hp;
+      var up = FinValuation.unitPrice(d.symbol, c.instruments, c.prices, c.base, 0);
+      estimated = true;
+      return up === null ? 0 : v * up;
+    }
+    var yearsSet = {};
+    h.dividends.forEach(function (d) { yearsSet[d.date.slice(0, 4)] = true; });
+    var years = Object.keys(yearsSet).sort();
+    if (!year || !/^\d{4}$/.test(year)) year = c.today.slice(0, 4);
+    var months = [];
+    for (var m = 1; m <= 12; m++) months.push({ ym: year + '-' + (m < 10 ? '0' : '') + m, net: 0, count: 0 });
+    var total = { net: 0, gross: 0, tax: 0, fee: 0, count: 0 };
+    var bySym = {};
+    var firstDate = '';
+    c.txRows.forEach(function (t) { if (t.status !== '作廢' && t.date && (!firstDate || t.date < firstDate)) firstDate = t.date; });
+    h.dividends.forEach(function (d) {
+      if (d.date.slice(0, 4) !== year) return;
+      var net = toBase(d, 'net'), gross = toBase(d, 'gross'), tax = toBase(d, 'tax'), fee = toBase(d, 'fee');
+      total.net += net; total.gross += gross; total.tax += tax; total.fee += fee; total.count++;
+      var mi = Number(d.date.slice(5, 7)) - 1;
+      months[mi].net += net; months[mi].count++;
+      var sym = d.relatedSymbol || '';
+      if (!bySym[sym]) bySym[sym] = { symbol: sym, name: (c.instruments[sym] || {}).name || sym, net: 0, gross: 0, tax: 0, fee: 0, count: 0, items: [], lastDate: '' };
+      var s = bySym[sym];
+      s.net += net; s.gross += gross; s.tax += tax; s.fee += fee; s.count++;
+      if (d.date > s.lastDate) s.lastDate = d.date;
+      s.items.push({ txId: d.txId, date: d.date, accountId: d.accountId, net: FinMoney.round(net, dec), gross: FinMoney.round(gross, dec), tax: FinMoney.round(tax, dec), fee: FinMoney.round(fee, dec), symbol: d.symbol, netNative: d.net });
+    });
+    // 目前持股（同標的跨帳戶加總）：成本與市值，算殖利率
+    var valued = FinHoldings.valuePositions(h.positions, c.instruments, c.prices, c.base);
+    var posBySym = {};
+    valued.forEach(function (v) {
+      if (!posBySym[v.symbol]) posBySym[v.symbol] = { qty: 0, costBase: 0, mvBase: 0, missing: false };
+      var ps = posBySym[v.symbol];
+      ps.qty += v.qty; ps.costBase += v.costBase || 0;
+      if (v.missing) ps.missing = true; else ps.mvBase += v.mvBase || 0;
+    });
+    var bySymbol = Object.keys(bySym).map(function (k) {
+      var s = bySym[k], ps = posBySym[k];
+      s.net = FinMoney.round(s.net, dec); s.gross = FinMoney.round(s.gross, dec); s.tax = FinMoney.round(s.tax, dec); s.fee = FinMoney.round(s.fee, dec);
+      s.items.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+      s.qty = ps ? ps.qty : 0;
+      s.costBase = ps ? FinMoney.round(ps.costBase, dec) : 0;
+      s.mvBase = ps && !ps.missing ? FinMoney.round(ps.mvBase, dec) : null;
+      s.yieldOnCost = ps && ps.costBase > 0 ? s.net / ps.costBase : null;
+      s.yieldOnMv = ps && !ps.missing && ps.mvBase > 0 ? s.net / ps.mvBase : null;
+      s.held = !!(ps && ps.qty > 0);
+      return s;
+    });
+    bySymbol.sort(function (a, b) { return b.net - a.net; });
+    months.forEach(function (mm) { mm.net = FinMoney.round(mm.net, dec); });
+    // 行事曆：待確認的股息、記住的公告、股息定期範本的下一次
+    var upcoming = [];
+    c.txRows.forEach(function (t) {
+      if (t.status !== '待確認' || t.type !== '股息') return;
+      var inst = c.instruments[t.relatedSymbol];
+      upcoming.push({ kind: '待確認', txId: t.id, symbol: t.relatedSymbol || '', name: inst ? inst.name : (t.relatedSymbol || ''), exDate: t.plannedDate || '', payDate: t.date,
+        net: t.dstQty, symbolCash: t.dstSymbol || c.base, accountId: t.dstAccount, accountName: (c.accounts[t.dstAccount] || {}).name || '', auto: !t.recurringId && /^自動股息/.test(t.note || '') });
+    });
+    var pendingKeys = {};
+    upcoming.forEach(function (u) { pendingKeys[u.symbol + '|' + u.exDate] = true; });
+    try {
+      FinDividends.upcoming(c).forEach(function (a) {
+        if (pendingKeys[a.symbol + '|' + a.exDate]) return;
+        upcoming.push({ kind: a.announced ? '已公告' : '預告', symbol: a.symbol, name: a.name, exDate: a.exDate, payDate: a.payDate, cash: a.cash, shares: a.shares, net: a.net, gross: a.gross, symbolCash: c.base });
+      });
+    } catch (e) { /* 讀不到公告暫存就不列 */ }
+    var nextMap = recurringNext(c);
+    c.recurringRows.forEach(function (tpl) {
+      if (!tpl.active || tpl.type !== '股息') return;
+      var nx = nextMap[tpl.id];
+      if (!nx || nx.pending) return;
+      var sym = tpl.srcSymbol || '';
+      upcoming.push({ kind: '定期', recurringId: tpl.id, symbol: sym, name: (c.instruments[sym] || {}).name || tpl.name, exDate: '', payDate: nx.date, net: nx.amount, symbolCash: nx.symbol || c.base, templateName: tpl.name });
+    });
+    upcoming.sort(function (a, b) { var da = a.payDate || a.exDate, db = b.payDate || b.exDate; return da < db ? -1 : da > db ? 1 : 0; });
+    return {
+      year: year, years: years, base: c.base, today: c.today, dataStart: firstDate,
+      total: { net: FinMoney.round(total.net, dec), gross: FinMoney.round(total.gross, dec), tax: FinMoney.round(total.tax, dec), fee: FinMoney.round(total.fee, dec), count: total.count },
+      months: months, bySymbol: bySymbol, upcoming: upcoming, estimated: estimated,
+    };
+  }
+
   function investIncome(c, ym) {
     var h = holdingsWithHistory(c, c.today);
     var ph = priceHistoryMap(c);
@@ -1811,6 +1908,14 @@ var FinApi = (function () {
     return { days: cf.days, unassigned: cf.unassigned.length,
       short: cf.accounts.filter(function (a) { return a.shortfall > 0; }).map(function (a) { return { accountId: a.accountId, name: a.name, symbol: a.symbol, shortDate: a.shortDate, shortfall: a.shortfall }; }) };
   }
+
+  /** 股息專區：year 不填＝今年 */
+  H.dividendReport = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      return dividendReport(c, str(p.year));
+    },
+  };
 
   /** 交割款項：days＝往回看幾天（0＝只看今天和之後，最多 90） */
   H.getSettlements = {

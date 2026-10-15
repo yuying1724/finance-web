@@ -206,3 +206,65 @@ test('美股股息範本：每季產生待確認、金額留空，確認時填�
   const row = b.call('listTransactions', { filters: { type: '股息' } }).data.items[0];
   assert.deepEqual([row.status, row.dstQty, row.relatedSymbol, row.categoryId !== ''], ['有效', 1234, 'VOO', true]);
 });
+
+test('股息專區（dividendReport）：年度合計、每月、依標的＋殖利率、行事曆（待確認／已公告／預告／定期範本）', () => {
+  const { b, broker, cma, settle } = setupHoldings();
+  // 已入帳的股息：0056 兩次（其中一次在去年）、2330 一次；0056 用現價算市值殖利率
+  const sh = b.ss.sheet('價格');
+  const header = sh.dump()[0];
+  const row = (sym) => sh.dump().findIndex((r) => r[header.indexOf('標的代號')] === sym) + 1;
+  sh.poke(row('0056'), header.indexOf('上次有效價') + 1, 40);
+  b.add({ type: '股息', date: '2025-12-20', dstAccount: cma, dstSymbol: 'TWD', dstQty: 5000, amount: 5010, fee: 10, tax: 0, relatedSymbol: '0056' });
+  b.add({ type: '股息', date: '2026-03-20', dstAccount: cma, dstSymbol: 'TWD', dstQty: 23000, amount: 23500, fee: 10, tax: 490, relatedSymbol: '0056' });
+  b.add({ type: '股息', date: '2026-09-25', dstAccount: cma, dstSymbol: 'TWD', dstQty: 1990, amount: 2000, fee: 10, tax: 0, relatedSymbol: '2330' });
+  // 行事曆：0056 10/16 已公告 0.8、6488 10/20 預告（金額未定）
+  const twse = [{ Date: '1151016', Code: '0056', Name: '元大高股息', Exdividend: '息', CashDividend: '0.8' }];
+  const tpex = [{ ExRrightsExDividendDate: '1151020', SecuritiesCompanyCode: '6488', CompanyName: '環球晶', ExRrightsExDividend: '除息', CashDividend: '' }];
+  feeds(b, { twse, tpex });
+  at(b, '2026-10-10', 7);
+  b.call('checkDividends');
+  // 美股股息定期範本（下一次 12/31）
+  const fub = b.acct('元大-複委託', '證券', 'USD');
+  b.inst({ symbol: 'VOO', name: 'Vanguard S&P 500', type: 'ETF', quote: 'USD', decimals: 4 });
+  assert.ok(b.call('upsertRecurring', { recurring: { name: 'VOO 股息', freq: '每季', days: [31], holiday: '不調整', startDate: '2026-12-31', type: '股息', srcAccount: fub, srcSymbol: 'VOO', dstAccount: cma, dstSymbol: 'TWD', mode: '提醒確認' } }).ok);
+  // 一筆待確認的自動股息（模擬之前產生的）
+  at(b, '2026-10-10', 9);
+  const r = b.call('dividendReport', {});
+  assert.ok(r.ok, JSON.stringify(r));
+  const d = r.data;
+  assert.equal(d.year, '2026');
+  assert.deepEqual(d.years, ['2025', '2026']);
+  assert.deepEqual(d.total, { net: 24990, gross: 25500, tax: 490, fee: 20, count: 2 });
+  assert.equal(d.months[2].net, 23000, '3 月');
+  assert.equal(d.months[8].net, 1990, '9 月');
+  assert.equal(d.months.reduce((s, m) => s + m.net, 0), 24990);
+  const s56 = d.bySymbol[0];
+  assert.equal(s56.symbol, '0056');
+  assert.deepEqual([s56.net, s56.count, s56.qty, s56.costBase, s56.mvBase], [23000, 1, 30000, 1000000, 1200000], '10/10 時只有先買的 30,000 股');
+  assert.equal(Math.round(s56.yieldOnCost * 10000), 230, '23,000 ÷ 1,000,000 = 2.30%');
+  assert.equal(Math.round(s56.yieldOnMv * 10000), 192, '23,000 ÷ 1,200,000 = 1.92%');
+  assert.deepEqual(s56.items.map((i) => [i.date, i.net]), [['2026-03-20', 23000]]);
+  assert.equal(d.bySymbol[1].symbol, '2330');
+  assert.equal(d.bySymbol[1].mvBase, null, '台積電沒價格');
+  // 行事曆
+  assert.deepEqual(d.upcoming.map((u) => [u.kind, u.symbol, u.exDate, u.payDate, u.net]), [
+    ['已公告', '0056', '2026-10-16', '2026-11-16', 23484], // 10/10 持有 30,000 股 × 0.8 = 24,000 − 匯費 10 − 二代健保 506
+    ['預告', '6488', '2026-10-20', '2026-11-20', null],
+    ['定期', 'VOO', '', '2026-12-31', null],
+  ]);
+  assert.equal(d.upcoming[0].shares, 30000);
+  assert.equal(d.upcoming[0].cash, 0.8);
+  // 到除息日產生待確認之後：行事曆改列「待確認」那一筆，不重複
+  feeds(b, { twse: [], tpex });
+  at(b, '2026-10-16', 7);
+  b.ctx.FinRecurringJob.runDaily(b.mock.state.clock.now);
+  at(b, '2026-10-16', 9);
+  const d2 = b.call('dividendReport', { year: '2026' }).data;
+  const u56 = d2.upcoming.filter((u) => u.symbol === '0056');
+  assert.equal(u56.length, 1);
+  assert.deepEqual([u56[0].kind, u56[0].net, u56[0].auto, u56[0].accountName], ['待確認', 24267, true, '元大-CMA']);
+  assert.ok(u56[0].txId);
+  // 去年
+  const d25 = b.call('dividendReport', { year: '2025' }).data;
+  assert.deepEqual([d25.total.net, d25.total.count, d25.bySymbol[0].symbol], [5000, 1, '0056']);
+});

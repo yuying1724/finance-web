@@ -2012,3 +2012,53 @@ test('交割款項：投資頁「交割」依交割日列出應收付、點開�
     assert.equal(await page.locator('.sheet input[aria-label="金額"]').first().inputValue(), '4150');
   });
 });
+
+test('股息專區：投資頁「股息」看年度合計、每月長條、依標的（殖利率、點開明細）、行事曆（待確認連到待辦）；切換年份', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const F = be.ctx.FinDates;
+    const today = F.today(Date.now());
+    const year = today.slice(0, 4);
+    const bank = be.call('upsertAccount', { account: { name: '股息銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const tw = be.call('upsertAccount', { account: { name: '股息證券', type: '證券', defaultSymbol: 'TWD' } }).data.account.id;
+    assert.ok(be.call('upsertInstrument', { instrument: { symbol: '0056', name: '元大高股息', type: 'ETF', quote: 'TWD', decimals: 0, priceSource: '手動', isNew: true } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '調整', date: `${Number(year) - 1}-12-01`, dstAccount: bank, dstSymbol: 'TWD', dstQty: 500000 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '買入', date: `${Number(year) - 1}-12-02`, settleDate: `${Number(year) - 1}-12-04`, srcAccount: bank, srcSymbol: 'TWD', srcQty: 100000, dstAccount: tw, dstSymbol: '0056', dstQty: 3000, amount: 100000 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '股息', date: `${Number(year) - 1}-12-20`, dstAccount: bank, dstSymbol: 'TWD', dstQty: 800, amount: 810, fee: 10, relatedSymbol: '0056' } }).ok);
+    const d1 = year + '-' + today.slice(5, 7) + '-01';
+    assert.ok(be.call('addTransaction', { tx: { type: '股息', date: d1 <= today ? d1 : today, dstAccount: bank, dstSymbol: 'TWD', dstQty: 2490, amount: 2500, fee: 10, relatedSymbol: '0056' } }).ok);
+    // 一筆待確認的自動股息
+    assert.ok(be.call('addTransaction', { tx: { type: '股息', date: F.addDays(today, 20), dstAccount: bank, dstSymbol: 'TWD', dstQty: 1500, amount: 1510, fee: 10, relatedSymbol: '0056', note: '自動股息：測試' } }).ok);
+    const pend = be.call('listTransactions', { filters: { type: '股息' } }).data.items.find((t) => /自動股息/.test(t.note));
+    const trRow = be.ss.sheet('交易').dump();
+    const hdr = trRow[0];
+    const r = trRow.findIndex((x) => x[hdr.indexOf('交易ID')] === pend.id) + 1;
+    be.ss.sheet('交易').poke(r, hdr.indexOf('狀態') + 1, '待確認');
+    be.ss.sheet('交易').poke(r, hdr.indexOf('計畫日期') + 1, F.addDays(today, -10));
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.evaluate(() => { location.hash = '#/invest/dividends'; });
+    await page.waitForSelector('[data-testid=dv-total]');
+    assert.equal(await page.locator('[data-testid=subtab-dividends]').getAttribute('class'), 'on');
+    assert.equal(await page.locator('[data-testid=dv-total]').innerText(), 'NT$2,490');
+    assert.match(await page.locator('[data-testid=dv-count]').innerText(), /1 筆　稅前 NT\$2,500・匯費 NT\$10/);
+    assert.ok(await page.locator('[data-testid=dv-chart] .dv-bar').count() >= 1);
+    // 依標的：殖利率 2,490 ÷ 100,000 = 2.49%；點開看明細
+    const sym = page.locator('[data-testid=dv-sym][data-symbol="0056"]');
+    assert.match(await sym.innerText(), /0056 元大高股息[\s\S]*1 筆・成本殖利率 2\.49%[\s\S]*NT\$2,490/);
+    await sym.click();
+    await page.waitForFunction(() => document.querySelector('[data-testid=dv-sym][data-symbol="0056"]').getAttribute('aria-expanded') === 'true');
+    // 行事曆：待確認那筆，點了到待辦
+    const cal = page.locator('[data-testid=dv-cal][data-kind=待確認]');
+    assert.equal(await cal.count(), 1);
+    assert.equal(await cal.locator('[data-testid=dv-cal-amt]').innerText(), 'NT$1,500');
+    await cal.locator('a').click();
+    await page.waitForFunction(() => location.hash === '#/todo');
+    // 切到去年
+    await page.evaluate(() => { location.hash = '#/invest/dividends'; });
+    await page.waitForSelector('[data-testid=dv-years]');
+    await page.click(`[data-testid=dv-years] [data-year="${Number(year) - 1}"]`);
+    await page.waitForFunction(() => (document.querySelector('[data-testid=dv-total]') || {}).textContent === 'NT$800');
+  });
+});
