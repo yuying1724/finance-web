@@ -897,6 +897,13 @@ test('投資報表：投資頁「報表」看期間損益（未實現變化＋�
     assert.equal(await page.locator('[data-testid=ir-start]').innerText(), 'NT$12,000');
     assert.equal(await page.locator('[data-testid=ir-end]').innerText(), 'NT$14,000');
     assert.equal(await page.locator('[data-testid=ir-pct]').innerText(), '報酬率 +19.17%');
+    // 年化（期間 40 天，會提醒期間太短）；跟 0050 比：持股就是 0050，差額剛好是股息 300
+    assert.match(await page.locator('[data-testid=ir-annual]').innerText(), /年化報酬率 \+\d+\.\d\d%（期間 40 天）[\s\S]*不到 3 個月/);
+    assert.equal(await page.locator('[data-testid=ir-bench-sym]').innerText(), '0050');
+    assert.match(await page.locator('[data-testid=ir-bench-verdict]').innerText(), /贏 0050 \+NT\$300\s*（報酬率差 \+2\.50%）/);
+    assert.equal(await page.locator('[data-testid=ir-vs-mine]').innerText(), '+NT$2,300');
+    assert.equal(await page.locator('[data-testid=ir-vs-bench]').innerText(), '+NT$2,000');
+    assert.equal(await page.locator('[data-testid=ir-bench-price]').innerText(), '+16.67%');
     assert.ok(await page.locator('[data-testid=ir-chart] .ir-seg').count() >= 1);
     assert.equal(await page.locator('[data-testid=ir-sym][data-symbol="0050"] [data-testid=ir-sym-total]').innerText(), '+NT$2,300');
     // 唯讀查詢的結果會存在本機（fin.rc），下次開頁先畫上次的

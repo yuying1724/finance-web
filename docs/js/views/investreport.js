@@ -1,5 +1,5 @@
 import { h, mount, clear } from '../dom.js';
-import { state, prefs } from '../store.js';
+import { state, prefs, instrumentBySymbol } from '../store.js';
 import * as api from '../api.js';
 import { money as rawMoney, amountClass, MASK } from '../fmt.js';
 import { errorText, toast, loading } from '../ui.js';
@@ -8,6 +8,7 @@ import { cachedRead, invalidateRead } from '../readcache.js';
 /**
  * 投資頁「報表」：某段期間的投資損益（未實現變化＋已實現＋股息）、報酬率、期初／淨投入／期末，
  * 每月一覽（堆疊長條，正的往上、負的往下），依標的排行。後端 investReport 計算，見 core/investreport.js。
+ * 另有年化報酬率，以及「跟 0050 比」：同樣的錢、同樣的時間點全部買 0050（或自選的 ETF）會怎樣。
  */
 const SVG = 'http://www.w3.org/2000/svg';
 function s(tag, attrs) { const el = document.createElementNS(SVG, tag); Object.entries(attrs || {}).forEach(([k, v]) => el.setAttribute(k, String(v))); return el; }
@@ -19,8 +20,25 @@ const cls = (n) => amountClass(n > 0 ? 'pos' : n < 0 ? 'neg' : 'mute');
 const PARTS = [['unrealizedChange', '未實現損益變化', 'var(--sp-c1)'], ['realized', '已實現損益', 'var(--sp-c2)'], ['dividends', '股息', 'var(--sp-c3)']];
 const MODES = [['month', '本月'], ['year', '今年'], ['12m', '近 12 個月'], ['all', '全部'], ['custom', '自訂']];
 const LS = 'fin.ir.mode';
+const LS_BENCH = 'fin.ir.bench';
+const DEFAULT_BENCH = '0050';
 
-const S = { mode: null, from: '', to: '', seq: 0 };
+const S = { mode: null, from: '', to: '', seq: 0, bench: '' };
+function loadBench() {
+  if (S.bench) return;
+  try { S.bench = localStorage.getItem(LS_BENCH) || ''; } catch (e) { /* 忽略 */ }
+  if (!S.bench) S.bench = DEFAULT_BENCH;
+}
+function saveBench() { try { localStorage.setItem(LS_BENCH, S.bench); } catch (e) { /* 忽略 */ } }
+/** 可以當基準的標的：0050 一定有，再加上「標的」裡的 ETF */
+function benchOptions() {
+  const list = ((state.data && state.data.instruments) || []).filter((i) => i.type === 'ETF').map((i) => i.symbol);
+  if (!list.includes(DEFAULT_BENCH)) list.unshift(DEFAULT_BENCH);
+  if (S.bench && !list.includes(S.bench)) list.push(S.bench);
+  return list;
+}
+function benchName(sym) { const i = instrumentBySymbol(sym); return i ? `${sym} ${i.name}` : sym; }
+function daysText(n) { return n >= 365 ? `${(n / 365).toFixed(1)} 年` : n >= 60 ? `${Math.round(n / 30)} 個月` : `${n} 天`; }
 function loadMode() {
   if (S.mode) return;
   try { const v = JSON.parse(localStorage.getItem(LS) || 'null'); if (v && MODES.some(([k]) => k === v.mode)) Object.assign(S, { mode: v.mode, from: v.from || '', to: v.to || '' }); } catch (e) { /* 忽略 */ }
@@ -44,11 +62,12 @@ function rangeText(sum) {
 }
 
 export function renderInvestReportBody(root) {
-  loadMode();
+  loadMode(); loadBench();
   const periodBox = h('div', { class: 'card' });
+  const benchBox = h('div', { class: 'card', style: { marginTop: '12px' } });
   const monthsBox = h('div', { class: 'card', style: { marginTop: '12px' } });
   const symBox = h('div', { class: 'card', style: { marginTop: '12px' } });
-  mount(root, periodBox, monthsBox, symBox);
+  mount(root, periodBox, benchBox, monthsBox, symBox);
 
   function chips() {
     const row = h('div', { class: 'chips', 'data-testid': 'ir-modes' }, MODES.map(([k, label]) => h('button', {
@@ -100,10 +119,41 @@ export function renderInvestReportBody(root) {
       h('div', { class: 'ir-hero' },
         h('div', { class: 'ir-total ' + cls(sum.total), 'data-testid': 'ir-total' }, signed(sum.total)),
         h('div', { class: 'ir-pct ' + cls(sum.returnPct || 0), 'data-testid': 'ir-pct' }, '報酬率 ' + pct(sum.returnPct))),
+      sum.annualized !== null && sum.annualized !== undefined ? h('div', { class: 'ir-annual muted small', 'data-testid': 'ir-annual' },
+        `年化報酬率 `, h('b', { class: cls(sum.annualized) }, pct(sum.annualized)), `（期間 ${daysText(sum.days)}）`,
+        sum.days < 90 ? h('span', { class: 'ir-annual-note' }, '　期間不到 3 個月，年化只是把這段的漲跌換算成一整年，參考就好') : null) : null,
       h('div', { class: 'ir-parts' }, parts),
       flows,
       notes.length ? h('div', { class: 'notice', style: { marginTop: '10px' } }, notes.map((n) => h('div', null, n))) : null,
       h('p', { class: 'muted small', style: { margin: '10px 2px 0' } }, '投資損益＝未實現損益變化＋已實現損益＋股息，也等於「期末市值－期初市值－淨投入（－補登的持股）＋股息」。未實現是帳面數字（還沒扣賣出手續費與證交稅）。報酬率有考慮期間中投入的時間（定期定額也準）。'));
+  }
+
+  function drawBench(r) {
+    const sum = r.summary, b = sum.bench;
+    const sel = h('select', { class: 'ir-bench-sel', 'aria-label': '比較的基準', 'data-testid': 'ir-bench-sel', onchange: () => { S.bench = sel.value; saveBench(); load(); } },
+      benchOptions().map((sym) => h('option', { value: sym, selected: sym === S.bench }, benchName(sym))));
+    const title = h('div', { class: 'card-title' }, h('h2', null, '跟 ', h('span', { 'data-testid': 'ir-bench-sym' }, S.bench), ' 比'), sel);
+    if (!b) {
+      mount(benchBox, title, h('div', { class: 'empty', 'data-testid': 'ir-bench-empty' }, `沒有 ${S.bench} 這段期間的價格，沒辦法比。要先在「標的」加上它、價格更新過才有資料。`));
+      return;
+    }
+    const win = b.diff > 0, tie = b.diff === 0;
+    const verdict = tie ? '跟它打平' : `${win ? '贏' : '輸'} ${b.symbol} `;
+    const row = (label, total, ret, ann, testid) => h('div', { class: 'ir-vs-row' },
+      h('div', { class: 'grow' }, h('div', { class: 't' }, label), ann !== null && ann !== undefined ? h('div', { class: 'muted small' }, `年化 ${pct(ann)}`) : null),
+      h('div', { class: 'right' }, h('div', { class: cls(total), 'data-testid': testid }, signed(total)), h('div', { class: 'small ' + cls(ret || 0) }, pct(ret))));
+    mount(benchBox, title,
+      h('div', { class: 'ir-vs-hero', 'data-testid': 'ir-bench-verdict' },
+        h('span', { class: 'ir-vs-verdict ' + (tie ? '' : win ? amountClass('pos') : amountClass('neg')) }, verdict, tie ? '' : h('b', null, signed(b.diff))),
+        b.diffPct !== null ? h('span', { class: 'muted small' }, `（報酬率差 ${pct(b.diffPct)}）`) : null),
+      h('div', { class: 'ir-vs' },
+        row('我的投資', sum.total, sum.returnPct, sum.annualized, 'ir-vs-mine'),
+        row(`同樣的錢全買 ${b.symbol}`, b.total, b.returnPct, b.annualized, 'ir-vs-bench')),
+      h('div', { class: 'ir-flows', style: { marginTop: '8px' } },
+        h('div', null, h('span', { class: 'muted' }, `${b.symbol} 這段期間漲跌`), h('b', { class: cls(b.priceReturn), 'data-testid': 'ir-bench-price' }, pct(b.priceReturn))),
+        h('div', { class: 'ir-sub muted small' }, `${shortDate(sum.startDate)} 收盤到 ${shortDate(sum.to)}，只算價差、不含它的配息`)),
+      b.estimated ? h('div', { class: 'notice', style: { marginTop: '8px' } }, `${b.symbol} 有些日子缺收盤價，先用目前價格估算。`) : null,
+      h('p', { class: 'muted small', style: { margin: '10px 2px 0' } }, `「同樣的錢全買 ${b.symbol}」＝期初的持股市值換成 ${b.symbol}，之後每一筆買進、賣出、補登的錢都在同一天換成 ${b.symbol}，看到期末會是多少。兩邊用一樣的算法，差額就是自己選股比單純買 ${b.symbol} 多賺或少賺的。`));
   }
 
   function drawMonths(r) {
@@ -166,9 +216,10 @@ export function renderInvestReportBody(root) {
     // 表格（每個月的數字；圖看不清楚或要抄數字時用）
     const table = h('details', { class: 'ir-table' }, h('summary', { class: 'muted small' }, '看表格'),
       h('table', null,
-        h('thead', null, h('tr', null, ['月份', '損益', '未實現', '已實現', '股息', '淨投入'].map((t) => h('th', null, t)))),
+        h('thead', null, h('tr', null, ['月份', '損益', '報酬率', S.bench, '未實現', '已實現', '股息', '淨投入'].map((t) => h('th', null, t)))),
         h('tbody', null, r.months.slice().reverse().map((m) => h('tr', null,
           h('td', null, `${m.ym.slice(0, 4)}/${Number(m.ym.slice(5))}`), h('td', { class: cls(m.total) }, signed(m.total)),
+          h('td', { class: cls(m.returnPct || 0) }, pct(m.returnPct)), h('td', { class: cls(m.bench ? m.bench.returnPct || 0 : 0) }, m.bench ? pct(m.bench.returnPct) : '—'),
           h('td', null, signed(m.unrealizedChange)), h('td', null, signed(m.realized)), h('td', null, money(m.dividends)), h('td', null, signed(m.netInvest)))))));
     mount(monthsBox, h('div', { class: 'card-title' }, h('h2', null, '每月一覽')), legend, svg, tip, table);
   }
@@ -198,16 +249,16 @@ export function renderInvestReportBody(root) {
   function draw(r) {
     if (r.empty) {
       mount(periodBox, h('div', { class: 'empty' }, '還沒有投資紀錄。記一筆「買入」之後這裡就會有報表。'));
-      clear(monthsBox); clear(symBox); monthsBox.style.display = 'none'; symBox.style.display = 'none';
+      clear(benchBox); clear(monthsBox); clear(symBox); benchBox.style.display = 'none'; monthsBox.style.display = 'none'; symBox.style.display = 'none';
       return;
     }
-    monthsBox.style.display = ''; symBox.style.display = '';
-    drawPeriod(r); drawMonths(r); drawSymbols(r);
+    benchBox.style.display = ''; monthsBox.style.display = ''; symBox.style.display = '';
+    drawPeriod(r); drawBench(r); drawMonths(r); drawSymbols(r);
   }
 
   function load() {
     const my = ++S.seq;
-    const rg = rangeOf(S.mode);
+    const rg = { ...rangeOf(S.mode), benchmark: S.bench };
     // 先畫上次的結果（本機快取），背景再更新；資料沒變就不打後端
     const r = cachedRead('investReport', rg, {
       callOpts: { timeoutMs: 90000 },
