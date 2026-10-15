@@ -149,7 +149,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.64',
+    APP_VERSION: '0.9.65',
   };
   return api;
 })();
@@ -2901,6 +2901,103 @@ var FinApi = (function () {
    * 加上「股息行事曆」：還沒入帳的待確認股息、已記住但還沒到除息日的公告（用目前持股估）、股息定期範本的下一次。
    * 殖利率＝那一年實收股息 ÷ 現在的持有成本（或市值）；資料從開始記帳那天起，當年度不滿一年時畫面會註明。
    */
+  var INVEST_TX_TYPES = ['買入', '賣出', '股息', '股數調整'];
+
+  /**
+   * 已實現分析（投資頁「已實現」）：每一筆賣出的損益（跟持倉頁、券商一致：賣出淨收入－平均成本）、報酬率、持有天數，
+   * 以及期間統計：筆數、勝率、合計、平均報酬率（成本加權）、平均持有天數、最賺／最賠、依標的、每月。
+   * 持有天數用「賣出時部位的買進日加權平均」估（平均成本法不知道賣的是哪一批）；
+   * 部位裡有補登／開帳的持股時，買進日只能算到補登那天，標 approx 讓畫面註明「至少」。
+   */
+  function realizedReport(c, from, to) {
+    var h = holdingsWithHistory(c, c.today);
+    var dec = c.instruments[c.base] ? c.instruments[c.base].decimals : 0;
+    var ph = priceHistoryMap(c);
+    var realizedById = {};
+    h.realized.forEach(function (r) { realizedById[r.txId] = r; });
+    var dayNum = function (d) { return Math.round(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 86400000); };
+    var isOpening = function (t) { return /補登|開帳/.test(String(t.note || '')); };
+    // 走一遍所有買賣，維持每個部位的「股數加權平均買進日」
+    var pos = {};
+    var rows = c.txRows.filter(function (t) { return t.status === '有效' && (t.type === '買入' || t.type === '賣出' || t.type === '股數調整'); })
+      .slice().sort(function (a, b) { return a.date !== b.date ? (a.date < b.date ? -1 : 1) : (a.id < b.id ? -1 : 1); });
+    var trades = [];
+    rows.forEach(function (t) {
+      if (t.type === '買入') {
+        var k = t.dstAccount + '|' + t.dstSymbol;
+        var p = pos[k] || (pos[k] = { qty: 0, avgDay: 0, opening: false });
+        var q = Number(t.dstQty) || 0;
+        if (q > 0) { p.avgDay = (p.avgDay * p.qty + dayNum(t.date) * q) / (p.qty + q); p.qty += q; }
+        if (isOpening(t)) p.opening = true;
+      } else if (t.type === '股數調整' && t.dstAccount && t.dstSymbol && Number(t.dstQty) > 0) {
+        var k2 = t.dstAccount + '|' + t.dstSymbol;
+        var p2 = pos[k2] || (pos[k2] = { qty: 0, avgDay: 0, opening: false });
+        var q2 = Number(t.dstQty);
+        p2.avgDay = (p2.avgDay * p2.qty + dayNum(t.date) * q2) / (p2.qty + q2); p2.qty += q2; p2.opening = true;
+      } else if (t.type === '股數調整' && t.srcAccount && t.srcSymbol && Number(t.srcQty) > 0) {
+        var p3 = pos[t.srcAccount + '|' + t.srcSymbol]; if (p3) p3.qty = Math.max(0, p3.qty - Number(t.srcQty));
+      } else if (t.type === '賣出') {
+        var k4 = t.srcAccount + '|' + t.srcSymbol;
+        var p4 = pos[k4] || (pos[k4] = { qty: 0, avgDay: 0, opening: false });
+        var r = realizedById[t.id];
+        var proceedsBase = (t.dstSymbol === c.base) ? (Number(t.dstQty) || 0)
+          : (ph[t.date + '|' + t.dstSymbol] > 0 ? (Number(t.dstQty) || 0) * ph[t.date + '|' + t.dstSymbol]
+            : (function () { var up = FinValuation.unitPrice(t.dstSymbol, c.instruments, c.prices, c.base, 0); return up === null ? null : (Number(t.dstQty) || 0) * up; })());
+        var holdingDays = p4.qty > 0 ? Math.max(0, Math.round(dayNum(t.date) - p4.avgDay)) : null;
+        var inst = c.instruments[t.srcSymbol];
+        var realized = r && r.realizedBase !== null ? FinMoney.round(r.realizedBase, dec) : null;
+        var cost = r ? FinMoney.round(r.removedBase, dec) : null;
+        trades.push({
+          txId: t.id, date: t.date, accountId: t.srcAccount, accountName: (c.accounts[t.srcAccount] || {}).name || t.srcAccount,
+          symbol: t.srcSymbol, name: inst ? inst.name : t.srcSymbol, qty: Number(t.srcQty) || 0,
+          price: Number(t.amount) > 0 && Number(t.srcQty) > 0 ? Number(t.amount) / Number(t.srcQty) : null, quote: inst ? (inst.quote || c.base) : c.base,
+          proceeds: proceedsBase === null ? null : FinMoney.round(proceedsBase, dec), cost: cost, realized: realized,
+          returnPct: realized !== null && cost > 0 ? realized / cost : null,
+          holdingDays: holdingDays, approx: p4.opening, estimated: !!(r && r.estimated), note: t.note || '',
+        });
+        p4.qty = Math.max(0, p4.qty - (Number(t.srcQty) || 0));
+        if (p4.qty === 0) { p4.avgDay = 0; p4.opening = false; }
+      }
+    });
+    var all = trades.slice();
+    var inRange = trades.filter(function (x) { return (!from || x.date >= from) && (!to || x.date <= to); });
+    var sum = { count: 0, wins: 0, losses: 0, flat: 0, realized: 0, cost: 0, proceeds: 0, days: 0, daysCount: 0, approx: false, estimated: false };
+    var bySym = {}, byMonth = {};
+    var best = null, worst = null;
+    inRange.forEach(function (x) {
+      sum.count++;
+      if (x.realized === null) { sum.estimated = true; return; }
+      if (x.realized > 0) sum.wins++; else if (x.realized < 0) sum.losses++; else sum.flat++;
+      sum.realized += x.realized; sum.cost += x.cost || 0; sum.proceeds += x.proceeds || 0;
+      if (x.holdingDays !== null) { sum.days += x.holdingDays; sum.daysCount++; }
+      if (x.approx) sum.approx = true; if (x.estimated) sum.estimated = true;
+      if (!best || x.realized > best.realized) best = x;
+      if (!worst || x.realized < worst.realized) worst = x;
+      var s = bySym[x.symbol] || (bySym[x.symbol] = { symbol: x.symbol, name: x.name, count: 0, wins: 0, realized: 0, cost: 0, qty: 0 });
+      s.count++; if (x.realized > 0) s.wins++; s.realized += x.realized; s.cost += x.cost || 0; s.qty += x.qty;
+      var ym = x.date.slice(0, 7);
+      var mm = byMonth[ym] || (byMonth[ym] = { ym: ym, count: 0, realized: 0 });
+      mm.count++; mm.realized += x.realized;
+    });
+    var bySymbol = Object.keys(bySym).map(function (k) { var s = bySym[k]; s.realized = FinMoney.round(s.realized, dec); s.cost = FinMoney.round(s.cost, dec); s.returnPct = s.cost > 0 ? s.realized / s.cost : null; return s; });
+    bySymbol.sort(function (a, b) { return b.realized - a.realized; });
+    var months = Object.keys(byMonth).sort().map(function (k) { var m = byMonth[k]; m.realized = FinMoney.round(m.realized, dec); return m; });
+    inRange.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : (a.txId < b.txId ? 1 : -1); });
+    var firstDate = all.length ? all.reduce(function (m, x) { return x.date < m ? x.date : m; }, all[0].date) : '';
+    return {
+      base: c.base, today: c.today, from: from || '', to: to || '', firstTrade: firstDate, totalTrades: all.length,
+      summary: {
+        count: sum.count, wins: sum.wins, losses: sum.losses, flat: sum.flat, winRate: sum.wins + sum.losses > 0 ? sum.wins / (sum.wins + sum.losses) : null,
+        realized: FinMoney.round(sum.realized, dec), cost: FinMoney.round(sum.cost, dec), proceeds: FinMoney.round(sum.proceeds, dec),
+        returnPct: sum.cost > 0 ? sum.realized / sum.cost : null, avgHoldingDays: sum.daysCount ? Math.round(sum.days / sum.daysCount) : null,
+        approx: sum.approx, estimated: sum.estimated,
+        best: best ? { txId: best.txId, symbol: best.symbol, name: best.name, date: best.date, realized: best.realized, returnPct: best.returnPct } : null,
+        worst: worst && worst !== best ? { txId: worst.txId, symbol: worst.symbol, name: worst.name, date: worst.date, realized: worst.realized, returnPct: worst.returnPct } : null,
+      },
+      trades: inRange, bySymbol: bySymbol, months: months,
+    };
+  }
+
   function dividendReport(c, year) {
     var h = holdingsWithHistory(c, c.today);
     var ph = priceHistoryMap(c);
@@ -2924,7 +3021,7 @@ var FinApi = (function () {
     var total = { net: 0, gross: 0, tax: 0, fee: 0, count: 0 };
     var bySym = {};
     var firstDate = '';
-    c.txRows.forEach(function (t) { if (t.status !== '作廢' && t.date && (!firstDate || t.date < firstDate)) firstDate = t.date; });
+    c.txRows.forEach(function (t) { if (t.status === '有效' && INVEST_TX_TYPES.indexOf(t.type) >= 0 && t.date && (!firstDate || t.date < firstDate)) firstDate = t.date; });
     h.dividends.forEach(function (d) {
       if (d.date.slice(0, 4) !== year) return;
       var net = toBase(d, 'net'), gross = toBase(d, 'gross'), tax = toBase(d, 'tax'), fee = toBase(d, 'fee');
@@ -4655,6 +4752,15 @@ var FinApi = (function () {
     return { days: cf.days, unassigned: cf.unassigned.length,
       short: cf.accounts.filter(function (a) { return a.shortfall > 0; }).map(function (a) { return { accountId: a.accountId, name: a.name, symbol: a.symbol, shortDate: a.shortDate, shortfall: a.shortfall }; }) };
   }
+
+  /** 已實現分析：from／to 不填＝全部 */
+  H.realizedReport = {
+    fn: function (p, env) {
+      var c = loadContext(env.now);
+      var from = FinDates.isValid(str(p.from)) ? str(p.from) : '', to = FinDates.isValid(str(p.to)) ? str(p.to) : '';
+      return realizedReport(c, from, to);
+    },
+  };
 
   /** 股息專區：year 不填＝今年 */
   H.dividendReport = {

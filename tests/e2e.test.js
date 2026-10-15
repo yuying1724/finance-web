@@ -2062,3 +2062,42 @@ test('股息專區：投資頁「股息」看年度合計、每月長條、依�
     await page.waitForFunction(() => (document.querySelector('[data-testid=dv-total]') || {}).textContent === 'NT$800');
   });
 });
+
+test('已實現分析：投資頁「已實現」看勝率、合計、平均持有天數、最賺最賠、依標的與每一筆賣出；切換期間', { skip }, async () => {
+  await withApp({}, async (a) => {
+    const { page, s } = a;
+    const be = s.backend;
+    const F = be.ctx.FinDates;
+    const today = F.today(Date.now());
+    const bank = be.call('upsertAccount', { account: { name: '已實現銀行', type: '銀行', defaultSymbol: 'TWD' } }).data.account.id;
+    const tw = be.call('upsertAccount', { account: { name: '已實現證券', type: '證券', defaultSymbol: 'TWD' } }).data.account.id;
+    for (const [symbol, name] of [['4126', '太醫'], ['00757', '統一FANG+']]) assert.ok(be.call('upsertInstrument', { instrument: { symbol, name, type: 'ETF', quote: 'TWD', decimals: 0, priceSource: '手動', isNew: true } }).ok);
+    const d = (n) => F.addDays(today, n);
+    assert.ok(be.call('addTransaction', { tx: { type: '調整', date: d(-400), dstAccount: bank, dstSymbol: 'TWD', dstQty: 500000 } }).ok);
+    // 去年賣的一筆（賺）＋今年賣的一筆（賠）
+    assert.ok(be.call('addTransaction', { tx: { type: '買入', date: d(-400), settleDate: d(-400), srcAccount: bank, srcSymbol: 'TWD', srcQty: 100000, dstAccount: tw, dstSymbol: '4126', dstQty: 1000, amount: 100000 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '賣出', date: d(-370), settleDate: d(-370), srcAccount: tw, srcSymbol: '4126', srcQty: 1000, dstAccount: bank, dstSymbol: 'TWD', dstQty: 119000, amount: 120000, fee: 600, tax: 400 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '買入', date: d(-30), settleDate: d(-30), srcAccount: bank, srcSymbol: 'TWD', srcQty: 50000, dstAccount: tw, dstSymbol: '00757', dstQty: 500, amount: 50000 } }).ok);
+    assert.ok(be.call('addTransaction', { tx: { type: '賣出', date: d(-5), settleDate: d(-3), srcAccount: tw, srcSymbol: '00757', srcQty: 500, dstAccount: bank, dstSymbol: 'TWD', dstQty: 45000, amount: 45000 } }).ok);
+
+    await a.login(); await page.waitForSelector('[data-testid=networth]');
+    await page.evaluate(() => { localStorage.removeItem('fin.rz.mode'); location.hash = '#/invest/realized'; });
+    await page.waitForSelector('[data-testid=rz-total]');
+    assert.equal(await page.locator('[data-testid=subtab-realized]').getAttribute('class'), 'on');
+    // 全部：+19,000 − 5,000
+    assert.equal(await page.locator('[data-testid=rz-total]').innerText(), '+NT$14,000');
+    assert.equal(await page.locator('[data-testid=rz-pct]').innerText(), '報酬率 +9.33%');
+    assert.equal(await page.locator('[data-testid=rz-winrate]').innerText(), '50%');
+    assert.equal(await page.locator('[data-testid=rz-wl]').innerText(), '1 勝 1 敗');
+    assert.equal(await page.locator('[data-testid=rz-days]').innerText(), `${Math.round((30 + 25) / 2)} 天`);
+    assert.match(await page.locator('[data-testid=rz-best]').innerText(), /\+NT\$19,000[\s\S]*\+19\.00%/);
+    assert.match(await page.locator('[data-testid=rz-worst]').innerText(), /-NT\$5,000[\s\S]*-10\.00%/);
+    assert.equal(await page.locator('[data-testid=rz-sym-total][data-symbol="4126"]').innerText(), '+NT$19,000');
+    assert.equal(await page.locator('[data-testid=rz-trade]').count(), 2);
+    assert.match(await page.locator('[data-testid=rz-trade]').first().innerText(), /00757 統一FANG\+[\s\S]*500 股 @ 90[\s\S]*持有 25 天[\s\S]*-NT\$5,000/);
+    // 近 12 個月：只剩今年那筆
+    await page.click('[data-testid=rz-modes] [data-mode="12m"]');
+    await page.waitForFunction(() => (document.querySelector('[data-testid=rz-total]') || {}).textContent === '-NT$5,000');
+    assert.equal(await page.locator('[data-testid=rz-trade]').count(), 1);
+  });
+});
