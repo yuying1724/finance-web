@@ -6,7 +6,7 @@ import { money, dateLabel, monthLabel, categoryInfo, amountClass, catIconStyle, 
 import { openSheet, confirmDialog, toast, errorText, loading } from '../ui.js';
 import { openTxForm } from './txform.js';
 import { write, applyTxLocal } from '../data.js';
-import { installmentOf, installmentText, openSetInstallment, togglePayoff } from './installments.js';
+import { installmentOf, installmentText, openSetInstallment, togglePayoff, toggleRemainder } from './installments.js';
 import { mountSpending } from './spending.js';
 
 // ---------- 共用：把一筆交易轉成畫面上的資訊 ----------
@@ -202,7 +202,10 @@ export function openTxDetail(t) {
     if (t.type === '支出') actions.appendChild(btn('退款', '', () => { sheet.close(); setTimeout(() => openTxForm({ preset: { type: '退款', related: t } }), 0); }));
     if (t.type === '支出' && t.status === '有效' && src && src.type === '信用卡') {
       if (!inst) actions.appendChild(btn('設為分期', '', () => { sheet.close(); setTimeout(() => openSetInstallment(t), 0); }));
-      else if (inst.status !== '已完成') actions.appendChild(btn(inst.payoffDate ? '取消提前清償' : '提前清償', '', () => { sheet.close(); setTimeout(() => togglePayoff(inst), 0); }));
+      else if (inst.status !== '已完成') {
+        actions.appendChild(btn(inst.payoffDate ? '取消提前清償' : '提前清償', '', () => { sheet.close(); setTimeout(() => togglePayoff(inst), 0); }));
+        if (inst.total % inst.terms) actions.appendChild(btn(`零頭改放${(inst.remainderOn || '首期') === '首期' ? '末期' : '首期'}`, '', () => { sheet.close(); setTimeout(() => toggleRemainder(inst), 0); }));
+      }
     }
     actions.appendChild(btn('作廢', 'btn-danger', async (e) => {
       const button = e.currentTarget; // 事件結束後 currentTarget 會變成 null，要先存起來

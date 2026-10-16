@@ -1961,7 +1961,7 @@ var FinApi = (function () {
     fn: function (p, env) {
       var requestId = str(p.requestId).slice(0, 64);
       var terms = Number(p.terms);
-      var remainderOn = str(p.remainderOn) || '首期';
+      var remainderOn = str(p.remainderOn) || '末期'; // 銀行多半把零頭放最後一期
       var bad = function (field, msg) { return FinFail('VALIDATION', msg, { errors: [{ field: field, message: msg }], warnings: [] }); };
       if (!(terms >= 2 && terms <= 60 && Math.floor(terms) === terms)) throw bad('terms', '分期期數請填 2～60 的整數');
       if (remainderOn !== '首期' && remainderOn !== '末期') throw bad('remainderOn', '零頭只能放首期或末期');
@@ -1999,6 +1999,23 @@ var FinApi = (function () {
   };
 
   /** 提前清償：date 之後的各期全部改到 date 所在的那期帳單；date 空白＝取消提前清償 */
+  /** 改分期的零頭放哪一期（p.remainderOn：首期／末期）；購買金額、期數不變，只影響各期帳單金額 */
+  H.updateInstallment = {
+    fn: function (p, env) {
+      var remainderOn = str(p.remainderOn);
+      if (remainderOn !== '首期' && remainderOn !== '末期') throw FinFail('VALIDATION', '零頭只能放首期或末期', { errors: [{ field: 'remainderOn', message: '零頭只能放首期或末期' }], warnings: [] });
+      return FinRepo.withLock(function () {
+        var row = FinRepo.findById('installments', str(p.id));
+        if (!row) throw FinFail('NOT_FOUND', '找不到分期 ' + str(p.id));
+        if ((row.remainderOn || '首期') !== remainderOn) {
+          FinRepo.updateRow('installments', row._row, { remainderOn: remainderOn, updatedAt: ts(env.now) });
+          FinRepo.audit('修改', 'installments', row.id, '零頭改放' + remainderOn, env.device);
+        }
+        return { installment: pub(FinRepo.findById('installments', row.id)) };
+      });
+    },
+  };
+
   H.setInstallmentPayoff = {
     fn: function (p, env) {
       return FinRepo.withLock(function () {

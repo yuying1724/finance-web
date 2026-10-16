@@ -443,6 +443,19 @@ test('分期付款（零利率）：購買當下記全額、帳單只算當期�
   assert.equal(st5.data.installmentRemaining, 0);
   const inst = b.boot().installments.find((x) => x.id === iid);
   assert.equal(inst.payoffDate, '2026-04-20');
+  // 零頭改放末期：第 1 期 5,000、第 6 期 5,001（3/12 帳單少 1 元）
+  assert.ok(b.call('updateInstallment', { id: iid, remainderOn: '末期' }).ok);
+  const im = b.boot().installments.find((x) => x.id === iid);
+  assert.deepEqual([im.remainderOn, im.firstAmount, im.perAmount], ['末期', 5000, 5000]);
+  assert.equal(b.call('updateInstallment', { id: iid, remainderOn: '中間' }).error.code, 'VALIDATION');
+  assert.ok(b.call('updateInstallment', { id: iid, remainderOn: '首期' }).ok);
+  assert.equal(b.boot().installments.find((x) => x.id === iid).firstAmount, 5001);
+  // 沒指定零頭放哪：預設末期（銀行多半這樣）
+  const r9 = b.call('addInstallment', { tx: { type: '支出', date: '2026-02-21', srcAccount: card, srcSymbol: 'TWD', srcQty: 2810, categoryId: food, note: '課程' }, terms: 6 });
+  assert.equal(r9.data.installment.remainderOn, '末期');
+  const i9 = b.boot().installments.find((x) => x.txId === r9.data.tx.id);
+  assert.deepEqual([i9.firstAmount, i9.perAmount], [468, 468]);
+  assert.ok(b.call('voidTransaction', { id: r9.data.tx.id, expectedUpdatedAt: r9.data.tx.updatedAt }).ok);
   // 取消提前清償
   assert.ok(b.call('setInstallmentPayoff', { id: iid, date: '' }).ok);
   assert.equal(b.boot().installments.find((x) => x.id === iid).payoffDate, '');

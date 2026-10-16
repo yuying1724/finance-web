@@ -6,6 +6,7 @@ import { money, decimalsOf, categoryInfo, catIconStyle, sortCategories } from '.
 import { openSheet, toast } from '../ui.js';
 import { refresh, write, applyTxLocal } from '../data.js';
 import { QUICK_TYPES, quickItems, openSaveQuick } from './quicktx.js';
+import { installmentOf, installmentText } from './installments.js';
 
 const last = { type: '支出', acct: '', acct2: '' };
 const PRIMARY = ['支出', '收入', '轉帳', '換匯'];
@@ -81,7 +82,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     settleDate: '', settleTouched: false, relatedSymbol: '', adjSide: 'dst',
     merchant: editing ? (tx.merchant || '') : '', tags: editing ? (tx.tags || '') : '', fxSymbol: editing ? (tx.fxSymbol || '') : '', fxQty: editing && tx.fxQty ? String(tx.fxQty) : '',
     feeAmount: '', more: false, postDate: editing && (tx.type === '支出' || tx.type === '退款') ? (tx.settleDate || '') : '',
-    instOn: false, instTerms: '6', instRemainder: '首期',
+    instOn: false, instTerms: '6', instRemainder: '末期',
     closeChoice: editing && tx.settleDate && tx.settleDate !== tx.date ? 'custom' : '',
     splitOn: false, splits: [{ cat: '', amt: '', note: '' }, { cat: '', amt: '', note: '' }], // 拆帳：一次刷卡拆成好幾個分類（某行可以是「幫別人代墊」）
     payOn: false, pays: [{ acct: '', amt: '' }], // 混合付款：其他帳戶各付多少，主要付款帳戶付剩下的 // 快結帳提醒的選擇：this／next／custom／auto（依卡片設定預估）
@@ -425,7 +426,14 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
   // 分期付款（零利率）：付款帳戶是信用卡、新增時才出現。購買當下記全額，帳單每期只算一份（見 core/creditcard.js）
   function installmentField() {
     const a = accountById(f.acct);
-    if (editing || !a || a.type !== '信用卡') return null;
+    if (editing) {
+      // 編輯時不在這裡改分期（期數、零頭、提前清償在交易詳情的按鈕調整），只顯示目前的分期設定；改金額或日期後各期會自動重算
+      const inst = installmentOf(tx.id);
+      if (!inst) return null;
+      return field('inst', '', h('div', { class: 'notice', 'data-testid': 'inst-editing' },
+        `這筆是分期：${installmentText(inst)}・零頭放${inst.remainderOn || '首期'}。存檔後分期設定不變（改了金額或日期，各期會自動重算）；要改零頭或提前清償，請在交易詳情按對應的按鈕。`));
+    }
+    if (!a || a.type !== '信用卡') return null;
     const hasSettings = (d.cardSettings || []).some((c) => c.accountId === a.id);
     const box = h('div', { style: { display: f.instOn ? '' : 'none', marginTop: '8px' } });
     const preview = h('div', { class: 'muted small', style: { marginTop: '4px' }, 'data-testid': 'inst-preview' });

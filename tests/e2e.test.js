@@ -608,7 +608,7 @@ test('分期付款：記一筆勾選分期 → 淨值扣全額、帳單只算當
     await page.selectOption('select[aria-label="付款帳戶"]', { label: '國泰信用卡' });
     await page.check('[data-testid=inst-toggle]');
     await page.fill('input[aria-label="分期期數"]', '6');
-    assert.match(await page.locator('[data-testid=inst-preview]').innerText(), /每期 NT\$5,000.*第 1 期 NT\$5,001/);
+    assert.match(await page.locator('[data-testid=inst-preview]').innerText(), /每期 NT\$5,000.*最後一期 NT\$5,001/, '預設零頭放末期（銀行多半這樣）');
     await a.pickCategory('購物');
     await page.fill('input[aria-label="商家"]', 'Apple');
     await a.save();
@@ -618,8 +618,8 @@ test('分期付款：記一筆勾選分期 → 淨值扣全額、帳單只算當
     const d = be.call('bootstrap').data;
     assert.equal(d.installments.length, 1);
     const ov = d.cardOverview.items.find((x) => x.name === '國泰信用卡');
-    assert.equal(ov.installmentRemaining, 25000, '本期第 1 期 5,001，之後第 2～6 期 25,000 未出帳');
-    assert.equal(ov.currentSpend, 5001 + 0, '本期消費只算第 1 期（demo 裡這張卡其他消費都在更早的週期）');
+    assert.equal(ov.installmentRemaining, 25001, '本期第 1 期 5,000，之後第 2～6 期 25,001（含零頭）未出帳');
+    assert.equal(ov.currentSpend, 5000 + 0, '本期消費只算第 1 期（demo 裡這張卡其他消費都在更早的週期）');
     // 信用卡總覽點進去看到分期中
     await a.tab('accounts');
     await page.click('[data-testid=subtab-cards]');
@@ -627,8 +627,22 @@ test('分期付款：記一筆勾選分期 → 淨值扣全額、帳單只算當
     await page.waitForSelector('[data-testid=inst-list]');
     assert.match(await page.locator('[data-testid=inst-list]').innerText(), /Apple[\s\S]*分 6 期/);
     await page.click('.sheet [aria-label="關閉"]'); await page.waitForSelector('.sheet', { state: 'detached' });
-    // 交易詳情 → 提前清償
+    // 編輯：表單顯示目前的分期設定（不能在這裡改），存檔後分期還在
     await a.tab('tx');
+    await page.locator('.list').getByText('分 6 期').first().click();
+    await page.waitForSelector('.sheet');
+    await page.getByRole('button', { name: '編輯' }).click();
+    await page.waitForSelector('[data-testid=inst-editing]');
+    assert.match(await page.locator('[data-testid=inst-editing]').innerText(), /分 6 期[\s\S]*零頭放末期/);
+    await page.click('.sheet [aria-label="關閉"]'); await page.waitForSelector('.sheet', { state: 'detached' });
+    // 交易詳情 → 零頭改放首期
+    await page.locator('.list').getByText('分 6 期').first().click();
+    await page.waitForSelector('.sheet');
+    await page.getByRole('button', { name: '零頭改放首期' }).click();
+    await page.waitForFunction(() => /零頭改放首期/.test(document.body.innerText));
+    await page.waitForFunction(() => !document.querySelector('.sheet'));
+    assert.equal(be.call('bootstrap').data.installments[0].firstAmount, 5001);
+    // 交易詳情 → 提前清償
     await page.locator('.list').getByText('分 6 期').first().click();
     await page.waitForSelector('.sheet');
     await page.getByRole('button', { name: '提前清償' }).click();

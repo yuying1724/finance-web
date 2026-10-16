@@ -36,9 +36,9 @@ export function installmentListBlock(list) {
 
 /** 把一筆信用卡支出設為分期 */
 export function openSetInstallment(t) {
-  const f = { terms: '6', remainderOn: '首期' };
+  const f = { terms: '6', remainderOn: '末期' };
   const termsInput = h('input', { type: 'text', inputmode: 'numeric', value: f.terms, 'aria-label': '分期期數', oninput: (e) => { f.terms = e.target.value; } });
-  const remSel = h('select', { 'aria-label': '零頭', onchange: (e) => { f.remainderOn = e.target.value; } }, ['首期', '末期'].map((v) => h('option', { value: v }, `零頭放${v}`)));
+  const remSel = h('select', { 'aria-label': '零頭', onchange: (e) => { f.remainderOn = e.target.value; } }, ['末期', '首期'].map((v) => h('option', { value: v, selected: v === f.remainderOn }, `零頭放${v}`)));
   const save = h('button', { class: 'btn btn-primary', type: 'button', 'data-testid': 'inst-save', onclick: async () => {
     const n = Number(String(f.terms).trim());
     if (!(n >= 2 && n <= 60 && Math.floor(n) === n)) { toast('分期期數請填 2～60 的整數', { kind: 'bad' }); return; }
@@ -55,6 +55,13 @@ export function openSetInstallment(t) {
       h('label', { class: 'field' }, h('span', { class: 'lbl' }, '零頭'), remSel)),
     footer: [h('button', { class: 'btn', type: 'button', onclick: () => sheet.close() }, '取消'), save],
   });
+}
+
+/** 零頭改放另一期（例如銀行帳單出來發現零頭在最後一期） */
+export async function toggleRemainder(x) {
+  const next = (x.remainderOn || '首期') === '首期' ? '末期' : '首期';
+  const r = await write('updateInstallment', { id: x.id, remainderOn: next }, { failPrefix: '操作失敗：' });
+  if (r) toast(`零頭改放${next}`);
 }
 
 /** 提前清償（剩下的各期一次進今天所在的那期帳單）／取消提前清償 */
