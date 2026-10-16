@@ -156,3 +156,25 @@ test('壞請求：非 JSON、陣列、未知操作、原型鏈名稱、超大請
   assert.equal(b.rawPost('{"action":"ping","pad":"' + 'x'.repeat(210000) + '"}').error.code, 'BAD_REQUEST');
   assert.equal(b.rawPost('').error.code, 'BAD_ACTION'); // 空 body 視為沒指定操作
 });
+
+test('每台裝置自己選「閒置多久要重新登入」：登入時帶 ttlMinutes、已登入可換發；限制 5 分鐘～30 天；沒給就用試算表設定', () => {
+  const b = loadBackend().setup();
+  const ttlOf = (s) => Number(String(s).split('.')[3]) / MIN;
+  // 沒給：試算表「設定」沒有閒置登出分鐘 → 預設 60
+  const r0 = b.post({ action: 'login', params: { token: b.token, pin: b.pin } });
+  assert.equal(r0.data.ttlMinutes, 60); assert.equal(ttlOf(r0.data.session), 60);
+  // 登入時帶 7 天
+  const r1 = b.post({ action: 'login', params: { token: b.token, pin: b.pin, ttlMinutes: 7 * 24 * 60 } });
+  assert.equal(r1.data.ttlMinutes, 10080); assert.equal(ttlOf(r1.data.session), 10080);
+  // 超過 30 天會被壓到 30 天；太短壓到 5 分鐘
+  assert.equal(b.post({ action: 'login', params: { token: b.token, pin: b.pin, ttlMinutes: 999999 } }).data.ttlMinutes, 43200);
+  assert.equal(b.post({ action: 'login', params: { token: b.token, pin: b.pin, ttlMinutes: 1 } }).data.ttlMinutes, 5);
+  // 已登入的裝置換發：新的工作階段碼效期是新的，舊的仍可用到它自己到期
+  const r2 = b.call('setSessionTtl', { ttlMinutes: 24 * 60 });
+  assert.ok(r2.ok, JSON.stringify(r2));
+  assert.equal(r2.data.ttlMinutes, 1440); assert.equal(ttlOf(r2.data.session), 1440);
+  b.session = r2.data.session;
+  assert.ok(b.call('bootstrap').ok);
+  // 0＝跟隨試算表設定（預設 60）
+  assert.equal(b.call('setSessionTtl', { ttlMinutes: 0 }).data.ttlMinutes, 60);
+});

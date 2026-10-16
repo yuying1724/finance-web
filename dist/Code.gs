@@ -149,7 +149,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.69',
+    APP_VERSION: '0.9.70',
   };
   return api;
 })();
@@ -2617,7 +2617,7 @@ var FinAuth = (function () {
     return payload + '.' + hmacHex(payload, hmacKey());
   }
 
-  function login(token, pin, settings) {
+  function login(token, pin, settings, ttlMinutes) {
     var now = FinClock.now();
     var tok = normalizeToken(token);
     var match = null;
@@ -2649,8 +2649,16 @@ var FinAuth = (function () {
       throw FinFail('AUTH_FAILED', '授權碼或 PIN 錯誤（還可以再試 ' + (maxFails - fails) + ' 次）', { remaining: maxFails - fails });
     }
     cache.remove(failKey);
-    var ttlMs = numSetting(settings, '閒置登出分鐘', 60, 5, 720) * 60000;
+    // 閒置多久要重新登入：這台裝置有指定（設定頁選的）就用它，否則用試算表「設定」的「閒置登出分鐘」；最短 5 分鐘、最長 30 天
+    var ttlMs = numSetting(ttlMinutes > 0 ? { v: ttlMinutes } : settings, ttlMinutes > 0 ? 'v' : '閒置登出分鐘', 60, 5, MAX_TTL_MIN) * 60000;
     return { session: issueSession(match, ttlMs, now), device: { id: match.id, name: match.name }, ttlMinutes: Math.round(ttlMs / 60000) };
+  }
+
+  var MAX_TTL_MIN = 30 * 24 * 60;
+  /** 已登入的裝置改「閒置多久要重新登入」：用同一台裝置的身分換發一張新效期的工作階段碼 */
+  function reissue(sess, ttlMinutes, nowMs, settings) {
+    var ttlMs = numSetting(ttlMinutes > 0 ? { v: ttlMinutes } : settings, ttlMinutes > 0 ? 'v' : '閒置登出分鐘', 60, 5, MAX_TTL_MIN) * 60000;
+    return { session: issueSession({ id: sess.deviceId }, ttlMs, nowMs), ttlMinutes: Math.round(ttlMs / 60000) };
   }
 
   /** 驗證工作階段碼，回傳 {deviceId, deviceName, ttlMs, expMs}；失敗丟出 AUTH_REQUIRED */
@@ -2679,7 +2687,7 @@ var FinAuth = (function () {
 
   return {
     addDevice: addDevice, listDevices: listDevices, revokeDevice: revokeDevice, setPin: setPin, hasPin: hasPin, checkPin: checkPin,
-    pinPolicyError: pinPolicyError, signOutAll: signOutAll, login: login, verifySession: verifySession, refreshIfNeeded: refreshIfNeeded,
+    pinPolicyError: pinPolicyError, signOutAll: signOutAll, login: login, reissue: reissue, verifySession: verifySession, refreshIfNeeded: refreshIfNeeded, MAX_TTL_MIN: MAX_TTL_MIN,
     randomHex: randomHex, generateToken: generateToken, constEq: constEq, MIN_PIN_LENGTH: MIN_PIN_LENGTH,
   };
 })();
@@ -3767,13 +3775,23 @@ var FinApi = (function () {
 
   H.ping = { auth: false, fn: function () { return { name: 'finance-web', version: FinSchema.APP_VERSION }; } };
 
+  /** p.ttlMinutes（選填）：這台裝置在設定頁選的「閒置多久要重新登入」；沒給就用試算表「設定」的「閒置登出分鐘」（後端限制 5 分鐘～30 天） */
   H.login = {
     auth: false,
     fn: function (p) {
       var settings = {};
       try { settings = FinRepo.getSettings(); } catch (e) { settings = {}; }
-      var r = FinAuth.login(p.token, p.pin, settings);
+      var r = FinAuth.login(p.token, p.pin, settings, Number(p.ttlMinutes) || 0);
       return r;
+    },
+  };
+  /** 已登入的裝置改「閒置多久要重新登入」：換發新效期的工作階段碼（回應的 session 會由前端存起來） */
+  H.setSessionTtl = {
+    fn: function (p, env) {
+      var settings = {};
+      try { settings = FinRepo.getSettings(); } catch (e) { settings = {}; }
+      var r = FinAuth.reissue(env.session, Number(p.ttlMinutes) || 0, env.now, settings); // 0＝跟隨試算表「設定」
+      return { session: r.session, ttlMinutes: r.ttlMinutes };
     },
   };
 

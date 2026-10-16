@@ -113,7 +113,7 @@ var FinAuth = (function () {
     return payload + '.' + hmacHex(payload, hmacKey());
   }
 
-  function login(token, pin, settings) {
+  function login(token, pin, settings, ttlMinutes) {
     var now = FinClock.now();
     var tok = normalizeToken(token);
     var match = null;
@@ -145,8 +145,16 @@ var FinAuth = (function () {
       throw FinFail('AUTH_FAILED', '授權碼或 PIN 錯誤（還可以再試 ' + (maxFails - fails) + ' 次）', { remaining: maxFails - fails });
     }
     cache.remove(failKey);
-    var ttlMs = numSetting(settings, '閒置登出分鐘', 60, 5, 720) * 60000;
+    // 閒置多久要重新登入：這台裝置有指定（設定頁選的）就用它，否則用試算表「設定」的「閒置登出分鐘」；最短 5 分鐘、最長 30 天
+    var ttlMs = numSetting(ttlMinutes > 0 ? { v: ttlMinutes } : settings, ttlMinutes > 0 ? 'v' : '閒置登出分鐘', 60, 5, MAX_TTL_MIN) * 60000;
     return { session: issueSession(match, ttlMs, now), device: { id: match.id, name: match.name }, ttlMinutes: Math.round(ttlMs / 60000) };
+  }
+
+  var MAX_TTL_MIN = 30 * 24 * 60;
+  /** 已登入的裝置改「閒置多久要重新登入」：用同一台裝置的身分換發一張新效期的工作階段碼 */
+  function reissue(sess, ttlMinutes, nowMs, settings) {
+    var ttlMs = numSetting(ttlMinutes > 0 ? { v: ttlMinutes } : settings, ttlMinutes > 0 ? 'v' : '閒置登出分鐘', 60, 5, MAX_TTL_MIN) * 60000;
+    return { session: issueSession({ id: sess.deviceId }, ttlMs, nowMs), ttlMinutes: Math.round(ttlMs / 60000) };
   }
 
   /** 驗證工作階段碼，回傳 {deviceId, deviceName, ttlMs, expMs}；失敗丟出 AUTH_REQUIRED */
@@ -175,7 +183,7 @@ var FinAuth = (function () {
 
   return {
     addDevice: addDevice, listDevices: listDevices, revokeDevice: revokeDevice, setPin: setPin, hasPin: hasPin, checkPin: checkPin,
-    pinPolicyError: pinPolicyError, signOutAll: signOutAll, login: login, verifySession: verifySession, refreshIfNeeded: refreshIfNeeded,
+    pinPolicyError: pinPolicyError, signOutAll: signOutAll, login: login, reissue: reissue, verifySession: verifySession, refreshIfNeeded: refreshIfNeeded, MAX_TTL_MIN: MAX_TTL_MIN,
     randomHex: randomHex, generateToken: generateToken, constEq: constEq, MIN_PIN_LENGTH: MIN_PIN_LENGTH,
   };
 })();

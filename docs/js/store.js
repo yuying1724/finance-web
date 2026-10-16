@@ -1,5 +1,5 @@
 // 網頁（前端）版本：跟 core/schema.js 的 APP_VERSION 一起改（tests/web.shell.test.js 會檢查一致；sw.js 的快取名稱由建置自動產生）
-export const WEB_VERSION = '0.9.69';
+export const WEB_VERSION = '0.9.70';
 
 // 狀態與偏好設定。localStorage 可能被封鎖（隱私模式），所以每次存取都包 try/catch，失敗就退回記憶體。
 const mem = {};
@@ -17,6 +17,8 @@ export const prefs = {
   get updown() { return get('fin.updown') || 'tw'; },
   set updown(v) { set('fin.updown', v === 'tw' ? null : v); applyTheme(); },
   get mask() { return get('fin.mask') === '1'; }, set mask(v) { set('fin.mask', v ? '1' : null); },
+  // 這台裝置「閒置多久要重新登入」（分鐘）；0＝跟隨試算表「設定」的閒置登出分鐘
+  get ttlMinutes() { return Number(get('fin.ttlMinutes')) || 0; }, set ttlMinutes(v) { set('fin.ttlMinutes', v ? String(v) : null); },
   get session() { try { return JSON.parse(get('fin.session') || 'null'); } catch (e) { return null; } },
   set session(v) { set('fin.session', v ? JSON.stringify(v) : null); },
 };

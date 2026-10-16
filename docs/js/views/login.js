@@ -35,7 +35,7 @@ export function renderLogin(root, { onSuccess, message, autoBio = true }) {
     if (!pin) { showError('請輸入 PIN'); return false; }
     prefs.apiUrl = url;
     try {
-      const r = await api.call('login', { token, pin });
+      const r = await api.call('login', { token, pin, ttlMinutes: prefs.ttlMinutes || undefined });
       prefs.token = token;
       api.setSession(r.session, r.ttlMinutes);
       pinInput.value = '';

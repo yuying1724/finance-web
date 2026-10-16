@@ -1953,6 +1953,16 @@ test('指紋／臉部登入：設定裡啟用（先驗 PIN 再跳指紋）、重
     await page.waitForFunction(() => /已啟用/.test(document.querySelector('[data-testid=bio-status]')?.innerText || ''));
     const rec = await page.evaluate(() => localStorage.getItem('fin.bio'));
     assert.ok(rec && JSON.parse(rec).ct && !rec.includes(s.pin), '加密後的 PIN 存在裝置裡，不能是明文');
+    // 這台裝置「閒置多久要重新登入」：選 7 天 → 存在本機、工作階段碼換成 7 天效期；重新整理後仍是 7 天
+    assert.equal(await page.locator('[data-testid=ttl-select]').inputValue(), '0');
+    await page.selectOption('[data-testid=ttl-select]', '10080');
+    await page.waitForFunction(() => (JSON.parse(localStorage.getItem('fin.session') || '{}').ttl === 10080));
+    assert.equal(await page.evaluate(() => localStorage.getItem('fin.ttlMinutes')), '10080');
+    await page.reload();
+    await page.waitForSelector('.tabbar a[data-tab=home]');
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('fin.session') || '{}').ttl), 10080);
+    await a.tab('settings');
+    await page.waitForSelector('[data-testid=relock-select]');
     // 離開 App 太久的輕鎖定：啟用指紋後預設 3 分鐘；設定頁可改；離開不到時間回來不鎖
     assert.equal(await page.locator('[data-testid=relock-select]').inputValue(), '3');
     await page.evaluate(() => { localStorage.setItem('fin.hiddenAt', String(Date.now() - 2 * 60000)); document.dispatchEvent(new Event('visibilitychange')); });

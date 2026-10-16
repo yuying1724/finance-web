@@ -35,6 +35,8 @@ export function renderSettings(root) {
           h('button', { class: 'btn btn-sm', onclick: openChangePin }, icon('lock'), '變更 PIN'),
           h('button', { class: 'btn btn-sm', onclick: () => lock('已鎖定', { autoBio: false }) }, icon('logout'), '鎖定並登出')),
         bioBlock(),
+        h('div', { class: 'field', style: { marginTop: '12px' } }, h('span', { class: 'lbl' }, '這台裝置閒置多久要重新登入'), ttlSelect()),
+        h('p', { class: 'muted small' }, '只在這台裝置生效；有在用就會一直延長。共用的電腦建議選短一點；手機有指紋鎖定，可以選長一點。'),
         h('p', { class: 'muted small', style: { marginBottom: 0 } }, `這台裝置：${d.device || '（未命名）'}。要新增或撤銷裝置，請在試算表的「財務系統」選單操作。`)),
       h('div', { class: 'card' }, h('h2', null, '資料'),
         h('div', { class: 'row-flex wrap' },
@@ -51,6 +53,31 @@ export function renderSettings(root) {
           h('dt', null, '版本'), h('dd', { 'data-testid': 'app-versions' }, `網頁 ${WEB_VERSION}／後端 ${d.version}`, WEB_VERSION !== d.version ? h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, '版本不一致，請按下方「清除快取並重新載入」') : null),
           h('dt', null, '後端'), h('dd', { class: 'mono' }, prefs.apiUrl.replace(/^https?:\/\//, '').slice(0, 60) + (prefs.apiUrl.length > 68 ? '…' : ''))),
         h('button', { class: 'btn btn-sm', style: { marginTop: '12px' }, onclick: reloadApp }, icon('refresh'), '清除快取並重新載入'))));
+}
+
+// ---------- 這台裝置閒置多久要重新登入（每台裝置自己選；0＝跟隨試算表「設定」的閒置登出分鐘） ----------
+const TTL_OPTIONS = [[0, '跟隨試算表設定'], [60, '1 小時'], [240, '4 小時'], [24 * 60, '1 天'], [7 * 24 * 60, '7 天'], [30 * 24 * 60, '30 天']];
+function ttlSelect() {
+  const cur = prefs.ttlMinutes;
+  const s = prefs.session || {};
+  const sel = h('select', { 'aria-label': '這台裝置閒置多久要重新登入', 'data-testid': 'ttl-select', onchange: () => setTtl(Number(sel.value)) },
+    TTL_OPTIONS.map(([v, label]) => h('option', { value: String(v), selected: v === cur }, v === 0 && s.ttl ? `${label}（目前 ${s.ttl} 分鐘）` : label)));
+  return sel;
+}
+export async function setTtl(minutes) {
+  const prev = prefs.ttlMinutes;
+  prefs.ttlMinutes = minutes;
+  try {
+    const r = await api.call('setSessionTtl', { ttlMinutes: minutes });
+    api.setSession(r.session, r.ttlMinutes);
+    const label = (TTL_OPTIONS.find(([v]) => v === minutes) || [0, minutes + ' 分鐘'])[1];
+    toast(minutes ? `已設定：這台裝置閒置 ${label}才需要重新登入` : `已改回跟隨試算表設定（${r.ttlMinutes} 分鐘）`);
+    notify();
+  } catch (e) {
+    prefs.ttlMinutes = prev;
+    notify();
+    if (e.code !== 'AUTH_REQUIRED') toast(errorText(e), { kind: 'bad' });
+  }
 }
 
 // ---------- 指紋／臉部登入（只在這台裝置生效；PIN 用指紋驗證才拿得到的金鑰加密後存在瀏覽器裡） ----------
@@ -91,7 +118,7 @@ function openEnableBio() {
     if (!pin) { banner.style.display = ''; mount(banner, '請輸入目前的 PIN'); return; }
     await withBusy(e.currentTarget, async () => {
       try {
-        const r = await api.call('login', { token: prefs.token, pin }); // 先確認 PIN 是對的，才拿去加密
+        const r = await api.call('login', { token: prefs.token, pin, ttlMinutes: prefs.ttlMinutes || undefined }); // 先確認 PIN 是對的，才拿去加密
         api.setSession(r.session, r.ttlMinutes);
       } catch (err) { banner.style.display = ''; mount(banner, err && err.code === 'AUTH_FAILED' ? 'PIN 不正確' : errorText(err)); return; }
       try { await bio.enroll(pin); }

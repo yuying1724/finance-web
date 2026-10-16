@@ -972,13 +972,23 @@ var FinApi = (function () {
 
   H.ping = { auth: false, fn: function () { return { name: 'finance-web', version: FinSchema.APP_VERSION }; } };
 
+  /** p.ttlMinutes（選填）：這台裝置在設定頁選的「閒置多久要重新登入」；沒給就用試算表「設定」的「閒置登出分鐘」（後端限制 5 分鐘～30 天） */
   H.login = {
     auth: false,
     fn: function (p) {
       var settings = {};
       try { settings = FinRepo.getSettings(); } catch (e) { settings = {}; }
-      var r = FinAuth.login(p.token, p.pin, settings);
+      var r = FinAuth.login(p.token, p.pin, settings, Number(p.ttlMinutes) || 0);
       return r;
+    },
+  };
+  /** 已登入的裝置改「閒置多久要重新登入」：換發新效期的工作階段碼（回應的 session 會由前端存起來） */
+  H.setSessionTtl = {
+    fn: function (p, env) {
+      var settings = {};
+      try { settings = FinRepo.getSettings(); } catch (e) { settings = {}; }
+      var r = FinAuth.reissue(env.session, Number(p.ttlMinutes) || 0, env.now, settings); // 0＝跟隨試算表「設定」
+      return { session: r.session, ttlMinutes: r.ttlMinutes };
     },
   };
 

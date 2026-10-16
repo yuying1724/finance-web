@@ -145,6 +145,10 @@ function maybeRelock() {
 async function start() {
   applyTheme();
   if (!api.hasValidSession()) { renderLogin(app, { onSuccess: start }); return; }
+  // 這台裝置選過「閒置多久要重新登入」，但目前的工作階段效期不是那個（例如舊版登入的）：換發一張新的
+  if (prefs.ttlMinutes && (prefs.session.ttl || 0) !== prefs.ttlMinutes) {
+    api.call('setSessionTtl', { ttlMinutes: prefs.ttlMinutes }).then((r) => api.setSession(r.session, r.ttlMinutes)).catch(() => {});
+  }
   // 有上次的快取就先畫出來（秒開），背景再抓最新資料；背景更新失敗就維持舊資料並提示，不擋畫面
   const cached = loadCache();
   if (cached) {
