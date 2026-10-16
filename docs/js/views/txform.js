@@ -456,6 +456,33 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
     paintPreview();
     return field('inst', '', toggle, box);
   }
+  // 編輯「同一組」裡的其中一筆（新增時一起建立的：轉帳＋手續費、混合付款、拆分、合併帳單繳卡費、貸款還款本金＋利息）：
+  // 表單只改這一筆，所以列出同組的其他筆，提醒要改的話去改那幾筆
+  const groupBox = h('div', { class: 'notice', 'data-testid': 'group-editing', style: { marginBottom: '12px' } }, '這筆是一組交易的其中一筆，讀取同組的其他筆…');
+  if (editing && tx.groupId) {
+    api.call('listTransactions', { filters: { groupId: tx.groupId, includeVoid: true }, limit: 50 }).then((r) => {
+      const all = (r.items || []).filter((x) => x.status !== '作廢');
+      const others = all.filter((x) => x.id !== tx.id);
+      if (!others.length) { groupBox.remove(); return; }
+      const acctName = (id) => (accountById(id) || {}).name || id || '';
+      const isFee = (x) => x.type === '支出' && x.relatedTxId && x.relatedTxId === tx.groupId;
+      const allTransfer = all.every((x) => x.type === '轉帳');
+      const srcs = new Set(all.filter((x) => x.type === '支出').map((x) => x.srcAccount));
+      const kind = all.some(isFee) ? (isFee(tx) ? '這筆是轉帳／換匯另外記的「手續費」' : '這筆轉帳／換匯新增時另外記了一筆手續費')
+        : allTransfer && all.every((x) => (accountById(x.dstAccount) || {}).type === '信用卡') ? '這筆是「合併帳單繳卡費」拆成的其中一筆'
+          : all.some((x) => /^貸款還款/.test(x.note || '')) ? '這筆是貸款還款（本金＋利息）的其中一筆'
+            : srcs.size > 1 ? '這筆是「混合付款」的其中一筆'
+              : '這筆是「拆分」的其中一筆';
+      const line = (x) => {
+        const amt = x.type === '轉帳' || x.type === '支出' || x.type === '換匯' ? money(x.srcQty, x.srcSymbol, { noMask: true }) : money(x.dstQty, x.dstSymbol, { noMask: true });
+        const what = x.type === '支出' ? `${categoryInfo(x.categoryId).name}・${acctName(x.srcAccount)}` : x.type === '轉帳' ? `${acctName(x.srcAccount)} → ${acctName(x.dstAccount)}` : acctName(x.dstAccount || x.srcAccount);
+        return h('li', null, `${x.type} ${amt}（${what}，${x.date}，${x.id}${x.status === '待確認' ? '，待確認' : ''}）`);
+      };
+      mount(groupBox, h('div', null, `${kind}，新增時一起建立了 ${all.length} 筆。這裡只會改這一筆，其他筆不會自動跟著改；要改的話請到交易清單點那一筆：`),
+        h('ul', { style: { margin: '6px 0 0', paddingLeft: '18px' } }, others.map(line)));
+    }).catch(() => { mount(groupBox, '這筆是一組交易的其中一筆（新增時一起建立的）。這裡只會改這一筆，其他筆不會自動跟著改。'); });
+  }
+
   // 手續費（轉帳／換匯）：另外產生一筆同群組的「支出」（分類：手續費），從轉出帳戶扣
   const feeField = () => field('feeAmount', '手續費（選填）',
     h('input', { type: 'text', inputmode: 'decimal', value: f.feeAmount, placeholder: '例如 15，會另外記成一筆「手續費」支出', 'aria-label': '手續費', oninput: (e) => { f.feeAmount = e.target.value; } }));
@@ -604,6 +631,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
       );
     }
     paintClose(); // 快結帳提醒要等「更多」裡的入帳日欄位建好才畫
+    if (editing && tx.groupId) parts.unshift(groupBox);
     mount(bodyBox, ...parts);
     if (typeof paintQuickSave === 'function') paintQuickSave();
     paintRate(); paintImplied();

@@ -149,7 +149,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.71',
+    APP_VERSION: '0.9.72',
   };
   return api;
 })();
@@ -907,6 +907,7 @@ var FinLedger = (function () {
       else if (f.type && t.type !== f.type) return false;
       if (f.tag && (',' + (t.tags || '') + ',').indexOf(',' + f.tag + ',') < 0) return false;
       if (f.merchant && t.merchant !== f.merchant) return false;
+      if (f.groupId && t.groupId !== f.groupId) return false;
       if (f.accountId && t.srcAccount !== f.accountId && t.dstAccount !== f.accountId) return false;
       if (f.categoryId) {
         var cat = categories[t.categoryId];
@@ -3964,7 +3965,7 @@ var FinApi = (function () {
       var filters = {
         from: FinDates.isValid(f.from) ? f.from : '', to: FinDates.isValid(f.to) ? f.to : '', type: str(f.type), accountId: str(f.accountId),
         categoryId: str(f.categoryId), q: str(f.q).slice(0, 60), status: str(f.status), includeVoid: !!f.includeVoid,
-        tag: str(f.tag).slice(0, 20), merchant: str(f.merchant).slice(0, 40),
+        tag: str(f.tag).slice(0, 20), merchant: str(f.merchant).slice(0, 40), groupId: str(f.groupId).slice(0, 20),
       };
       var all = FinLedger.filterTransactions(c.txRows, filters, { accounts: c.accounts, categories: c.categories });
       var limit = Math.min(MAX_PAGE, Math.max(1, Number(p.limit) || 50));

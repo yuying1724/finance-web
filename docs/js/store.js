@@ -1,5 +1,5 @@
 // 網頁（前端）版本：跟 core/schema.js 的 APP_VERSION 一起改（tests/web.shell.test.js 會檢查一致；sw.js 的快取名稱由建置自動產生）
-export const WEB_VERSION = '0.9.71';
+export const WEB_VERSION = '0.9.72';
 
 // 狀態與偏好設定。localStorage 可能被封鎖（隱私模式），所以每次存取都包 try/catch，失敗就退回記憶體。
 const mem = {};

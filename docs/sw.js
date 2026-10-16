@@ -3,7 +3,7 @@
  * 策略：同網域的檔案「快取優先」——安裝時整批存好這一版（VERSION＝所有檔案內容的雜湊，改版就整批換新），
  * 所以訊號差、離線都能秒開；改版時瀏覽器抓到新的 sw.js 會先把新的一批裝好，新版接手後畫面自動重新載入一次。
  * 呼叫後端 API 的請求（跨網域 POST）完全不經過快取。 */
-const VERSION = 'fin-a5e240cb3d';
+const VERSION = 'fin-edf39decf7';
 const SHELL = [
   "./",
   "config.js",

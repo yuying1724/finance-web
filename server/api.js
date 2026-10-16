@@ -1161,7 +1161,7 @@ var FinApi = (function () {
       var filters = {
         from: FinDates.isValid(f.from) ? f.from : '', to: FinDates.isValid(f.to) ? f.to : '', type: str(f.type), accountId: str(f.accountId),
         categoryId: str(f.categoryId), q: str(f.q).slice(0, 60), status: str(f.status), includeVoid: !!f.includeVoid,
-        tag: str(f.tag).slice(0, 20), merchant: str(f.merchant).slice(0, 40),
+        tag: str(f.tag).slice(0, 20), merchant: str(f.merchant).slice(0, 40), groupId: str(f.groupId).slice(0, 20),
       };
       var all = FinLedger.filterTransactions(c.txRows, filters, { accounts: c.accounts, categories: c.categories });
       var limit = Math.min(MAX_PAGE, Math.max(1, Number(p.limit) || 50));

@@ -73,6 +73,7 @@ var FinLedger = (function () {
       else if (f.type && t.type !== f.type) return false;
       if (f.tag && (',' + (t.tags || '') + ',').indexOf(',' + f.tag + ',') < 0) return false;
       if (f.merchant && t.merchant !== f.merchant) return false;
+      if (f.groupId && t.groupId !== f.groupId) return false;
       if (f.accountId && t.srcAccount !== f.accountId && t.dstAccount !== f.accountId) return false;
       if (f.categoryId) {
         var cat = categories[t.categoryId];

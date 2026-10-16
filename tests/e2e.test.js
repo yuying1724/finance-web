@@ -566,6 +566,12 @@ test('A 組：商家／標籤／外幣欄位、轉帳手續費、跨月搜尋、
     await page.waitForFunction((b) => Number(document.querySelector('[data-testid=networth]').innerText.replace(/[^\d-]/g, '')) === b - 2500 - 15, before);
     const fee = be.call('listTransactions', { filters: { q: '手續費' } }).data.items[0];
     assert.equal(fee.srcQty, 15); assert.ok(fee.groupId);
+    // 編輯那筆轉帳：說明另外記了手續費，並列出手續費那筆
+    const main = be.call('listTransactions', { filters: { groupId: fee.groupId } }).data.items.find((x) => x.type === '轉帳');
+    await page.evaluate(async (t) => { const m = await import('./js/views/txform.js'); m.openTxForm({ tx: t }); }, main);
+    await page.waitForFunction(() => /新增時另外記了一筆手續費[\s\S]*支出 NT\$15/.test(document.querySelector('[data-testid=group-editing]')?.innerText || ''));
+    await page.click('.sheet button[aria-label="關閉"]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
 
     // 跨月搜尋：把一筆交易改到上個月，關鍵字仍找得到
     const boot = be.call('bootstrap').data;
@@ -1300,6 +1306,18 @@ test('混合付款：信用卡＋pandapay 餘額，「用完餘額」自動填�
     await page.click('[data-testid=split-row]');
     await page.waitForSelector('[data-testid=split-detail]');
     assert.match(await page.locator('[data-testid=split-detail]').innerText(), /付款帳戶[\s\S]*foodpanda卡 NT\$229、pandapay NT\$4/);
+    await page.click('.sheet button[aria-label="關閉"]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    // 編輯其中一筆：表單上方說明這是哪一種組合、列出同組的其他筆（這裡只改這一筆）
+    await page.evaluate(async () => { const m = await import('./js/views/txform.js'); const api = await import('./js/api.js'); const r = await api.call('listTransactions', { filters: { q: 'foodpanda' } }); m.openTxForm({ tx: r.items.find((x) => x.srcQty === 4) }); });
+    await page.waitForFunction(() => /「混合付款」的其中一筆，新增時一起建立了 2 筆[\s\S]*支出 NT\$229（飲食 › 飲料點心・foodpanda卡/.test(document.querySelector('[data-testid=group-editing]')?.innerText || ''));
+    await page.click('.sheet button[aria-label="關閉"]');
+    await page.waitForSelector('.sheet', { state: 'detached' });
+    // 一般單筆交易編輯時沒有這個說明
+    await page.evaluate(async () => { const m = await import('./js/views/txform.js'); const api = await import('./js/api.js'); const r = await api.call('listTransactions', { filters: { q: '開帳' } }); m.openTxForm({ tx: r.items[0] }); });
+    await page.waitForSelector('.sheet');
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('[data-testid=group-editing]').count(), 0);
     await page.click('.sheet button[aria-label="關閉"]');
     await page.waitForSelector('.sheet', { state: 'detached' });
     // 拆帳＋混合付款＋其他帳戶金額太多會擋
