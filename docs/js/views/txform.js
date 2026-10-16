@@ -162,6 +162,7 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
       if (accKey === 'acct') f.acctAuto = null;
       const a = accountById(id);
       if (a && symKey && changesSym && !f[symKey + 'Touched']) { f[symKey] = a.defaultSymbol; }
+      if (accKey === 'acct' && !editing) drawTypes(); // 選到證券帳戶時自動露出買入／賣出／股息
       draw();
     };
     const types = ACCOUNT_TYPE_ORDER.filter((t) => opts.some((a) => a.type === t)).concat([...new Set(opts.map((a) => a.type))].filter((t) => !ACCOUNT_TYPE_ORDER.includes(t)));
@@ -900,12 +901,19 @@ export function openTxForm({ tx = null, preset = {}, onDone, draft = null, serve
   }
   paintQuick();
 
+  // 類型：常用 4 種做成大頁籤；其他 6 種收在「更多 ▾」裡，目前選的是其他類型、或付款帳戶選了證券帳戶（多半要記買賣／股息）時才自動展開
   const typeSeg = h('div', { class: 'seg', role: 'tablist' });
-  const extraRow = h('div', { class: 'chips', style: { margin: '8px 0 12px' } });
+  const extraRow = h('div', { class: 'chips', style: { margin: '8px 0 12px' }, 'data-testid': 'type-extra' });
+  let extraOpen = false;
+  const extraVisible = () => extraOpen || EXTRA.includes(type) || (type === '支出' && (accountById(f.acct) || {}).type === '證券');
   function drawTypes() {
     const enabled = d.enabledTxTypes;
-    mount(typeSeg, PRIMARY.filter((t) => enabled.includes(t)).map((t) => h('button', { type: 'button', role: 'tab', 'aria-selected': type === t, 'data-type': t, class: (type === t ? 'on ' : '') + (t === '收入' ? 't-inc' : ''), onclick: () => { type = t; wantFocus = true; drawTypes(); draw(); } }, t)));
-    mount(extraRow, EXTRA.filter((t) => enabled.includes(t)).map((t) => h('button', { type: 'button', 'data-type': t, class: 'chip' + (type === t ? ' on' : '') + (INVEST_TYPES.includes(t) ? ' chip-invest' : ''), onclick: () => { type = t; wantFocus = true; f.settleTouched = false; drawTypes(); draw(); } }, EXTRA_LABEL[t] || t)));
+    const extras = EXTRA.filter((t) => enabled.includes(t));
+    const open = extraVisible();
+    mount(typeSeg, PRIMARY.filter((t) => enabled.includes(t)).map((t) => h('button', { type: 'button', role: 'tab', 'aria-selected': type === t, 'data-type': t, class: (type === t ? 'on ' : '') + (t === '收入' ? 't-inc' : ''), onclick: () => { type = t; wantFocus = true; extraOpen = false; drawTypes(); draw(); } }, t))
+      .concat(extras.length ? [h('button', { type: 'button', role: 'tab', 'aria-selected': EXTRA.includes(type), 'aria-expanded': String(open), 'data-type': '更多', class: EXTRA.includes(type) ? 'on' : '', onclick: () => { extraOpen = !open; drawTypes(); } }, EXTRA.includes(type) ? (EXTRA_LABEL[type] || type) : '更多', h('span', { class: 'muted', style: { marginLeft: '2px' } }, open ? '▴' : '▾'))] : []));
+    extraRow.style.display = open ? '' : 'none';
+    mount(extraRow, extras.map((t) => h('button', { type: 'button', 'data-type': t, class: 'chip' + (type === t ? ' on' : '') + (INVEST_TYPES.includes(t) ? ' chip-invest' : ''), onclick: () => { type = t; wantFocus = true; f.settleTouched = false; drawTypes(); draw(); } }, EXTRA_LABEL[t] || t)));
   }
   drawTypes(); draw();
   if (serverErrors) { banner.style.display = ''; mount(banner, '剛才儲存失敗，請修正後再送出'); serverErrors.forEach((er) => setError(uiField(type, er.field), er.message)); }

@@ -168,7 +168,12 @@ test('餘額調整（對帳）：輸入實際餘額，自動算出差額', { ski
     await a.login(); await page.waitForSelector('[data-testid=networth]');
     const expenseBefore = a.bootstrap().month.expense;
     await a.fab();
+    // 其他類型收在「更多」裡：預設隱藏，按了才展開
+    assert.ok(await page.locator('[data-testid=type-extra]').isHidden(), '其他類型預設收起');
+    await page.click('.sheet button[data-type="更多"]');
+    await page.waitForSelector('[data-testid=type-extra]:visible');
     await page.click('.sheet button[data-type="調整"]');
+    assert.match(await page.locator('.sheet button[data-type="更多"]').innerText(), /餘額調整/, '選了其他類型後，頁籤顯示目前的類型');
     await page.selectOption('select[aria-label="帳戶"]', { label: '錢包現金' });
     await page.fill('input[aria-label="實際餘額"]', '3000');
     await page.waitForFunction(() => /將調整 \+35 TWD/.test(document.querySelector('.sheet').innerText));
@@ -212,6 +217,10 @@ test('投資頁：新增標的、設定券商帳戶，持倉正確顯示', { ski
 
     // 買入 2330，確認持倉頁顯示正確
     await a.fab();
+    // 支出表單選到證券帳戶：自動露出買入／賣出／股息
+    assert.ok(await page.locator('[data-testid=type-extra]').isHidden());
+    await page.selectOption('select[aria-label="付款帳戶"]', { label: '國泰證券' });
+    await page.waitForSelector('[data-testid=type-extra]:visible');
     await page.click('.sheet button[data-type="買入"]');
     await page.selectOption('select[aria-label="標的"]', { label: '2330　台積電' });
     await page.selectOption('select[aria-label="證券帳戶（存入股票）"]', { label: '國泰證券' });
