@@ -335,7 +335,7 @@ var FinApi = (function () {
       var sym = tpl.srcSymbol || '';
       var est = nx.estimate || null;
       upcoming.push({ kind: '定期', recurringId: tpl.id, symbol: sym, name: (c.instruments[sym] || {}).name || tpl.name, exDate: '', payDate: nx.date, net: nx.amount, symbolCash: nx.symbol || c.base, templateName: tpl.name,
-        estPerShare: est ? est.perShare : null, estShares: est ? est.shares : null, estFrom: est ? est.lastDate : '' });
+        estPerShare: est ? est.perShare : null, estShares: est ? est.shares : null, estFrom: est ? est.lastDate : '', estApprox: !!(est && est.approx) });
     });
     upcoming.sort(function (a, b) { var da = a.payDate || a.exDate, db = b.payDate || b.exDate; return da < db ? -1 : da > db ? 1 : 0; });
     return {

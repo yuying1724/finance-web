@@ -56,10 +56,17 @@ var FinRecurringJob = (function () {
         return q;
       };
       var before = qtyAt(FinDates.addDays(last.date, -1)); // 入帳前一天的持股（除息日前買的才配得到）
+      var approx = false;
+      if (!(before > 0)) {
+        // 持股是在配息之後才補登（例如期初持股整筆記在較晚的日期）：用配息後第一筆持股紀錄當天的股數當作當時持股
+        var first = c.txRows.filter(function (t) { return t.status === '有效' && t.dstSymbol === sym && t.date >= last.date && t.date <= c.today; })
+          .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })[0];
+        if (first) { before = qtyAt(first.date); approx = true; }
+      }
       var now = qtyAt(c.today);
       if (before > 0 && now > 0) {
         var inst = c.instruments[cash], dec = inst ? FinMoney.billingDecimals(cash, inst.decimals) : 0;
-        res = { amount: FinMoney.round(Number(last.dstQty) * now / before, dec), perShare: Number(last.dstQty) / before, shares: now, basedOn: last.id, lastDate: last.date };
+        res = { amount: FinMoney.round(Number(last.dstQty) * now / before, dec), perShare: Number(last.dstQty) / before, shares: now, basedOn: last.id, lastDate: last.date, approx: approx };
       }
     }
     c.__divEst[key] = res;

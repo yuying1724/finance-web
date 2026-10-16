@@ -84,7 +84,7 @@ export function renderDividendsBody(root) {
     if (u.exDate) sub.push('除息 ' + md(u.exDate));
     sub.push((u.kind === '待確認' ? '入帳 ' : '預計入帳 ') + md(u.payDate));
     if (u.cash) sub.push(`每股 ${u.cash} × ${shares(u.shares)}`);
-    if (u.estPerShare) sub.push(`估：上次（${md(u.estFrom)}）每股實收 ${rawMoney(Math.round(u.estPerShare * 100) / 100, u.symbolCash || state.data.base)} × 目前 ${shares(u.estShares)}`);
+    if (u.estPerShare) sub.push(`估：上次（${md(u.estFrom)}）每股實收 ${rawMoney(Math.round(u.estPerShare * 100) / 100, u.symbolCash || state.data.base)} × 目前 ${shares(u.estShares)}${u.estApprox ? '（當時持股晚於配息才登記，用最早的持股紀錄估）' : ''}`);
     if (u.accountName) sub.push('入 ' + u.accountName);
     if (u.templateName) sub.push(u.templateName);
     const amt = u.net === null || u.net === undefined ? '金額未定' : money(u.net, u.symbolCash);

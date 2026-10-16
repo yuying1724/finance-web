@@ -149,7 +149,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.75',
+    APP_VERSION: '0.9.76',
   };
   return api;
 })();
@@ -3100,7 +3100,7 @@ var FinApi = (function () {
       var sym = tpl.srcSymbol || '';
       var est = nx.estimate || null;
       upcoming.push({ kind: '定期', recurringId: tpl.id, symbol: sym, name: (c.instruments[sym] || {}).name || tpl.name, exDate: '', payDate: nx.date, net: nx.amount, symbolCash: nx.symbol || c.base, templateName: tpl.name,
-        estPerShare: est ? est.perShare : null, estShares: est ? est.shares : null, estFrom: est ? est.lastDate : '' });
+        estPerShare: est ? est.perShare : null, estShares: est ? est.shares : null, estFrom: est ? est.lastDate : '', estApprox: !!(est && est.approx) });
     });
     upcoming.sort(function (a, b) { var da = a.payDate || a.exDate, db = b.payDate || b.exDate; return da < db ? -1 : da > db ? 1 : 0; });
     return {
@@ -5923,10 +5923,17 @@ var FinRecurringJob = (function () {
         return q;
       };
       var before = qtyAt(FinDates.addDays(last.date, -1)); // 入帳前一天的持股（除息日前買的才配得到）
+      var approx = false;
+      if (!(before > 0)) {
+        // 持股是在配息之後才補登（例如期初持股整筆記在較晚的日期）：用配息後第一筆持股紀錄當天的股數當作當時持股
+        var first = c.txRows.filter(function (t) { return t.status === '有效' && t.dstSymbol === sym && t.date >= last.date && t.date <= c.today; })
+          .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })[0];
+        if (first) { before = qtyAt(first.date); approx = true; }
+      }
       var now = qtyAt(c.today);
       if (before > 0 && now > 0) {
         var inst = c.instruments[cash], dec = inst ? FinMoney.billingDecimals(cash, inst.decimals) : 0;
-        res = { amount: FinMoney.round(Number(last.dstQty) * now / before, dec), perShare: Number(last.dstQty) / before, shares: now, basedOn: last.id, lastDate: last.date };
+        res = { amount: FinMoney.round(Number(last.dstQty) * now / before, dec), perShare: Number(last.dstQty) / before, shares: now, basedOn: last.id, lastDate: last.date, approx: approx };
       }
     }
     c.__divEst[key] = res;

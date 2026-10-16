@@ -302,3 +302,21 @@ test('股息定期範本的預估：上次每股實收 × 目前持股（定期�
   const pend = b.call('bootstrap').data.pendingConfirmations.find((t) => t.recurringId === t2330);
   assert.equal(pend.dstQty, 2985);
 });
+
+test('股息預估：持股是配息後才補登（期初持股記在較晚日期）時，用配息後第一筆持股紀錄的股數當當時持股', () => {
+  const b = fresh('2026-10-16');
+  const broker = b.acct('複委託', '證券');
+  const cma = b.acct('交割戶', '銀行');
+  b.inst({ symbol: 'VOO', name: 'Vanguard S&P 500 ETF', type: 'ETF', decimals: 5 });
+  b.add({ type: '調整', date: '2026-09-01', dstAccount: cma, dstSymbol: 'TWD', dstQty: 1000000 });
+  b.add({ type: '股息', date: '2026-10-06', dstAccount: cma, dstSymbol: 'TWD', dstQty: 87, relatedSymbol: 'VOO' });
+  b.add({ type: '買入', date: '2026-10-08', settleDate: '2026-10-08', srcAccount: cma, srcSymbol: 'TWD', srcQty: 43756, dstAccount: broker, dstSymbol: 'VOO', dstQty: 2.15468, amount: 43756 });
+  b.add({ type: '買入', date: '2026-10-15', settleDate: '2026-10-15', srcAccount: cma, srcSymbol: 'TWD', srcQty: 2898, dstAccount: broker, dstSymbol: 'VOO', dstQty: 0.12632, amount: 2898 });
+  const r = b.call('upsertRecurring', { recurring: { name: 'VOO 股息', freq: '每季', days: [6], holiday: '不調整', startDate: '2027-01-06', type: '股息', srcAccount: broker, srcSymbol: 'VOO', dstAccount: cma, dstSymbol: 'TWD', dstQty: null, mode: '提醒確認' } });
+  assert.ok(r.ok, JSON.stringify(r));
+  at(b, '2026-10-16');
+  const u = b.call('dividendReport', {}).data.upcoming.find((x) => x.kind === '定期' && x.symbol === 'VOO');
+  assert.equal(u.net, Math.round(87 / 2.15468 * 2.281), '87 ÷ 2.15468 × 2.281 ≈ 92');
+  assert.equal(u.estApprox, true);
+  assert.equal(b.call('bootstrap').data.recurringNext[r.data.recurring.id].amount, u.net);
+});
