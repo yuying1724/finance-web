@@ -333,7 +333,9 @@ var FinApi = (function () {
       var nx = nextMap[tpl.id];
       if (!nx || nx.pending) return;
       var sym = tpl.srcSymbol || '';
-      upcoming.push({ kind: '定期', recurringId: tpl.id, symbol: sym, name: (c.instruments[sym] || {}).name || tpl.name, exDate: '', payDate: nx.date, net: nx.amount, symbolCash: nx.symbol || c.base, templateName: tpl.name });
+      var est = nx.estimate || null;
+      upcoming.push({ kind: '定期', recurringId: tpl.id, symbol: sym, name: (c.instruments[sym] || {}).name || tpl.name, exDate: '', payDate: nx.date, net: nx.amount, symbolCash: nx.symbol || c.base, templateName: tpl.name,
+        estPerShare: est ? est.perShare : null, estShares: est ? est.shares : null, estFrom: est ? est.lastDate : '' });
     });
     upcoming.sort(function (a, b) { var da = a.payDate || a.exDate, db = b.payDate || b.exDate; return da < db ? -1 : da > db ? 1 : 0; });
     return {
@@ -613,7 +615,9 @@ var FinApi = (function () {
           if (la && ls) { var li = c.instruments[la.defaultSymbol]; var per = FinLoan.findPeriod(FinLoan.schedule(ls, FinMoney.billingDecimals(la.defaultSymbol, li ? li.decimals : 0)), next.due); if (per) { amount = per.payment; symbol = la.defaultSymbol; } }
         }
         if (FinRecurring.usesMonthEstimates(tpl)) amount = FinRecurring.estimateFor(tpl, next.planned).amount;
-        out[tpl.id] = { date: next.due, amount: amount === undefined ? null : amount, symbol: symbol, pending: false };
+        var est = tpl.type === '股息' ? FinRecurringJob.dividendEstimate(c, tpl) : null; // 股息：每股實收 × 目前持股
+        if (est) amount = est.amount;
+        out[tpl.id] = { date: next.due, amount: amount === undefined ? null : amount, symbol: symbol, pending: false, estimate: est };
       } catch (e) { /* 推算失敗就不顯示下一次 */ }
     });
     return out;
@@ -637,6 +641,7 @@ var FinApi = (function () {
         var isIncome = tpl.type === '收入' || tpl.type === '股息';
         var amount = tpl.type === '貸款還款' ? null : (isIncome ? tpl.dstQty : tpl.srcQty);
         if (FinRecurring.usesMonthEstimates(tpl)) amount = FinRecurring.estimateFor(tpl, o.planned).amount;
+        if (tpl.type === '股息') { var de = FinRecurringJob.dividendEstimate(c, tpl); if (de) amount = de.amount; }
         var symbol = isIncome ? tpl.dstSymbol : tpl.srcSymbol;
         if (tpl.type === '貸款還款') {
           var la = c.accounts[tpl.dstAccount || tpl.srcAccount], ls = la && c.loanByAccount[la.id];

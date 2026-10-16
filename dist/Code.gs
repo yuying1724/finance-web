@@ -149,7 +149,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.74',
+    APP_VERSION: '0.9.75',
   };
   return api;
 })();
@@ -3098,7 +3098,9 @@ var FinApi = (function () {
       var nx = nextMap[tpl.id];
       if (!nx || nx.pending) return;
       var sym = tpl.srcSymbol || '';
-      upcoming.push({ kind: '定期', recurringId: tpl.id, symbol: sym, name: (c.instruments[sym] || {}).name || tpl.name, exDate: '', payDate: nx.date, net: nx.amount, symbolCash: nx.symbol || c.base, templateName: tpl.name });
+      var est = nx.estimate || null;
+      upcoming.push({ kind: '定期', recurringId: tpl.id, symbol: sym, name: (c.instruments[sym] || {}).name || tpl.name, exDate: '', payDate: nx.date, net: nx.amount, symbolCash: nx.symbol || c.base, templateName: tpl.name,
+        estPerShare: est ? est.perShare : null, estShares: est ? est.shares : null, estFrom: est ? est.lastDate : '' });
     });
     upcoming.sort(function (a, b) { var da = a.payDate || a.exDate, db = b.payDate || b.exDate; return da < db ? -1 : da > db ? 1 : 0; });
     return {
@@ -3378,7 +3380,9 @@ var FinApi = (function () {
           if (la && ls) { var li = c.instruments[la.defaultSymbol]; var per = FinLoan.findPeriod(FinLoan.schedule(ls, FinMoney.billingDecimals(la.defaultSymbol, li ? li.decimals : 0)), next.due); if (per) { amount = per.payment; symbol = la.defaultSymbol; } }
         }
         if (FinRecurring.usesMonthEstimates(tpl)) amount = FinRecurring.estimateFor(tpl, next.planned).amount;
-        out[tpl.id] = { date: next.due, amount: amount === undefined ? null : amount, symbol: symbol, pending: false };
+        var est = tpl.type === '股息' ? FinRecurringJob.dividendEstimate(c, tpl) : null; // 股息：每股實收 × 目前持股
+        if (est) amount = est.amount;
+        out[tpl.id] = { date: next.due, amount: amount === undefined ? null : amount, symbol: symbol, pending: false, estimate: est };
       } catch (e) { /* 推算失敗就不顯示下一次 */ }
     });
     return out;
@@ -3402,6 +3406,7 @@ var FinApi = (function () {
         var isIncome = tpl.type === '收入' || tpl.type === '股息';
         var amount = tpl.type === '貸款還款' ? null : (isIncome ? tpl.dstQty : tpl.srcQty);
         if (FinRecurring.usesMonthEstimates(tpl)) amount = FinRecurring.estimateFor(tpl, o.planned).amount;
+        if (tpl.type === '股息') { var de = FinRecurringJob.dividendEstimate(c, tpl); if (de) amount = de.amount; }
         var symbol = isIncome ? tpl.dstSymbol : tpl.srcSymbol;
         if (tpl.type === '貸款還款') {
           var la = c.accounts[tpl.dstAccount || tpl.srcAccount], ls = la && c.loanByAccount[la.id];
@@ -5896,6 +5901,38 @@ var FinRecurringJob = (function () {
     return false;
   }
 
+  /**
+   * 股息定期範本的預估金額：上一次實收 ÷ 那時候的持股 ＝「每股實收」，再乘上目前持股。
+   * 定期定額的持股每個月都在增加，範本填的固定金額會越來越不準；沒有入帳紀錄（或算不出持股）就回 null，改用範本填的金額。
+   * 回傳 { amount, perShare, shares, basedOn（上次那筆交易 ID）, lastDate }
+   */
+  function dividendEstimate(c, tpl) {
+    var sym = tpl.srcSymbol, cash = tpl.dstSymbol || c.base;
+    if (tpl.type !== '股息' || !sym) return null;
+    if (!c.__divEst) c.__divEst = {};
+    var key = sym + '|' + cash;
+    if (Object.prototype.hasOwnProperty.call(c.__divEst, key)) return c.__divEst[key];
+    var last = c.txRows.filter(function (t) {
+      return t.status === '有效' && t.type === '股息' && t.relatedSymbol === sym && Number(t.dstQty) > 0 && (t.dstSymbol || c.base) === cash && t.date <= c.today;
+    }).sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; })[0];
+    var res = null;
+    if (last) {
+      var qtyAt = function (asOf) {
+        var q = 0;
+        FinHoldings.computeHoldings(c.txRows, c.instruments, { base: c.base, asOf: asOf, prices: c.prices }).positions.forEach(function (p) { if (p.symbol === sym) q += Number(p.qty) || 0; });
+        return q;
+      };
+      var before = qtyAt(FinDates.addDays(last.date, -1)); // 入帳前一天的持股（除息日前買的才配得到）
+      var now = qtyAt(c.today);
+      if (before > 0 && now > 0) {
+        var inst = c.instruments[cash], dec = inst ? FinMoney.billingDecimals(cash, inst.decimals) : 0;
+        res = { amount: FinMoney.round(Number(last.dstQty) * now / before, dec), perShare: Number(last.dstQty) / before, shares: now, basedOn: last.id, lastDate: last.date };
+      }
+    }
+    c.__divEst[key] = res;
+    return res;
+  }
+
   /** 一般（非貸款還款）範本：依到期日與執行方式產生一或多筆交易列（尚未寫入） */
   function buildOccurrenceRows(tpl, occ, c, env) {
     var now = ts(env.now);
@@ -5920,6 +5957,7 @@ var FinRecurringJob = (function () {
       var divCat = c.categoryRows.filter(function (x) { return x.type === '系統' && x.name === '股息'; })[0];
       row.relatedSymbol = tpl.srcSymbol || ''; row.srcAccount = ''; row.srcSymbol = ''; row.srcQty = null;
       row.categoryId = divCat ? divCat.id : '';
+      if (status === '待確認') { var de = dividendEstimate(c, tpl); if (de) row.dstQty = de.amount; } // 待確認的先放「每股實收 × 目前持股」的預估，入帳後再改實收
       if (status === '有效' && !(Number(row.dstQty) > 0)) status = row.status = '待確認'; // 沒有金額不能自動入帳
     }
     if (isInvest) {
@@ -6160,7 +6198,7 @@ var FinRecurringJob = (function () {
     return summary;
   }
 
-  return { runDaily: runDaily, generateDue: generateDue, sendFundingReminders: sendFundingReminders, sendSettlementReminders: sendSettlementReminders, sendStalePendingReminders: sendStalePendingReminders, sendCardDueReminders: sendCardDueReminders, sendShortfallReminders: sendShortfallReminders };
+  return { runDaily: runDaily, generateDue: generateDue, dividendEstimate: dividendEstimate, sendFundingReminders: sendFundingReminders, sendSettlementReminders: sendSettlementReminders, sendStalePendingReminders: sendStalePendingReminders, sendCardDueReminders: sendCardDueReminders, sendShortfallReminders: sendShortfallReminders };
 })();
 
 // ==================== server/setup.js ====================

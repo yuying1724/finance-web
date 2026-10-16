@@ -268,3 +268,37 @@ test('股息專區（dividendReport）：年度合計、每月、依標的＋殖
   const d25 = b.call('dividendReport', { year: '2025' }).data;
   assert.deepEqual([d25.total.net, d25.total.count, d25.bySymbol[0].symbol], [5000, 1, '0056']);
 });
+
+test('股息定期範本的預估：上次每股實收 × 目前持股（定期定額持股增加就跟著變大）；沒有入帳紀錄就用範本填的金額', () => {
+  const b = fresh('2026-10-01');
+  const broker = b.acct('元大-證券', '證券');
+  const cma = b.acct('元大-CMA', '銀行');
+  b.inst({ symbol: '2330', name: '台積電', type: '台股' });
+  b.inst({ symbol: '0050', name: '元大台灣50', type: 'ETF' });
+  b.add({ type: '調整', date: '2026-09-01', dstAccount: cma, dstSymbol: 'TWD', dstQty: 1000000 });
+  b.add({ type: '買入', date: '2026-09-02', settleDate: '2026-09-02', srcAccount: cma, srcSymbol: 'TWD', srcQty: 100000, dstAccount: broker, dstSymbol: '2330', dstQty: 100, amount: 100000 });
+  b.add({ type: '股息', date: '2026-09-25', dstAccount: cma, dstSymbol: 'TWD', dstQty: 1990, relatedSymbol: '2330' });
+  // 入帳當天之後才買的不算進「上次每股實收」
+  b.add({ type: '買入', date: '2026-09-25', settleDate: '2026-09-25', srcAccount: cma, srcSymbol: 'TWD', srcQty: 1000, dstAccount: broker, dstSymbol: '2330', dstQty: 1, amount: 1000 });
+  b.add({ type: '買入', date: '2026-10-05', settleDate: '2026-10-05', srcAccount: cma, srcSymbol: 'TWD', srcQty: 49000, dstAccount: broker, dstSymbol: '2330', dstQty: 49, amount: 49000 });
+  const tpl = (sym, qty) => { const r = b.call('upsertRecurring', { recurring: { name: sym + ' 股息', freq: '每季', days: [25], holiday: '不調整', startDate: '2026-12-25', type: '股息', srcAccount: broker, srcSymbol: sym, dstAccount: cma, dstSymbol: 'TWD', dstQty: qty, mode: '提醒確認' } }); assert.ok(r.ok, JSON.stringify(r)); return r.data.recurring.id; };
+  const t2330 = tpl('2330', 1990), t0050 = tpl('0050', 500);
+  at(b, '2026-10-10');
+  const boot = b.call('bootstrap').data;
+  assert.equal(boot.recurringNext[t2330].amount, 2985, '1,990 ÷ 100 股 × 150 股');
+  assert.equal(boot.recurringNext[t0050].amount, 500, '沒有入帳紀錄：用範本填的金額');
+  const cal = b.call('dividendReport', {}).data.upcoming.filter((u) => u.kind === '定期');
+  const u = cal.find((x) => x.symbol === '2330');
+  assert.deepEqual([u.net, u.estPerShare, u.estShares, u.estFrom], [2985, 19.9, 150, '2026-09-25']);
+  assert.equal(cal.find((x) => x.symbol === '0050').estPerShare, null);
+  // 未來扣款日曆也用預估
+  const cf = b.call('getCashflow', { days: 90 }).data;
+  const cfItem = JSON.stringify(cf).match(/"name":"2330 股息"[^}]*"amount":(\d+)/);
+  assert.ok(cfItem && Number(cfItem[1]) === 2985, JSON.stringify(cf).slice(0, 400));
+  // 到期產生待確認：先放預估金額
+  at(b, '2026-12-25', 7);
+  b.ctx.FinRecurringJob.runDaily(b.mock.state.clock.now);
+  at(b, '2026-12-25', 9);
+  const pend = b.call('bootstrap').data.pendingConfirmations.find((t) => t.recurringId === t2330);
+  assert.equal(pend.dstQty, 2985);
+});
