@@ -1194,23 +1194,16 @@ var FinApi = (function () {
     c.__phAll = map; c.__priceHistory = map;
     return map;
   }
-  var DEFAULT_BENCHMARK = '0050';
-  function investReportOf(c, from, to, noMonths, benchmark) {
-    return FinInvestReport.build(c.txRows, c.instruments, { base: c.base, today: c.today, prices: c.prices, priceHistory: allPriceHistory(c), from: from, to: to, noMonths: !!noMonths, benchmark: benchmark || '' });
+  function investReportOf(c, from, to, noMonths) {
+    return FinInvestReport.build(c.txRows, c.instruments, { base: c.base, today: c.today, prices: c.prices, priceHistory: allPriceHistory(c), from: from, to: to, noMonths: !!noMonths });
   }
 
-  /**
-   * 投資報表（投資頁「報表」分頁）：p.from / p.to（yyyy-MM-dd，選填；沒給就是從第一筆投資紀錄到今天）；
-   * p.benchmark（選填，預設 0050）：跟哪個標的比，要是「標的」裡有的代號，不存在就不比（summary.bench 為 null）。
-   */
+  /** 投資報表（投資頁「報表」分頁）：p.from / p.to（yyyy-MM-dd，選填；沒給就是從第一筆投資紀錄到今天） */
   H.investReport = {
     fn: function (p, env) {
       var c = loadContext(env.now);
       var from = FinDates.isValid(str(p.from)) ? str(p.from) : '', to = FinDates.isValid(str(p.to)) ? str(p.to) : '';
-      var bench = p.benchmark === undefined || p.benchmark === null ? DEFAULT_BENCHMARK : str(p.benchmark).trim().toUpperCase();
-      var r = investReportOf(c, from, to, false, bench);
-      r.benchmark = bench;
-      return r;
+      return investReportOf(c, from, to, false);
     },
   };
 

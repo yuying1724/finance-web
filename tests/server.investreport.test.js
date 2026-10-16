@@ -185,26 +185,11 @@ test('投資報表：後來才補登／開帳的部位、股數調整增減，�
   assert.deepEqual([s.realized, s.unrealizedChange], [0, 3700], '股數調整不算已實現（只有真的「賣出」才算）');
 });
 
-test('投資報表：年化報酬率；跟基準（0050）比＝同樣的錢、同樣的時間點全部買基準', () => {
+test('投資報表：年化報酬率＝(1＋R)^(365/天數)－1；期初＝期末那天不算', () => {
   const { b, ok } = setup();
   const r = ok(b.call('investReport', {}));
   const s = r.summary;
-  assert.equal(r.benchmark, '0050');
   assert.equal(s.days, 64);
-  // 年化＝(1＋0.17763)^(365/64)－1
   assert.equal(s.annualized, Math.round((Math.pow(1 + 3000 / 16889.0625, 365 / 64) - 1) * 10000) / 10000);
-  // 基準模擬：期初 12,000 ÷ 120＝100 股；2/10 投入 12,800 ÷ 130（1/30 收盤）；3/3 賣出入帳 6,500 ÷ 125（2/27 收盤）；期末 × 140
-  const shares = 100 + 12800 / 130 - 6500 / 125;
-  const bEnd = shares * 140, bTotal = bEnd - 12000 - 6300;
-  assert.deepEqual([s.bench.symbol, s.bench.name, s.bench.endValue, s.bench.total], ['0050', '元大台灣50', Math.round(bEnd), Math.round(bTotal)]);
-  assert.equal(s.bench.returnPct, Math.round(bTotal / 16889.0625 * 10000) / 10000);
-  assert.equal(s.bench.priceReturn, 0.1667, '0050 本身 120→140');
-  assert.equal(s.bench.diff, 3000 - Math.round(bTotal));
-  assert.equal(s.bench.diffPct, Math.round((s.returnPct - s.bench.returnPct) * 10000) / 10000);
-  assert.equal(s.bench.estimated, false);
-  assert.ok(r.months.every((m) => m.bench && typeof m.bench.returnPct === 'number'), '每個月也有基準');
-  // 指定不存在的基準：不比
-  assert.equal(ok(b.call('investReport', { benchmark: '2330' })).summary.bench, null);
-  // 期間太短也會算年化（前端提醒）；一天內（期初＝期末）不算
   assert.equal(ok(b.call('investReport', { from: '2026-01-05', to: '2026-01-05' })).summary.annualized, null);
 });

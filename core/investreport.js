@@ -13,10 +13,6 @@
  * 報酬率用「修正 Dietz 法」：損益 ÷（期初市值 + 期間每筆投入 × 留在期間內的天數比例），
  * 定期定額這種期間中一直投入的情況才不會被低估或高估。
  * 年化報酬率＝(1＋期間報酬率)^(365÷期間天數)－1；期間太短時數字會被放大，前端會提醒。
- *
- * 跟大盤（預設 0050）比：把「同樣的錢、同樣的時間點」全部拿去買基準標的——期初市值換成基準的股數，
- * 之後每一筆投入／賣出／轉入轉出都以當天基準收盤換算股數，期末用基準收盤算市值；
- * 損益、報酬率用跟自己一樣的算法（分母相同），差額就是「贏／輸基準多少」。基準只算價差，不含它的配息。
  */
 var FinInvestReport = (function () {
   //#ifnode
@@ -128,23 +124,10 @@ var FinInvestReport = (function () {
       return Math.round((Math.pow(1 + r, 365 / days) - 1) * 10000) / 10000;
     }
 
-    // 基準標的（跟 0050 比）：價格只用自己的歷史收盤，找不到就退回目前價格並標記估算（不混進 missing，避免「補抓」按鈕誤判）
-    var benchSym = ctx.benchmark && instruments[ctx.benchmark] ? ctx.benchmark : '';
-    var benchEstimated = false;
-    function benchUnit(date) {
-      var inst = instruments[benchSym];
-      var p = date >= today ? Number(prices[benchSym]) : closeOn(benchSym, date);
-      if (!(p > 0)) { p = Number(prices[benchSym]); if (!(p > 0)) return null; benchEstimated = true; }
-      var q = inst.quote || base;
-      var u = q === base || q === benchSym ? 1 : unitBase(q, date, 0);
-      return u === null ? null : p * u;
-    }
-
     /** 一段期間 [a, b]（含頭尾）；起點是 a 前一天收盤，若 a 是第一天就從那天收盤開始 */
     function period(a, b, perSymbol) {
       var v0 = a <= dataStart ? dataStart : FinDates.addDays(a, -1);
       var days = Math.max(0, dayNum(b) - dayNum(v0));
-      var flows = []; // 期間內每一筆進出（正＝投入／轉入，負＝賣出入帳／轉出），給基準模擬用
       var s0 = valueAt(v0), s1 = valueAt(b);
       var syms = {};
       function S(sym) { return syms[sym] || (syms[sym] = { symbol: sym, startValue: 0, endValue: 0, startCost: 0, endCost: 0, buys: 0, sells: 0, transfers: 0, inflow: 0, realized: 0, dividends: 0, weighted: 0, endQty: 0 }); }
@@ -156,18 +139,18 @@ var FinInvestReport = (function () {
         if (t.type === '買入' && isOpening(t)) {
           // 舊部位補登／開帳：不是新投入的錢，當天以市值「轉入」，之前累積的漲跌不算在這段期間
           var o = S(t.dstSymbol), mvIn = marketValue(t.dstSymbol, t.dstQty, t.date);
-          o.transfers += mvIn; o.inflow += mvIn; o.weighted += mvIn * w(t.date); flows.push([t.date, mvIn]);
-        } else if (t.type === '買入') { var x = S(t.dstSymbol), amt = cashBase(t.srcSymbol, t.srcQty, t.date); x.buys += amt; x.inflow += amt; x.weighted += amt * w(t.date); flows.push([t.date, amt]); }
-        else if (t.type === '賣出') { var y = S(t.srcSymbol), got = cashBase(t.dstSymbol, t.dstQty, t.date); y.sells += got; y.weighted -= got * w(t.date); flows.push([t.date, -got]); }
+          o.transfers += mvIn; o.inflow += mvIn; o.weighted += mvIn * w(t.date);
+        } else if (t.type === '買入') { var x = S(t.dstSymbol), amt = cashBase(t.srcSymbol, t.srcQty, t.date); x.buys += amt; x.inflow += amt; x.weighted += amt * w(t.date); }
+        else if (t.type === '賣出') { var y = S(t.srcSymbol), got = cashBase(t.dstSymbol, t.dstQty, t.date); y.sells += got; y.weighted -= got * w(t.date); }
         else if (t.type === '股數調整') {
           // 只改股數、沒有錢進出：增加的股數以當天市值「轉入」，減少的以當天市值「轉出」（例如賣出款項另外記在餘額調整）。
           // 期間內的漲跌算在未實現（已實現只算真的有「賣出」紀錄的，跟券商 app 對得起來）。拆股／併股不適用這個假設，目前沒有這種資料。
           if (t.dstAccount && t.dstSymbol && t.dstQty) {
             var ai = S(t.dstSymbol), v = marketValue(t.dstSymbol, t.dstQty, t.date);
-            ai.transfers += v; ai.inflow += v; ai.weighted += v * w(t.date); flows.push([t.date, v]);
+            ai.transfers += v; ai.inflow += v; ai.weighted += v * w(t.date);
           } else if (t.srcAccount && t.srcSymbol && t.srcQty) {
             var ao = S(t.srcSymbol), vo = marketValue(t.srcSymbol, t.srcQty, t.date);
-            ao.transfers -= vo; ao.weighted -= vo * w(t.date); flows.push([t.date, -vo]);
+            ao.transfers -= vo; ao.weighted -= vo * w(t.date);
           }
         }
       });
@@ -200,28 +183,6 @@ var FinInvestReport = (function () {
         returnPct: returnPct === null ? null : Math.round(returnPct * 10000) / 10000,
         annualized: annualize(returnPct, days),
       };
-      // 跟基準比：同樣的錢、同樣的時間點全部買基準標的
-      summary.bench = null;
-      if (benchSym) {
-        var p0 = benchUnit(v0), p1 = benchUnit(b);
-        if (p0 > 0 && p1 > 0) {
-          var shares = tot.startValue / p0, okFlows = true;
-          flows.forEach(function (f) { if (!f[1]) return; var pd = benchUnit(f[0]); if (!(pd > 0)) { okFlows = false; return; } shares += f[1] / pd; });
-          if (okFlows) {
-            var bEnd = shares * p1;
-            var bTotal = bEnd - tot.startValue - (tot.buys - tot.sells) - tot.transfers;
-            var bRet = denomAll > 0 ? bTotal / denomAll : null;
-            var priceRet = p1 / p0 - 1;
-            summary.bench = {
-              symbol: benchSym, name: instruments[benchSym].name || benchSym,
-              endValue: R(bEnd), total: R(bTotal), returnPct: bRet === null ? null : Math.round(bRet * 10000) / 10000, annualized: annualize(bRet, days),
-              priceReturn: Math.round(priceRet * 10000) / 10000, priceAnnualized: annualize(priceRet, days),
-              diff: R(total - bTotal), diffPct: bRet === null || returnPct === null ? null : Math.round((returnPct - bRet) * 10000) / 10000,
-              estimated: benchEstimated,
-            };
-          }
-        }
-      }
       if (!perSymbol) return summary;
       summary.bySymbol = list.filter(function (x) {
         return Math.abs(x.startValue) > 0.5 || Math.abs(x.endValue) > 0.5 || x.buys || x.sells || x.transfers || x.dividends || x.realized;
