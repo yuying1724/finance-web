@@ -224,3 +224,19 @@ test('expandInstallment：分期的原始消費有入帳日時，第 1 期依入
   const s2 = FinCreditCard.expandInstallment({ terms: 3 }, Object.assign({}, t, { settleDate: '' }), 12, 0);
   assert.equal(s2.periods[0].closeDate, '2026-08-12');
 });
+
+test('summary 含分期：結帳後才刷的分期，不會讓上期帳單的待繳變少（富邦 10/12 帳單 20,254 被算成 17,444 的問題）', () => {
+  const cs = { statementDay: 12, dueDay: 28, limit: 320000 };
+  const txs = [
+    tx({ id: 'T1', date: '2026-10-05', type: '支出', srcAccount: 'C1', srcSymbol: 'TWD', srcQty: 20254 }), // 上期（9/13～10/12）一般消費
+    tx({ id: 'T2', date: '2026-10-17', type: '支出', srcAccount: 'C1', srcSymbol: 'TWD', srcQty: 2810 }),  // 結帳後刷、分 6 期
+  ];
+  const sched = [FinCreditCard.expandInstallment({ id: 'I1', txId: 'T2', terms: 6, remainderOn: '末期' }, txs[1], 12, 0)];
+  const s = FinCreditCard.summary(txs, 'C1', 'TWD', 0, cs, '2026-10-28', null, sched);
+  assert.equal(s.statementAmountDue, 20254, '上期帳單不受結帳後才刷的分期影響');
+  assert.equal(s.currentSpend, 468, '本期只算分期第 1 期');
+  assert.equal(s.installmentRemaining, 2810 - 468, '本期結帳後還沒出帳的各期');
+  assert.equal(s.currentlyOwed, 20254 + 2810);
+  assert.equal(FinCreditCard.unbilledUnitsAt(sched, { C1: true }, 'TWD', '2026-10-12'), 0);
+  assert.equal(FinCreditCard.unbilledUnitsAt(sched, { C1: true }, 'TWD', '2026-11-12'), 2810 - 468);
+});

@@ -114,7 +114,7 @@ var FinCreditCard = (function () {
       periods.push({ n: n, amount: FinMoney.fromUnits(u, decimals), units: u, closeDate: cd });
       close = nextStatementEnd(statementDay, close);
     }
-    return { id: inst.id, accountId: tx.srcAccount, symbol: tx.srcSymbol, txId: tx.id, total: FinMoney.fromUnits(totalUnits, decimals), terms: terms, periods: periods, paidOff: !!inst.payoffDate };
+    return { id: inst.id, accountId: tx.srcAccount, symbol: tx.srcSymbol, txId: tx.id, txBill: txBill, total: FinMoney.fromUnits(totalUnits, decimals), terms: terms, periods: periods, paidOff: !!inst.payoffDate };
   }
 
   /** 截至某個結帳日（含）還沒出帳的分期金額（整數單位）：closeDate 晚於 date 的各期 */
@@ -122,6 +122,8 @@ var FinCreditCard = (function () {
     var u = 0;
     (schedules || []).forEach(function (s) {
       if (!idSet[s.accountId] || s.symbol !== symbol) return;
+      // 分期的原始消費在 date 之後才入帳：它還不在 date 當時的欠款裡，所以也不能把它的未出帳各期加回去（否則會把那期帳單算少）
+      if (s.txBill && s.txBill > date) return;
       s.periods.forEach(function (p) { if (p.closeDate > date) u += p.units; });
     });
     return u;
