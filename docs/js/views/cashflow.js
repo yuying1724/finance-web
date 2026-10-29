@@ -151,6 +151,17 @@ export function openCashflow() {
   return sheet;
 }
 
+/**
+ * 待辦頁的「轉帳補足」：用未來 30 天扣款日曆（有快取就用快取）挑轉出帳戶，再開記一筆轉帳。
+ * short：bootstrap 的 cashAlert.short 其中一筆 { accountId, name, symbol, shortDate, shortfall, reason }
+ */
+export async function topupShort(short, onDone) {
+  let cf = null;
+  try { const r = cachedRead('getCashflow', { days: 30 }); cf = r.data || await r.promise; } catch (e) { cf = null; }
+  const src = suggestSource(short, cf || { accounts: [] });
+  openTxForm({ preset: { type: '轉帳', acct: src ? src.id : '', acct2: short.accountId, amount: Math.ceil(short.shortfall), note: '補足扣款' + (short.reason ? '：' + short.reason : '') }, onDone });
+}
+
 /** 首頁「待辦」卡用：未來 30 天有帳戶可能不足時的提醒列（沒有就回傳 null） */
 export function cashAlertRow() {
   const ca = state.data && state.data.cashAlert;

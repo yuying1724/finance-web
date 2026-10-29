@@ -149,7 +149,7 @@ var FinSchema = (function () {
     ENUMS: ENUMS, ENABLED_TX_TYPES: ENABLED_TX_TYPES, LIABILITY_TYPES: LIABILITY_TYPES, TABLES: TABLES,
     OPTION_LISTS: OPTION_LISTS, OPTIONS_SHEET: OPTIONS_SHEET, SHEET_ORDER: SHEET_ORDER, headers: headers, colOf: colOf,
     DB_VERSION: 1,
-    APP_VERSION: '0.9.77',
+    APP_VERSION: '0.9.78',
   };
   return api;
 })();
@@ -4802,7 +4802,11 @@ var FinApi = (function () {
   /** 首頁提醒用的摘要：未來 30 天可能不足的帳戶、還沒指定扣款帳戶的筆數 */
   function cashAlert(cf) {
     return { days: cf.days, unassigned: cf.unassigned.length,
-      short: cf.accounts.filter(function (a) { return a.shortfall > 0; }).map(function (a) { return { accountId: a.accountId, name: a.name, symbol: a.symbol, shortDate: a.shortDate, shortfall: a.shortfall }; }) };
+      short: cf.accounts.filter(function (a) { return a.shortfall > 0; }).map(function (a) {
+        // reason：第一次不夠的那天要扣的是什麼（例如「永豐（合併帳單） 上期帳單」），待辦頁顯示用
+        var first = a.items.filter(function (r) { return r.date === a.shortDate && r.direction !== 'in'; })[0];
+        return { accountId: a.accountId, name: a.name, type: a.type, symbol: a.symbol, shortDate: a.shortDate, shortfall: a.shortfall, reason: first ? first.name : '' };
+      }) };
   }
 
   /** 已實現分析：from／to 不填＝全部 */

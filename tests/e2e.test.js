@@ -799,6 +799,14 @@ test('未來扣款日曆：首頁提醒餘額不足的帳戶；打開日曆依�
     await page.click('[data-testid=open-cashflow]');
     await page.waitForSelector('.sheet [data-testid=cf-item]'); // 記得上次選的「依日期」
     assert.equal(await page.locator('.sheet .chip.on').first().innerText(), '30 天', '每次打開都是 30 天');
+    await page.click('.sheet [aria-label="關閉"]'); await page.waitForSelector('.sheet', { state: 'detached' });
+    // 待辦頁：10 天後才不夠扣款 → 「還沒到日子」標提前準備，不算進底部徽章
+    await a.tab('todo');
+    await page.waitForSelector('[data-testid=todo-later] [data-testid=todo-short-later]');
+    assert.match(await page.locator('[data-testid=todo-later] [data-testid=todo-short-later]').innerText(), /扣款小帳戶 可能不夠扣款[\s\S]*提前準備[\s\S]*日曆測試卡[\s\S]*差 NT\$2,000/);
+    assert.equal(await page.locator('[data-testid=todo-now] [data-testid=todo-short]').count(), 0);
+    await page.click('[data-testid=todo-open-cashflow]');
+    await page.waitForSelector('.sheet [data-testid=cf-item]');
   });
 });
 
@@ -1043,11 +1051,21 @@ test('待辦頁：到期的待確認與 7 天內的信用卡帳單在「現在�
     const later = be.call('addTransaction', { tx: { type: '股息', date: day(20), dstAccount: bank, dstSymbol: 'TWD', dstQty: 50, relatedSymbol: 'USD', categoryId: '' } });
     await a.login(); await page.waitForSelector('[data-testid=networth]');
     await page.waitForSelector('.tabbar .nav-badge[data-badge-tab=todo]:not([style*="none"])');
-    assert.equal((await page.locator('.tabbar .nav-badge[data-badge-tab=todo]').innerText()).trim(), '2', '1 筆到期待確認＋1 張 7 天內到期的卡');
+    assert.equal((await page.locator('.tabbar .nav-badge[data-badge-tab=todo]').innerText()).trim(), '3', '1 筆到期待確認＋1 張 7 天內到期的卡＋1 個 7 天內不夠扣款的帳戶');
     await a.tab('todo');
     const now = await page.locator('[data-testid=todo-now]').innerText();
-    assert.match(now, /現在要處理（2）/); assert.match(now, /待辦測試卡/); assert.match(now, /待辦-今天/);
+    assert.match(now, /現在要處理（3）/); assert.match(now, /待辦測試卡/); assert.match(now, /待辦-今天/);
     assert.ok(await page.locator('[data-testid=todo-now] [data-testid=todo-pay]').count() === 1);
+    // 繳卡費的銀行沒錢：7 天內不夠扣款，排在最上面，有「轉帳補足」
+    const shortRow = page.locator('[data-testid=todo-now] [data-testid=todo-short]').first();
+    assert.equal(await shortRow.getAttribute('data-account'), '待辦測試銀行');
+    assert.match(await shortRow.innerText(), /待辦測試銀行 可能不夠扣款[\s\S]*差 NT\$1,334/);
+    assert.equal(await page.locator('[data-testid=todo-now] li').first().getAttribute('data-testid'), 'todo-short');
+    await shortRow.locator('[data-testid=todo-topup]').click();
+    await page.waitForSelector('.sheet');
+    assert.match(await page.locator('.sheet').innerText(), /轉帳/);
+    assert.equal(await page.locator('.sheet .amount-input').first().inputValue(), '1334');
+    await page.click('.sheet [aria-label="關閉"]'); await page.waitForSelector('.sheet', { state: 'detached' });
     assert.match(await page.locator('[data-testid=todo-later]').innerText(), /還沒到日子（0）/);
     // 繳款按鈕開「記一筆」轉帳，金額帶待繳
     await page.click('[data-testid=todo-now] [data-testid=todo-pay]');

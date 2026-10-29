@@ -101,6 +101,8 @@ test('扣款日曆：定期刷信用卡不算「不夠扣款」（卡的餘額�
   assert.equal(bg.shortfall, 2251, '繳卡費的銀行 500 不夠付 10/20 的 2,751');
   const alert = b.call('bootstrap').data.cashAlert;
   assert.deepEqual(alert.short.map((x) => x.accountId), [bank]);
+  assert.match(alert.short[0].reason, /上期帳單|本期/, '第一次不夠的那天要扣什麼');
+  assert.equal(alert.short[0].type, '銀行');
   // 10/10 起算 3 天後（10/13）刷卡，不寄不足提醒
   b.mock.state.clock.now = new Date('2026-10-10T07:00:00+08:00').getTime(); b.login();
   b.state.mail.length = 0;
